@@ -93,8 +93,9 @@ The initial dispatch and driver HTTP request/response shapes are specified in
 `api/openapi.yaml`; the Go API implements proximity dispatch, assigned route
 reads, driver GPS ingestion, and ordered route stop progression. The API also
 exposes visible storefront catalogs and idempotent customer order creation with
-server-priced item and volume snapshots. Catalog item provisioning currently
-uses trusted merchant operations; a catalog-management API remains unimplemented.
+server-priced item and volume snapshots. Merchants can list, create, edit, and
+hide catalog items for their own store locations; ownership is enforced in the
+database as well as by the trusted merchant-role gateway.
 Initial API-backed iOS/Android shopper, driver, and merchant billing screens
 are in `apps/mobile`; the current admin refund
 workflow is in `apps/admin`. Broader merchant/admin workflows remain
@@ -118,6 +119,11 @@ Migration `006_catalog_orders.sql` adds store-scoped catalog items and
 order-line price/volume snapshots. Customer order creation resolves current
 prices from the database, verifies a visible storefront and service-zone
 coverage, and creates the order and outbox event atomically.
+
+Migration `007_merchant_catalog_management.sql` adds idempotent merchant item
+creation and ownership-checked item updates. Item availability controls
+customer catalog visibility; changing an item does not rewrite existing order
+snapshots.
 
 `nearby_subscribed_merchants(anchor_store, 500)` uses PostGIS geography distance
 to suggest active grocery/retail storefronts within 500 meters. It excludes

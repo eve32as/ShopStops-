@@ -29,6 +29,16 @@ type CatalogItem = {
   unitPriceCents: number;
   volumeLiters: string;
 };
+type MerchantCatalogItem = CatalogItem & {
+  storeLocationId: string;
+  available: boolean;
+};
+type MerchantCatalogDraft = {
+  name: string;
+  description: string;
+  unitPriceCents: string;
+  volumeLiters: string;
+};
 type CreateOrderBody = {
   storeLocationId: string;
   dropoff: { latitude: number; longitude: number };
@@ -89,6 +99,13 @@ export default function HomeScreen() {
   const [checkout, setCheckout] = useState<Checkout | null>(null);
   const [route, setRoute] = useState<Route | null>(null);
   const [subscription, setSubscription] = useState<Subscription | null>(null);
+  const [merchantCatalog, setMerchantCatalog] = useState<MerchantCatalogItem[]>([]);
+  const [merchantCatalogDrafts, setMerchantCatalogDrafts] = useState<Record<string, MerchantCatalogDraft>>({});
+  const [merchantStoreLocation, setMerchantStoreLocation] = useState("");
+  const [newItemName, setNewItemName] = useState("");
+  const [newItemDescription, setNewItemDescription] = useState("");
+  const [newItemPrice, setNewItemPrice] = useState("");
+  const [newItemVolume, setNewItemVolume] = useState("");
   const [anchorStore, setAnchorStore] = useState("");
   const [orderIds, setOrderIds] = useState("");
   const [latitude, setLatitude] = useState("");
@@ -103,6 +120,17 @@ export default function HomeScreen() {
     };
   });
   const orderAttempt = useRef<{ key: string; fingerprint: string; body: CreateOrderBody } | null>(null);
+  const merchantCatalogAttempt = useRef<{
+    key: string;
+    fingerprint: string;
+    body: {
+      storeLocationId: string;
+      name: string;
+      description: string;
+      unitPriceCents: number;
+      volumeLiters: number;
+    };
+  } | null>(null);
   const checkoutAttempt = useRef<{
     key: string;
     body: {
@@ -156,6 +184,8 @@ export default function HomeScreen() {
       setCheckout(null);
       setRoute(null);
       setSubscription(null);
+      setMerchantCatalog([]);
+      setMerchantCatalogDrafts({});
     }
   }, [gatewayUrl, sessionToken]);
 
@@ -450,6 +480,121 @@ export default function HomeScreen() {
     if (result) {
       setMessage(`Subscription is ${result.status}. Storefront activation waits for a paid invoice.`);
       await refreshSubscription();
+    }
+  }
+
+  async function loadMerchantCatalog() {
+    const items = await run(() =>
+      apiRequest<MerchantCatalogItem[]>(settings, "merchant/catalog"),
+    );
+    if (items) {
+      setMerchantCatalog(items);
+      setMerchantCatalogDrafts(Object.fromEntries(items.map((item) => [
+        item.id,
+        {
+          name: item.name,
+          description: item.description,
+          unitPriceCents: String(item.unitPriceCents),
+          volumeLiters: item.volumeLiters,
+        },
+      ])));
+    }
+  }
+
+  async function createMerchantCatalogItem() {
+    const price = Number(newItemPrice);
+    const volume = Number(newItemVolume);
+    if (!merchantStoreLocation.trim() || !newItemName.trim() ||
+        !Number.isInteger(price) || price < 1 || !Number.isFinite(volume) || volume <= 0) {
+      setMessage("Enter your store location ID, item name, price in cents, and positive volume.");
+      return;
+    }
+    const body = {
+      storeLocationId: merchantStoreLocation.trim(),
+      name: newItemName.trim(),
+      description: newItemDescription,
+      unitPriceCents: price,
+      volumeLiters: volume,
+    };
+    const fingerprint = JSON.stringify(body);
+    if (merchantCatalogAttempt.current?.fingerprint !== fingerprint) {
+      merchantCatalogAttempt.current = { key: idempotencyKey(), fingerprint, body };
+    }
+    const attempt = merchantCatalogAttempt.current;
+    const item = await run(() =>
+      apiRequest<MerchantCatalogItem>(settings, "merchant/catalog", {
+        method: "POST",
+        headers: { "Idempotency-Key": attempt.key },
+        body: JSON.stringify(attempt.body),
+      }),
+    );
+    if (item) {
+      merchantCatalogAttempt.current = null;
+      setNewItemName("");
+      setNewItemDescription("");
+      setNewItemPrice("");
+      setNewItemVolume("");
+      setMessage("Catalog item saved.");
+      await loadMerchantCatalog();
+    }
+  }
+
+  async function updateMerchantCatalogItem(item: MerchantCatalogItem) {
+    const draft = merchantCatalogDrafts[item.id];
+    if (!draft) return;
+    const price = Number(draft.unitPriceCents);
+    const volume = Number(draft.volumeLiters);
+    if (!draft.name.trim() || !Number.isInteger(price) || price < 1 ||
+        !Number.isFinite(volume) || volume <= 0) {
+      setMessage("Enter a valid item name, price in cents, and positive volume.");
+      return;
+    }
+    const updated = await run(() =>
+      apiRequest<MerchantCatalogItem>(
+        settings,
+        `merchant/catalog/${encodeURIComponent(item.id)}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({
+            ...draft,
+            name: draft.name.trim(),
+            unitPriceCents: price,
+            volumeLiters: volume,
+            available: item.available,
+          }),
+        },
+      ),
+    );
+    if (updated) {
+      setMerchantCatalog((current) => current.map((entry) =>
+        entry.id === updated.id ? updated : entry,
+      ));
+      setMessage("Catalog item updated.");
+    }
+  }
+
+  async function toggleMerchantCatalogAvailability(item: MerchantCatalogItem) {
+    const draft = merchantCatalogDrafts[item.id];
+    if (!draft) return;
+    const updated = await run(() =>
+      apiRequest<MerchantCatalogItem>(
+        settings,
+        `merchant/catalog/${encodeURIComponent(item.id)}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({
+            ...draft,
+            unitPriceCents: Number(draft.unitPriceCents),
+            volumeLiters: Number(draft.volumeLiters),
+            available: !item.available,
+          }),
+        },
+      ),
+    );
+    if (updated) {
+      setMerchantCatalog((current) => current.map((entry) =>
+        entry.id === updated.id ? updated : entry,
+      ));
     }
   }
 
@@ -769,37 +914,123 @@ export default function HomeScreen() {
         ) : null}
 
         {role === "Merchant" ? (
-          <View style={styles.card}>
-            <Text style={styles.sectionEyebrow}>MERCHANT / SUBSCRIPTION</Text>
-            <Text style={styles.sectionTitle}>Your storefront, in good standing.</Text>
-            <Text style={styles.helpText}>
-              Manage the flat $199 monthly ShopStops subscription. A successful invoice activates
-              storefront visibility.
-            </Text>
-            <View style={styles.actionRow}>
-              <ActionButton disabled={busy} label="Refresh billing status" onPress={() => void refreshSubscription()} />
-              <ActionButton disabled={busy || !stripeKeyConfigured} label="Save payment method" onPress={() => void setupMerchantPaymentMethod()} secondary />
-            </View>
-            {subscription ? (
-              <View style={styles.statusCard}>
-                <Text style={styles.statusWord}>{subscription.status.replaceAll("_", " ")}</Text>
-                <Text style={styles.resultSub}>
-                  {subscription.storefrontVisible ? "Storefront visible" : "Storefront hidden"}
-                  {" · "}
-                  {subscription.paymentMethodReady ? "Payment method saved" : "Payment method needed"}
-                </Text>
-                {subscription.currentPeriodEnd ? (
-                  <Text style={styles.resultSub}>Next billing period ends {new Date(subscription.currentPeriodEnd).toLocaleDateString()}</Text>
-                ) : null}
+          <>
+            <View style={styles.card}>
+              <Text style={styles.sectionEyebrow}>MERCHANT / CATALOG</Text>
+              <Text style={styles.sectionTitle}>Manage your store items.</Text>
+              <Text style={styles.helpText}>
+                Set prices and delivery volume. Items you mark unavailable disappear from customer catalogs; previous order prices remain unchanged.
+              </Text>
+              <Field
+                label="Your store location ID"
+                onChangeText={setMerchantStoreLocation}
+                value={merchantStoreLocation}
+              />
+              <Field label="Item name" onChangeText={setNewItemName} value={newItemName} />
+              <Field label="Description" onChangeText={setNewItemDescription} value={newItemDescription} />
+              <View style={styles.fieldGrid}>
+                <Field label="Price (cents)" keyboardType="decimal-pad" onChangeText={setNewItemPrice} value={newItemPrice} />
+                <Field label="Volume (liters)" keyboardType="decimal-pad" onChangeText={setNewItemVolume} value={newItemVolume} />
               </View>
-            ) : null}
-            <ActionButton
-              disabled={busy || !subscription?.paymentMethodReady}
-              label="Start $199 monthly subscription"
-              onPress={() => void startSubscription()}
-            />
-            <Text style={styles.tinyNote}>USD · billed monthly through Stripe</Text>
-          </View>
+              <ActionButton
+                disabled={busy}
+                label="Add catalog item"
+                onPress={() => void createMerchantCatalogItem()}
+              />
+              <ActionButton
+                disabled={busy}
+                label="Refresh my catalog"
+                onPress={() => void loadMerchantCatalog()}
+                secondary
+              />
+              {merchantCatalog.length === 0 ? (
+                <Text style={styles.tinyNote}>No catalog items loaded. Refresh to view items for your merchant account.</Text>
+              ) : null}
+              {merchantCatalog.map((item) => {
+                const draft = merchantCatalogDrafts[item.id];
+                if (!draft) return null;
+                return (
+                  <View key={item.id} style={styles.merchantItem}>
+                    <Text style={styles.resultSub}>Store · {item.storeLocationId}</Text>
+                    <Field
+                      label="Item name"
+                      onChangeText={(value) => setMerchantCatalogDrafts((current) => ({
+                        ...current, [item.id]: { ...current[item.id], name: value },
+                      }))}
+                      value={draft.name}
+                    />
+                    <Field
+                      label="Description"
+                      onChangeText={(value) => setMerchantCatalogDrafts((current) => ({
+                        ...current, [item.id]: { ...current[item.id], description: value },
+                      }))}
+                      value={draft.description}
+                    />
+                    <View style={styles.fieldGrid}>
+                      <Field
+                        label="Price (cents)"
+                        keyboardType="decimal-pad"
+                        onChangeText={(value) => setMerchantCatalogDrafts((current) => ({
+                          ...current, [item.id]: { ...current[item.id], unitPriceCents: value },
+                        }))}
+                        value={draft.unitPriceCents}
+                      />
+                      <Field
+                        label="Volume (liters)"
+                        keyboardType="decimal-pad"
+                        onChangeText={(value) => setMerchantCatalogDrafts((current) => ({
+                          ...current, [item.id]: { ...current[item.id], volumeLiters: value },
+                        }))}
+                        value={draft.volumeLiters}
+                      />
+                    </View>
+                    <ActionButton
+                      disabled={busy}
+                      label="Save item changes"
+                      onPress={() => void updateMerchantCatalogItem(item)}
+                    />
+                    <ActionButton
+                      disabled={busy}
+                      label={item.available ? "Hide from customer catalogs" : "Make available to customers"}
+                      onPress={() => void toggleMerchantCatalogAvailability(item)}
+                      secondary
+                    />
+                  </View>
+                );
+              })}
+            </View>
+            <View style={styles.card}>
+              <Text style={styles.sectionEyebrow}>MERCHANT / SUBSCRIPTION</Text>
+              <Text style={styles.sectionTitle}>Your storefront, in good standing.</Text>
+              <Text style={styles.helpText}>
+                Manage the flat $199 monthly ShopStops subscription. A successful invoice activates
+                storefront visibility.
+              </Text>
+              <View style={styles.actionRow}>
+                <ActionButton disabled={busy} label="Refresh billing status" onPress={() => void refreshSubscription()} />
+                <ActionButton disabled={busy || !stripeKeyConfigured} label="Save payment method" onPress={() => void setupMerchantPaymentMethod()} secondary />
+              </View>
+              {subscription ? (
+                <View style={styles.statusCard}>
+                  <Text style={styles.statusWord}>{subscription.status.replaceAll("_", " ")}</Text>
+                  <Text style={styles.resultSub}>
+                    {subscription.storefrontVisible ? "Storefront visible" : "Storefront hidden"}
+                    {" · "}
+                    {subscription.paymentMethodReady ? "Payment method saved" : "Payment method needed"}
+                  </Text>
+                  {subscription.currentPeriodEnd ? (
+                    <Text style={styles.resultSub}>Next billing period ends {new Date(subscription.currentPeriodEnd).toLocaleDateString()}</Text>
+                  ) : null}
+                </View>
+              ) : null}
+              <ActionButton
+                disabled={busy || !subscription?.paymentMethodReady}
+                label="Start $199 monthly subscription"
+                onPress={() => void startSubscription()}
+              />
+              <Text style={styles.tinyNote}>USD · billed monthly through Stripe</Text>
+            </View>
+          </>
         ) : null}
 
         <Text style={styles.footer}>
@@ -915,6 +1146,7 @@ const styles = StyleSheet.create({
   resultTitle: { color: "#213b34", fontWeight: "800", fontSize: 13 },
   resultSub: { color: "#73817b", fontSize: 11, marginTop: 4 },
   catalogRow: { flexDirection: "row", alignItems: "center", paddingVertical: 12, borderTopWidth: 1, borderTopColor: "#edf0ed", marginTop: 10 },
+  merchantItem: { backgroundColor: "#f8f9f7", borderRadius: 13, padding: 14, marginTop: 14 },
   quantityControl: { flexDirection: "row", alignItems: "center", gap: 10, marginLeft: 10 },
   quantityButton: { width: 30, height: 30, borderRadius: 15, backgroundColor: "#e9f0ec", alignItems: "center", justifyContent: "center" },
   quantityButtonText: { color: "#24443b", fontSize: 17, fontWeight: "800" },

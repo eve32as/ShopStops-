@@ -10,6 +10,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -38,6 +39,13 @@ type Repository interface {
 	PingContext(context.Context) error
 	NearbyMerchants(context.Context, string, int) ([]NearbyMerchant, error)
 	CatalogItems(context.Context, string) ([]CatalogItem, error)
+	MerchantCatalog(context.Context, string) ([]MerchantCatalogItem, error)
+	CreateMerchantCatalogItem(
+		context.Context, string, merchantCatalogItemRequest, string, string,
+	) (MerchantCatalogItem, error)
+	UpdateMerchantCatalogItem(
+		context.Context, string, string, merchantCatalogItemUpdateRequest,
+	) (MerchantCatalogItem, error)
 	CreateCustomerOrder(
 		context.Context, customerOrderRequest, string, string, string,
 	) (customerOrderResponse, error)
@@ -64,6 +72,32 @@ type CatalogItem struct {
 	Description    string `json:"description"`
 	UnitPriceCents int    `json:"unitPriceCents"`
 	VolumeLiters   string `json:"volumeLiters"`
+}
+
+type MerchantCatalogItem struct {
+	ID              string `json:"id"`
+	StoreLocationID string `json:"storeLocationId"`
+	Name            string `json:"name"`
+	Description     string `json:"description"`
+	UnitPriceCents  int    `json:"unitPriceCents"`
+	VolumeLiters    string `json:"volumeLiters"`
+	Available       bool   `json:"available"`
+}
+
+type merchantCatalogItemRequest struct {
+	StoreLocationID string  `json:"storeLocationId"`
+	Name            string  `json:"name"`
+	Description     string  `json:"description"`
+	UnitPriceCents  int     `json:"unitPriceCents"`
+	VolumeLiters    float64 `json:"volumeLiters"`
+}
+
+type merchantCatalogItemUpdateRequest struct {
+	Name           string  `json:"name"`
+	Description    string  `json:"description"`
+	UnitPriceCents int     `json:"unitPriceCents"`
+	VolumeLiters   float64 `json:"volumeLiters"`
+	Available      bool    `json:"available"`
 }
 
 type customerOrderRequest struct {
@@ -207,6 +241,9 @@ func (s *Server) handler() http.Handler {
 	mux.Handle("GET /stores/{storeLocationId}/nearby-merchants", s.authorized(http.HandlerFunc(s.nearbyMerchants)))
 	mux.Handle("GET /stores/{storeLocationId}/catalog", s.authorized(http.HandlerFunc(s.catalogItems)))
 	mux.Handle("POST /orders", s.authorized(http.HandlerFunc(s.createCustomerOrder)))
+	mux.Handle("GET /merchant/catalog", s.authorized(http.HandlerFunc(s.merchantCatalog)))
+	mux.Handle("POST /merchant/catalog", s.authorized(http.HandlerFunc(s.createMerchantCatalogItem)))
+	mux.Handle("PATCH /merchant/catalog/{itemId}", s.authorized(http.HandlerFunc(s.updateMerchantCatalogItem)))
 	mux.Handle("POST /dispatch/bundles", s.authorized(http.HandlerFunc(s.createBundle)))
 	mux.Handle("GET /driver/routes/{routeId}", s.authorized(http.HandlerFunc(s.getDriverRoute)))
 	mux.Handle("POST /driver/routes/{routeId}/location", s.authorized(http.HandlerFunc(s.recordDriverLocation)))
@@ -295,6 +332,125 @@ func (s *Server) catalogItems(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, http.StatusOK, items)
 	}
+}
+
+func (s *Server) merchantCatalog(w http.ResponseWriter, r *http.Request) {
+	merchantID, ok := s.authorizedActorRole(w, r, "merchant")
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	items, err := s.repo.MerchantCatalog(ctx, merchantID)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "merchant not found")
+		return
+	}
+	if err != nil {
+		s.databaseError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) createMerchantCatalogItem(w http.ResponseWriter, r *http.Request) {
+	merchantID, ok := s.authorizedActorRole(w, r, "merchant")
+	if !ok {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 8*1024)
+	var request merchantCatalogItemRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "request body must contain one JSON object")
+		return
+	}
+	if !isUUID(request.StoreLocationID) || !validCatalogItemFields(
+		request.Name, request.Description, request.UnitPriceCents, request.VolumeLiters,
+	) {
+		writeError(w, http.StatusBadRequest, "invalid catalog item")
+		return
+	}
+	idempotencyKey := r.Header.Get("Idempotency-Key")
+	if len(idempotencyKey) == 0 || len(idempotencyKey) > 200 ||
+		strings.TrimSpace(idempotencyKey) != idempotencyKey {
+		writeError(w, http.StatusBadRequest, "valid Idempotency-Key header is required")
+		return
+	}
+	canonicalRequest, err := json.Marshal(request)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid catalog item")
+		return
+	}
+	fingerprintBytes := sha256.Sum256(canonicalRequest)
+	fingerprint := hex.EncodeToString(fingerprintBytes[:])
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	item, err := s.repo.CreateMerchantCatalogItem(
+		ctx, merchantID, request, idempotencyKey, fingerprint,
+	)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		writeError(w, http.StatusNotFound, "merchant or owned store location not found")
+	case errors.Is(err, ErrConflict):
+		writeError(w, http.StatusConflict, "catalog idempotency key conflicts with another request")
+	case err != nil:
+		s.databaseError(w, err)
+	default:
+		writeJSON(w, http.StatusCreated, item)
+	}
+}
+
+func (s *Server) updateMerchantCatalogItem(w http.ResponseWriter, r *http.Request) {
+	merchantID, ok := s.authorizedActorRole(w, r, "merchant")
+	if !ok {
+		return
+	}
+	itemID := r.PathValue("itemId")
+	if !isUUID(itemID) {
+		writeError(w, http.StatusBadRequest, "invalid catalog item ID")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 8*1024)
+	var request merchantCatalogItemUpdateRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "request body must contain one JSON object")
+		return
+	}
+	if !validCatalogItemFields(
+		request.Name, request.Description, request.UnitPriceCents, request.VolumeLiters,
+	) {
+		writeError(w, http.StatusBadRequest, "invalid catalog item")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	item, err := s.repo.UpdateMerchantCatalogItem(ctx, merchantID, itemID, request)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		writeError(w, http.StatusNotFound, "catalog item not found")
+	case err != nil:
+		s.databaseError(w, err)
+	default:
+		writeJSON(w, http.StatusOK, item)
+	}
+}
+
+func validCatalogItemFields(name, description string, price int, volume float64) bool {
+	return strings.TrimSpace(name) != "" && len(strings.TrimSpace(name)) <= 200 &&
+		len(description) <= 1000 && price >= 1 && price <= 10_000_000 &&
+		volume > 0 && volume <= 100_000 && !math.IsInf(volume, 0) && !math.IsNaN(volume)
 }
 
 func (s *Server) createCustomerOrder(w http.ResponseWriter, r *http.Request) {
@@ -685,6 +841,114 @@ func (p *PostgresRepository) CatalogItems(
 		return nil, err
 	}
 	return items, nil
+}
+
+func (p *PostgresRepository) MerchantCatalog(
+	ctx context.Context, merchantID string,
+) ([]MerchantCatalogItem, error) {
+	var exists bool
+	if err := p.db.QueryRowContext(ctx, `
+		SELECT EXISTS (SELECT 1 FROM merchants WHERE id = $1 AND active)`,
+		merchantID,
+	).Scan(&exists); err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, ErrNotFound
+	}
+	rows, err := p.db.QueryContext(ctx, `
+		SELECT i.id, i.store_location_id, i.name, i.description,
+		       i.unit_price_cents, i.volume_liters::text, i.available
+		FROM catalog_items i
+		JOIN store_locations s ON s.id = i.store_location_id
+		WHERE s.merchant_id = $1
+		ORDER BY s.name, i.name, i.id
+		LIMIT 500`, merchantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]MerchantCatalogItem, 0)
+	for rows.Next() {
+		var item MerchantCatalogItem
+		if err := rows.Scan(
+			&item.ID, &item.StoreLocationID, &item.Name, &item.Description,
+			&item.UnitPriceCents, &item.VolumeLiters, &item.Available,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+func (p *PostgresRepository) CreateMerchantCatalogItem(
+	ctx context.Context, merchantID string, request merchantCatalogItemRequest,
+	idempotencyKey, fingerprint string,
+) (MerchantCatalogItem, error) {
+	var itemID string
+	err := p.db.QueryRowContext(ctx, `
+		SELECT create_merchant_catalog_item($1, $2, $3, $4, $5, $6, $7, $8)`,
+		merchantID, request.StoreLocationID, request.Name, request.Description,
+		request.UnitPriceCents, request.VolumeLiters, idempotencyKey, fingerprint,
+	).Scan(&itemID)
+	if err != nil {
+		if isCatalogNotFound(err) {
+			return MerchantCatalogItem{}, ErrNotFound
+		}
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "P0001" {
+			return MerchantCatalogItem{}, ErrConflict
+		}
+		return MerchantCatalogItem{}, err
+	}
+	return p.merchantCatalogItem(ctx, merchantID, itemID)
+}
+
+func (p *PostgresRepository) UpdateMerchantCatalogItem(
+	ctx context.Context, merchantID, itemID string, request merchantCatalogItemUpdateRequest,
+) (MerchantCatalogItem, error) {
+	_, err := p.db.ExecContext(ctx, `
+		SELECT update_merchant_catalog_item($1, $2, $3, $4, $5, $6, $7)`,
+		merchantID, itemID, request.Name, request.Description,
+		request.UnitPriceCents, request.VolumeLiters, request.Available,
+	)
+	if err != nil {
+		if isCatalogNotFound(err) {
+			return MerchantCatalogItem{}, ErrNotFound
+		}
+		return MerchantCatalogItem{}, err
+	}
+	return p.merchantCatalogItem(ctx, merchantID, itemID)
+}
+
+func (p *PostgresRepository) merchantCatalogItem(
+	ctx context.Context, merchantID, itemID string,
+) (MerchantCatalogItem, error) {
+	var item MerchantCatalogItem
+	err := p.db.QueryRowContext(ctx, `
+		SELECT i.id, i.store_location_id, i.name, i.description,
+		       i.unit_price_cents, i.volume_liters::text, i.available
+		FROM catalog_items i
+		JOIN store_locations s ON s.id = i.store_location_id
+		WHERE i.id = $1 AND s.merchant_id = $2`,
+		itemID, merchantID,
+	).Scan(
+		&item.ID, &item.StoreLocationID, &item.Name, &item.Description,
+		&item.UnitPriceCents, &item.VolumeLiters, &item.Available,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return MerchantCatalogItem{}, ErrNotFound
+	}
+	return item, err
+}
+
+func isCatalogNotFound(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "P0002"
 }
 
 func (p *PostgresRepository) CreateCustomerOrder(

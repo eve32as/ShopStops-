@@ -115,6 +115,88 @@ paths:
           description: Storefront, catalog item, or delivery zone unavailable
         '409':
           description: Idempotency key conflicts or item is no longer available
+  /merchant/catalog:
+    get:
+      operationId: getMerchantCatalog
+      summary: List catalog items belonging to the authenticated merchant
+      description: Requires the trusted gateway to inject the authenticated merchant UUID and merchant role. Includes unavailable items for editing.
+      responses:
+        '200':
+          description: Items across the merchant's store locations
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MerchantCatalogItem'
+        '403':
+          description: Merchant role required
+        '404':
+          description: Merchant not found
+    post:
+      operationId: createMerchantCatalogItem
+      summary: Add a catalog item to one of the merchant's store locations
+      description: The database verifies store ownership. Price and volume are validated and used for future orders only. Requires an idempotency key.
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateMerchantCatalogItem'
+      responses:
+        '201':
+          description: Item created or returned after an identical retry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MerchantCatalogItem'
+        '400':
+          description: Invalid catalog item or idempotency key
+        '403':
+          description: Merchant role required
+        '404':
+          description: Merchant or owned store location not found
+        '409':
+          description: Idempotency key conflicts with a different create request
+  /merchant/catalog/{itemId}:
+    patch:
+      operationId: updateMerchantCatalogItem
+      summary: Update or hide one of the authenticated merchant's catalog items
+      description: The database verifies item ownership. Price and name changes do not alter snapshots on existing orders.
+      parameters:
+        - in: path
+          name: itemId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateMerchantCatalogItem'
+      responses:
+        '200':
+          description: Catalog item updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MerchantCatalogItem'
+        '400':
+          description: Invalid catalog item
+        '403':
+          description: Merchant role required
+        '404':
+          description: Catalog item not found for merchant
   /checkouts:
     post:
       operationId: createUnifiedCheckout
@@ -521,6 +603,62 @@ components:
         volumeLiters:
           type: string
           pattern: '^[0-9]+(\.[0-9]{1,2})?$'
+    MerchantCatalogItem:
+      allOf:
+        - $ref: '#/components/schemas/CatalogItem'
+        - type: object
+          required: [storeLocationId, available]
+          properties:
+            storeLocationId:
+              type: string
+              format: uuid
+            available:
+              type: boolean
+    CreateMerchantCatalogItem:
+      type: object
+      additionalProperties: false
+      required: [storeLocationId, name, description, unitPriceCents, volumeLiters]
+      properties:
+        storeLocationId:
+          type: string
+          format: uuid
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        description:
+          type: string
+          maxLength: 1000
+        unitPriceCents:
+          type: integer
+          minimum: 1
+          maximum: 10000000
+        volumeLiters:
+          type: number
+          exclusiveMinimum: 0
+          maximum: 100000
+    UpdateMerchantCatalogItem:
+      type: object
+      additionalProperties: false
+      required: [name, description, unitPriceCents, volumeLiters, available]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        description:
+          type: string
+          maxLength: 1000
+        unitPriceCents:
+          type: integer
+          minimum: 1
+          maximum: 10000000
+        volumeLiters:
+          type: number
+          exclusiveMinimum: 0
+          maximum: 100000
+        available:
+          type: boolean
     CreateCustomerOrder:
       type: object
       additionalProperties: false

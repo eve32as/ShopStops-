@@ -19,6 +19,7 @@ SELECT id AS anchor_merchant_id FROM merchants
 WHERE name = 'Anchor Restaurant' \gset
 SELECT id AS partner_merchant_id FROM merchants
 WHERE name = 'Adjacent Market' \gset
+SELECT set_config('shopstops.test_partner_merchant_id', :'partner_merchant_id', true);
 SELECT id AS third_merchant_id FROM merchants
 WHERE name = 'Unsubscribed Shop' \gset
 SELECT id AS cap_merchant_id FROM merchants
@@ -478,6 +479,59 @@ SELECT id AS route_stop_2 FROM unified_route_stops
 WHERE route_id = :'route_id' AND sequence = 2 \gset
 SELECT id AS route_stop_3 FROM unified_route_stops
 WHERE route_id = :'route_id' AND sequence = 3 \gset
+SELECT create_merchant_catalog_item(
+    :'partner_merchant_id', :'partner_store_id',
+    'Merchant-created item', 'Created through merchant workflow', 375, 0.75,
+    'merchant-catalog-item-1', 'merchant-catalog-fingerprint-1'
+) AS merchant_catalog_item_id \gset
+SELECT set_config('shopstops.test_merchant_catalog_item_id', :'merchant_catalog_item_id', true);
+SELECT create_merchant_catalog_item(
+    :'partner_merchant_id', :'partner_store_id',
+    'Merchant-created item', 'Created through merchant workflow', 375, 0.75,
+    'merchant-catalog-item-1', 'merchant-catalog-fingerprint-1'
+) AS merchant_catalog_item_replay_id \gset
+SELECT set_config('shopstops.test_merchant_catalog_item_replay_id', :'merchant_catalog_item_replay_id', true);
+DO $$
+DECLARE
+    v_item_id uuid := current_setting('shopstops.test_merchant_catalog_item_id')::uuid;
+    v_message text;
+BEGIN
+    IF v_item_id <> current_setting('shopstops.test_merchant_catalog_item_replay_id')::uuid THEN
+        RAISE EXCEPTION 'merchant catalog creation retry created a duplicate item';
+    END IF;
+    BEGIN
+        PERFORM create_merchant_catalog_item(
+            current_setting('shopstops.test_partner_merchant_id')::uuid,
+            current_setting('shopstops.test_anchor_store_id')::uuid,
+            'Not owned', '', 100, 1, 'merchant-catalog-unowned', 'fingerprint'
+        );
+        RAISE EXCEPTION 'merchant created catalog item for another merchant store';
+    EXCEPTION WHEN OTHERS THEN
+        GET STACKED DIAGNOSTICS v_message = MESSAGE_TEXT;
+        IF v_message NOT LIKE '%does not belong%' THEN
+            RAISE;
+        END IF;
+    END;
+    IF NOT update_merchant_catalog_item(
+        current_setting('shopstops.test_partner_merchant_id')::uuid,
+        v_item_id, 'Updated item', 'Updated description', 400, 0.80, false
+    ) OR (SELECT available FROM catalog_items WHERE id = v_item_id) THEN
+        RAISE EXCEPTION 'merchant catalog update did not persist availability';
+    END IF;
+    BEGIN
+        PERFORM update_merchant_catalog_item(
+            current_setting('shopstops.test_anchor_merchant_id')::uuid,
+            v_item_id, 'Hijacked item', '', 1, 1, true
+        );
+        RAISE EXCEPTION 'different merchant updated catalog item';
+    EXCEPTION WHEN OTHERS THEN
+        GET STACKED DIAGNOSTICS v_message = MESSAGE_TEXT;
+        IF v_message NOT LIKE '%not found for merchant%' THEN
+            RAISE;
+        END IF;
+    END;
+END;
+$$;
 SELECT set_config('shopstops.test_route_stop_1', :'route_stop_1', true);
 SELECT set_config('shopstops.test_route_stop_2', :'route_stop_2', true);
 SELECT set_config('shopstops.test_route_stop_3', :'route_stop_3', true);
