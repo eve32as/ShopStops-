@@ -149,11 +149,19 @@ Order state updates append transactional outbox events. A WebSocket/push
 gateway should consume these events and target a <1.5 second propagation SLO;
 the database outbox alone does not deliver real-time client updates.
 
-The API contract now includes nearby merchant discovery, checkout/payment,
-driver routes/GPS, merchant subscription status, and Stripe webhooks. These are
-contracts, not running endpoints or mobile/web clients. Four separate consumer,
-driver, merchant, and admin applications plus identity, catalog, payment,
-routing, and real-time service implementations remain to be built.
+`cmd/shopstops-api` is the initial runnable Go service. It implements health,
+nearby subscribed-merchant discovery, and proximity dispatch backed by the
+PostgreSQL functions. It requires `DATABASE_URL` and a 32-character
+`SHOPSTOPS_INTERNAL_API_TOKEN`; the shared token is an internal service
+credential, not end-user authentication. Keep the API behind an identity-aware
+gateway that authenticates client sessions and enforces roles, and do not ship
+the internal token to applications.
+
+The OpenAPI contract additionally describes checkout/payment, driver routes/GPS,
+merchant subscription status, and Stripe webhooks, but those routes are not yet
+implemented. Four separate consumer, driver, merchant, and admin applications,
+identity, checkout/payment, routing, and real-time service integrations remain
+to be built.
 
 For rollout, configure the initial Union Market corridor as the only enabled
 zone and cap onboarding operationally at 15 merchants and 30 screened drivers.

@@ -2,12 +2,26 @@ openapi: 3.1.0
 info:
   title: ShopStops Delivery API
   version: 1.0.0
-  description: Versioned API contract for dispatch and driver delivery workflows.
+  description: >
+    Versioned public contract. The initial Go service implements health,
+    nearby-merchant discovery, and dispatch only. Put it behind an authenticated
+    API gateway; its shared bearer token is for internal service traffic only.
 servers:
   - url: https://api.shopstops.example/v1
+    description: Public gateway; strips /v1 before forwarding to the API service
 security:
   - bearerAuth: []
 paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      summary: Check API and database readiness
+      security: []
+      responses:
+        '200':
+          description: API and database are ready
+        '503':
+          description: Database unavailable
   /stores/{storeLocationId}/nearby-merchants:
     get:
       operationId: findNearbySubscribedMerchants

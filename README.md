@@ -19,6 +19,23 @@ specified in [`api/openapi.yaml`](api/openapi.yaml).
 Database integration fixtures are in `db/tests/`; apply both migrations before
 running the matching SQL test files.
 
-This repository currently contains the database/backend foundation only. Native
-iOS and Android apps, the admin web app, and deployable service/API processes
-remain follow-on implementation work.
+## Run the API
+
+After applying both migrations, set `DATABASE_URL` and a private internal API
+token (at least 32 characters), then run:
+
+```sh
+export DATABASE_URL='postgres://<user>:<password>@localhost:5432/shopstops?sslmode=disable'
+export SHOPSTOPS_INTERNAL_API_TOKEN="$(openssl rand -hex 32)"
+go run ./cmd/shopstops-api
+```
+
+The service listens on `:8080` by default; set `HTTP_ADDR` to override it. It
+currently implements health checks, nearby subscribed-merchant discovery, and
+atomic dispatch. Protected endpoints use a shared internal bearer token and
+must be placed behind a gateway that authenticates users and enforces roles.
+Do not distribute this internal token to client applications.
+
+Native iOS and Android apps, the admin web app, the remaining contract
+endpoints, and live Stripe, routing, and WebSocket integrations remain
+follow-on work.
