@@ -24,11 +24,12 @@ var (
 )
 
 type Server struct {
-	repo          Repository
-	token         string
-	log           *slog.Logger
-	payments      PaymentGateway
-	webhookSecret string
+	repo            Repository
+	token           string
+	log             *slog.Logger
+	payments        PaymentGateway
+	webhookSecret   string
+	merchantPriceID string
 }
 
 type Repository interface {
@@ -140,11 +141,14 @@ func New(repo Repository, token string, logger *slog.Logger) http.Handler {
 
 func NewWithPayments(
 	repo Repository, token string, logger *slog.Logger,
-	payments PaymentGateway, webhookSecret string,
+	payments PaymentGateway, webhookSecret string, merchantPriceIDs ...string,
 ) http.Handler {
 	s := &Server{
 		repo: repo, token: token, log: logger,
 		payments: payments, webhookSecret: webhookSecret,
+	}
+	if len(merchantPriceIDs) > 0 {
+		s.merchantPriceID = merchantPriceIDs[0]
 	}
 	return s.handler()
 }
@@ -158,6 +162,10 @@ func (s *Server) handler() http.Handler {
 	mux.Handle("POST /driver/routes/{routeId}/location", s.authorized(http.HandlerFunc(s.recordDriverLocation)))
 	mux.Handle("POST /checkouts", s.authorized(http.HandlerFunc(s.createCheckout)))
 	mux.Handle("POST /checkouts/{checkoutId}/payment", s.authorized(http.HandlerFunc(s.createCheckoutPayment)))
+	mux.Handle("GET /merchant/subscription", s.authorized(http.HandlerFunc(s.getMerchantSubscription)))
+	mux.Handle("POST /merchant/subscription/setup-intent", s.authorized(http.HandlerFunc(s.createMerchantSetupIntent)))
+	mux.Handle("POST /merchant/subscription", s.authorized(http.HandlerFunc(s.createMerchantSubscription)))
+	mux.Handle("POST /admin/checkouts/{checkoutId}/refund", s.authorized(http.HandlerFunc(s.refundCheckout)))
 	mux.HandleFunc("POST /webhooks/stripe", s.stripeWebhook)
 	return mux
 }

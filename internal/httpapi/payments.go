@@ -33,14 +33,26 @@ type PaymentIntent struct {
 }
 
 type StripePaymentEvent struct {
-	ID              string
-	Type            string
-	CheckoutID      string
-	PaymentIntentID string
-	AmountCents     int64
-	Currency        string
-	PaymentStatus   string
-	ChargeID        string
+	ID                 string
+	Type               string
+	CheckoutID         string
+	PaymentIntentID    string
+	AmountCents        int64
+	Currency           string
+	PaymentStatus      string
+	ChargeID           string
+	MerchantID         string
+	CustomerID         string
+	SubscriptionID     string
+	SubscriptionStatus string
+	PeriodEnd          time.Time
+	PaymentMethodID    string
+	RefundID           string
+	RefundStatus       string
+	DisputeID          string
+	DisputeStatus      string
+	DisputeReason      string
+	EvidenceDueBy      time.Time
 }
 
 type ConnectTransfer struct {
@@ -117,6 +129,23 @@ func (g *StripeGateway) VerifyWebhook(
 		return StripePaymentEvent{}, nil, err
 	}
 	result := StripePaymentEvent{ID: event.ID, Type: string(event.Type)}
+	if isLifecycleStripeEvent(result.Type) {
+		result, err = parseStripeLifecycleEvent(result, event.Data.Raw)
+		if err != nil {
+			return StripePaymentEvent{}, nil, err
+		}
+		summary, err := json.Marshal(map[string]any{
+			"eventId": result.ID, "type": result.Type, "merchantId": result.MerchantID,
+			"customerId": result.CustomerID, "subscriptionId": result.SubscriptionID,
+			"subscriptionStatus": result.SubscriptionStatus,
+			"periodEnd":          result.PeriodEnd, "paymentMethodId": result.PaymentMethodID,
+			"checkoutId": result.CheckoutID, "paymentIntentId": result.PaymentIntentID,
+			"refundId": result.RefundID, "refundStatus": result.RefundStatus,
+			"disputeId": result.DisputeID, "disputeStatus": result.DisputeStatus,
+			"disputeReason": result.DisputeReason,
+		})
+		return result, summary, err
+	}
 	if result.Type != "payment_intent.succeeded" &&
 		result.Type != "payment_intent.processing" &&
 		result.Type != "payment_intent.payment_failed" {
@@ -154,6 +183,135 @@ func (g *StripeGateway) VerifyWebhook(
 		return StripePaymentEvent{}, nil, err
 	}
 	return result, summary, nil
+}
+
+func isLifecycleStripeEvent(eventType string) bool {
+	switch eventType {
+	case "customer.subscription.created", "customer.subscription.updated",
+		"customer.subscription.deleted", "invoice.payment_succeeded",
+		"invoice.payment_failed", "setup_intent.succeeded",
+		"refund.created", "refund.updated", "charge.dispute.created",
+		"charge.dispute.updated", "charge.dispute.closed":
+		return true
+	default:
+		return false
+	}
+}
+
+func parseStripeLifecycleEvent(
+	event StripePaymentEvent, raw json.RawMessage,
+) (StripePaymentEvent, error) {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return StripePaymentEvent{}, err
+	}
+	readString := func(key string) string {
+		var value string
+		_ = json.Unmarshal(object[key], &value)
+		return value
+	}
+	readID := func(key string) string {
+		return stripeObjectID(object[key])
+	}
+	readAmount := func(key string) int64 {
+		var value int64
+		_ = json.Unmarshal(object[key], &value)
+		return value
+	}
+	event.CustomerID = readID("customer")
+	event.PaymentIntentID = readID("payment_intent")
+	event.Currency = strings.ToLower(readString("currency"))
+	metadata := map[string]string{}
+	_ = json.Unmarshal(object["metadata"], &metadata)
+	event.MerchantID = metadata["shopstops_merchant_id"]
+	event.CheckoutID = metadata["shopstops_checkout_id"]
+	switch event.Type {
+	case "customer.subscription.created", "customer.subscription.updated",
+		"customer.subscription.deleted":
+		event.SubscriptionID = readString("id")
+		event.SubscriptionStatus = readString("status")
+		event.PeriodEnd = stripePeriodEnd(object)
+	case "invoice.payment_succeeded", "invoice.payment_failed":
+		event.SubscriptionID = stripeInvoiceSubscriptionID(object)
+		event.PeriodEnd = stripeInvoicePeriodEnd(object)
+		if event.Type == "invoice.payment_failed" {
+			event.PaymentStatus = "failed"
+		} else {
+			event.PaymentStatus = "succeeded"
+		}
+	case "setup_intent.succeeded":
+		event.PaymentMethodID = readID("payment_method")
+	case "refund.created", "refund.updated":
+		event.RefundID = readString("id")
+		event.RefundStatus = readString("status")
+		event.AmountCents = readAmount("amount")
+	case "charge.dispute.created", "charge.dispute.updated", "charge.dispute.closed":
+		event.DisputeID = readString("id")
+		event.DisputeStatus = readString("status")
+		event.DisputeReason = readString("reason")
+		event.AmountCents = readAmount("amount")
+		var dueBy int64
+		var evidence map[string]json.RawMessage
+		_ = json.Unmarshal(object["evidence_details"], &evidence)
+		_ = json.Unmarshal(evidence["due_by"], &dueBy)
+		if dueBy > 0 {
+			event.EvidenceDueBy = time.Unix(dueBy, 0).UTC()
+		}
+	}
+	return event, nil
+}
+
+func stripeObjectID(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var value string
+	if json.Unmarshal(raw, &value) == nil {
+		return value
+	}
+	var object struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal(raw, &object)
+	return object.ID
+}
+
+func stripePeriodEnd(object map[string]json.RawMessage) time.Time {
+	var items struct {
+		Data []struct {
+			CurrentPeriodEnd int64 `json:"current_period_end"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(object["items"], &items)
+	if len(items.Data) == 0 || items.Data[0].CurrentPeriodEnd <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(items.Data[0].CurrentPeriodEnd, 0).UTC()
+}
+
+func stripeInvoiceSubscriptionID(object map[string]json.RawMessage) string {
+	var parent struct {
+		SubscriptionDetails struct {
+			Subscription json.RawMessage `json:"subscription"`
+		} `json:"subscription_details"`
+	}
+	_ = json.Unmarshal(object["parent"], &parent)
+	return stripeObjectID(parent.SubscriptionDetails.Subscription)
+}
+
+func stripeInvoicePeriodEnd(object map[string]json.RawMessage) time.Time {
+	var lines struct {
+		Data []struct {
+			Period struct {
+				End int64 `json:"end"`
+			} `json:"period"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(object["lines"], &lines)
+	if len(lines.Data) == 0 || lines.Data[0].Period.End <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(lines.Data[0].Period.End, 0).UTC()
 }
 
 func (g *StripeGateway) ProcessingFee(ctx context.Context, paymentIntentID string) (int64, error) {
@@ -299,6 +457,10 @@ func (s *Server) stripeWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
 	defer cancel()
+	if isLifecycleStripeEvent(event.Type) {
+		s.handleStripeLifecycleWebhook(w, ctx, event, summary)
+		return
+	}
 	var processingFee int64
 	if event.Type == "payment_intent.succeeded" {
 		processingFee, err = s.payments.ProcessingFee(ctx, event.PaymentIntentID)
@@ -355,6 +517,102 @@ func (s *Server) stripeWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "processed"})
+}
+
+func (s *Server) handleStripeLifecycleWebhook(
+	w http.ResponseWriter, ctx context.Context, event StripePaymentEvent,
+	summary json.RawMessage,
+) {
+	repository, repoOK := s.repo.(LifecycleRepository)
+	gateway, gatewayOK := s.payments.(StripeLifecycleGateway)
+	if !repoOK || !gatewayOK {
+		writeError(w, http.StatusServiceUnavailable, "Stripe lifecycle processing is unavailable")
+		return
+	}
+	switch event.Type {
+	case "customer.subscription.created", "customer.subscription.updated",
+		"customer.subscription.deleted", "invoice.payment_succeeded",
+		"invoice.payment_failed", "setup_intent.succeeded":
+		if event.Type == "setup_intent.succeeded" {
+			if event.CustomerID == "" || event.PaymentMethodID == "" {
+				writeError(w, http.StatusBadRequest, "Stripe setup event is missing payment method details")
+				return
+			}
+			if err := gateway.SetMerchantDefaultPaymentMethod(
+				ctx, event.CustomerID, event.PaymentMethodID,
+			); err != nil {
+				s.log.Error("merchant default payment method could not be saved")
+				writeError(w, http.StatusServiceUnavailable, "billing event will be retried")
+				return
+			}
+		}
+		if err := repository.ApplyMerchantBillingEvent(ctx, event, summary); err != nil {
+			s.log.Error("merchant billing event could not be recorded")
+			writeError(w, http.StatusServiceUnavailable, "billing event will be retried")
+			return
+		}
+	case "refund.created", "refund.updated":
+		if event.RefundID == "" {
+			writeError(w, http.StatusBadRequest, "Stripe refund event is missing its ID")
+			return
+		}
+		if err := repository.ApplyCheckoutRefundEvent(ctx, event, summary); err != nil {
+			s.log.Error("checkout refund event could not be recorded")
+			writeError(w, http.StatusServiceUnavailable, "refund event will be retried")
+			return
+		}
+		if err := s.processPendingTransferReversals(
+			ctx, repository, gateway, event.RefundID, "",
+		); err != nil {
+			s.log.Error("refund transfer reversal requires reconciliation")
+			writeError(w, http.StatusServiceUnavailable, "refund event will be retried")
+			return
+		}
+	case "charge.dispute.created", "charge.dispute.updated", "charge.dispute.closed":
+		if event.DisputeID == "" || event.PaymentIntentID == "" {
+			writeError(w, http.StatusBadRequest, "Stripe dispute event is missing payment details")
+			return
+		}
+		if err := repository.ApplyStripeDisputeEvent(ctx, event, summary); err != nil {
+			s.log.Error("Stripe dispute event could not be recorded")
+			writeError(w, http.StatusServiceUnavailable, "dispute event will be retried")
+			return
+		}
+		if err := s.processPendingTransferReversals(
+			ctx, repository, gateway, "", event.DisputeID,
+		); err != nil {
+			s.log.Error("dispute transfer reversal requires reconciliation")
+			writeError(w, http.StatusServiceUnavailable, "dispute event will be retried")
+			return
+		}
+	default:
+		writeError(w, http.StatusBadRequest, "unsupported Stripe lifecycle event")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "processed"})
+}
+
+func (s *Server) processPendingTransferReversals(
+	ctx context.Context, repository LifecycleRepository,
+	gateway StripeLifecycleGateway, refundID, disputeID string,
+) error {
+	reversals, err := repository.PendingTransferReversals(ctx, refundID, disputeID)
+	if err != nil {
+		return err
+	}
+	for _, reversal := range reversals {
+		if err := repository.BeginTransferReversalAttempt(ctx, reversal.ID); err != nil {
+			return err
+		}
+		reversalID, err := gateway.CreateTransferReversal(ctx, reversal)
+		if err != nil {
+			return err
+		}
+		if err := repository.RecordTransferReversal(ctx, reversal.ID, reversalID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (p *PostgresRepository) CheckoutForPayment(

@@ -37,8 +37,13 @@ func main() {
 	}
 	stripeSecretKey := os.Getenv("STRIPE_SECRET_KEY")
 	stripeWebhookSecret := os.Getenv("STRIPE_WEBHOOK_SECRET")
+	stripeMerchantPriceID := os.Getenv("STRIPE_MERCHANT_MONTHLY_PRICE_ID")
 	if (stripeSecretKey == "") != (stripeWebhookSecret == "") {
 		logger.Error("STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET must both be configured")
+		os.Exit(1)
+	}
+	if stripeMerchantPriceID != "" && stripeSecretKey == "" {
+		logger.Error("STRIPE_MERCHANT_MONTHLY_PRICE_ID requires Stripe credentials")
 		os.Exit(1)
 	}
 
@@ -68,6 +73,7 @@ func main() {
 		handler = httpapi.NewWithPayments(
 			repository, apiToken, logger,
 			httpapi.NewStripeGateway(stripeSecretKey), stripeWebhookSecret,
+			stripeMerchantPriceID,
 		)
 	}
 
