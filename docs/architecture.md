@@ -91,8 +91,10 @@ APIs expose only that customer's orders and tracking data.
 
 The initial dispatch and driver HTTP request/response shapes are specified in
 `api/openapi.yaml`; the Go API implements proximity dispatch, assigned route
-reads, and driver GPS ingestion. The customer, merchant, and admin applications
-and their remaining workflows are not part of this repository.
+reads, and driver GPS ingestion. Initial API-backed iOS/Android shopper, driver,
+and merchant billing screens are in `apps/mobile`; the current admin refund
+workflow is in `apps/admin`. Catalog/order creation, driver stop-progress, and
+the broader merchant/admin workflows are not implemented.
 
 The database emits `delivery.bundle.activated` with `bundleId`, `orderIds`, and
 `stopCount` in the outbox. Suggested follow-on events are
