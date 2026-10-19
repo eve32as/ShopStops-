@@ -189,6 +189,7 @@ $$;
 SELECT set_config('shopstops.test_checkout_id', :'checkout_id', true);
 SELECT set_config('shopstops.test_anchor_order_id', :'anchor_order_id', true);
 SELECT set_config('shopstops.test_anchor_store_id', :'anchor_store_id', true);
+SELECT set_config('shopstops.test_anchor_merchant_id', :'anchor_merchant_id', true);
 SELECT set_config('shopstops.test_partner_merchant_id', :'partner_merchant_id', true);
 SELECT set_config('shopstops.test_third_merchant_id', :'third_merchant_id', true);
 SELECT set_config('shopstops.test_third_store_id', :'cap_store_id', true);
@@ -298,6 +299,14 @@ BEGIN
        OR (SELECT sum(transfer_amount_cents) FROM connect_transfers
            WHERE checkout_id = current_setting('shopstops.test_checkout_id')::uuid) <> 2400 THEN
         RAISE EXCEPTION 'successful payment should create idempotent merchant transfers with allocated fees';
+    END IF;
+    IF (SELECT processing_fee_cents FROM connect_transfers
+        WHERE checkout_id = current_setting('shopstops.test_checkout_id')::uuid
+          AND merchant_id = current_setting('shopstops.test_partner_merchant_id')::uuid) <> 40
+       OR (SELECT processing_fee_cents FROM connect_transfers
+           WHERE checkout_id = current_setting('shopstops.test_checkout_id')::uuid
+             AND merchant_id = current_setting('shopstops.test_anchor_merchant_id')::uuid) <> 60 THEN
+        RAISE EXCEPTION 'merchant fee shares should be proportional to item totals';
     END IF;
 END;
 $$;

@@ -159,16 +159,21 @@ summary, and atomically updates the checkout/payment/tax ledger. Only after
 `payment_intent.succeeded` does it initiate separate Connect transfers to each
 merchant. Stripe transfer calls use stable idempotency keys and source charge
 IDs; an event retry resumes any transfer not persisted after Stripe accepted
-it. Every merchant with a positive item subtotal must have a connected account
-before payment can be initialized.
+it. The database reserves a checkout-level PaymentIntent idempotency key and
+records the first transfer-attempt timestamp. After 23 hours without a
+persisted Stripe object ID, the API stops retrying that operation to avoid a
+duplicate after Stripe expires idempotency keys; operators must reconcile the
+Stripe account before retrying. Every merchant with a positive item subtotal
+must have a connected account before payment can be initialized.
 
 Processing fees are allocated proportionally over merchant item subtotals,
 rounded with largest remainders (merchant ID breaks ties), and capped at the
 total item value. The platform absorbs fee amounts above that cap. Delivery and
 service fees remain in the platform ledger; the D.C. surcharge is tracked in
-the municipal tax ledger. Do not collect or store raw card details. The SaaS
-subscription table still only stores Stripe Billing references; subscription
-creation and recurring collection are not implemented.
+the municipal tax ledger. Refund/dispute reconciliation and transfer reversals
+still need an operational policy and implementation. Do not collect or store
+raw card details. The SaaS subscription table still only stores Stripe Billing
+references; subscription creation and recurring collection are not implemented.
 
 Order state updates append transactional outbox events. A WebSocket/push
 gateway should consume these events and target a <1.5 second propagation SLO;

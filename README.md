@@ -30,16 +30,17 @@ export DATABASE_URL='postgres://<user>:<password>@localhost:5432/shopstops?sslmo
 export SHOPSTOPS_INTERNAL_API_TOKEN="$(openssl rand -hex 32)"
 export SHOPSTOPS_DELIVERY_FEE_CENTS=500
 export SHOPSTOPS_SERVICE_FEE_CENTS=100
-# Set both to enable Stripe payments; keep them in a server-side secret manager.
-export STRIPE_SECRET_KEY='sk_live_...'
-export STRIPE_WEBHOOK_SECRET='whsec_...'
+# Set both through a server-side secret manager to enable Stripe payments.
+export STRIPE_SECRET_KEY
+export STRIPE_WEBHOOK_SECRET
 go run ./cmd/shopstops-api
 ```
 
 The service listens on `:8080` by default; set `HTTP_ADDR` to override it. It
-currently implements health checks, nearby subscribed-merchant discovery,
-atomic dispatch, driver route reads, and GPS ingestion. Protected endpoints use
-a shared internal bearer token and must be placed behind a gateway that
+implements health checks, nearby subscribed-merchant discovery, atomic
+dispatch, checkout creation/payment, Stripe webhooks, driver route reads, and
+GPS ingestion. Protected endpoints use a shared internal bearer token and must
+be placed behind a gateway that
 authenticates users, enforces roles, strips
 client-supplied `X-ShopStops-Actor` headers, and injects the authenticated actor
 identity. Do not distribute this internal token to client applications.
@@ -53,7 +54,11 @@ invoice. Configure Stripe to send `payment_intent.succeeded`,
 `payment_intent.processing`, and `payment_intent.payment_failed` to
 `/webhooks/stripe`. Verified, deduplicated events update the payment/tax ledger
 and create separate, idempotent Connect transfers to merchant accounts. Retries
-resume transfers not recorded after Stripe successfully created them.
+resume transfers not recorded after Stripe successfully created them. Pin the
+webhook endpoint's Stripe API version to the version supported by the installed
+Stripe Go SDK. If a PaymentIntent or transfer attempt remains unresolved for 23
+hours, the API stops resubmitting it rather than risk a duplicate after Stripe's
+idempotency-key retention window; reconcile it with Stripe before retrying.
 
 Stripe processing fees are allocated across merchant item subtotals in
 proportion to each merchant's items; leftover cents go by descending fractional

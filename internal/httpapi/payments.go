@@ -10,16 +10,18 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stripe/stripe-go/v82"
 	"github.com/stripe/stripe-go/v82/webhook"
 )
 
 type CheckoutPayment struct {
-	CheckoutID     string
-	Currency       string
-	AmountCents    int64
-	Status         string
+	CheckoutID      string
+	Currency        string
+	AmountCents     int64
+	Status          string
 	PaymentIntentID string
+	IdempotencyKey  string
 }
 
 type PaymentIntent struct {
@@ -31,14 +33,14 @@ type PaymentIntent struct {
 }
 
 type StripePaymentEvent struct {
-	ID                 string
-	Type               string
-	CheckoutID         string
-	PaymentIntentID    string
-	AmountCents        int64
-	Currency           string
-	PaymentStatus      string
-	ChargeID           string
+	ID              string
+	Type            string
+	CheckoutID      string
+	PaymentIntentID string
+	AmountCents     int64
+	Currency        string
+	PaymentStatus   string
+	ChargeID        string
 }
 
 type ConnectTransfer struct {
@@ -55,6 +57,7 @@ type PaymentRepository interface {
 	RecordPaymentIntent(context.Context, string, string, int64, string) error
 	ApplyStripePaymentEvent(context.Context, StripePaymentEvent, int64, json.RawMessage) error
 	PendingConnectTransfers(context.Context, string) ([]ConnectTransfer, error)
+	BeginConnectTransferAttempt(context.Context, string, string) error
 	RecordConnectTransfer(context.Context, string, string, string) error
 }
 
@@ -83,7 +86,7 @@ func (g *StripeGateway) CreatePaymentIntent(
 		AutomaticPaymentMethods: &stripe.PaymentIntentCreateAutomaticPaymentMethodsParams{
 			Enabled: stripe.Bool(true),
 		},
-		Metadata: map[string]string{"shopstops_checkout_id": checkoutID},
+		Metadata:      map[string]string{"shopstops_checkout_id": checkoutID},
 		TransferGroup: stripe.String("shopstops_" + checkoutID),
 	}
 	params.SetIdempotencyKey(idempotencyKey)
@@ -170,11 +173,11 @@ func (g *StripeGateway) CreateConnectTransfer(
 	ctx context.Context, transfer ConnectTransfer, idempotencyKey string,
 ) (string, error) {
 	params := &stripe.TransferCreateParams{
-		Amount:           stripe.Int64(transfer.AmountCents),
-		Currency:         stripe.String(transfer.Currency),
-		Destination:      stripe.String(transfer.Destination),
+		Amount:            stripe.Int64(transfer.AmountCents),
+		Currency:          stripe.String(transfer.Currency),
+		Destination:       stripe.String(transfer.Destination),
 		SourceTransaction: stripe.String(transfer.ChargeID),
-		TransferGroup:    stripe.String("shopstops_" + transfer.CheckoutID),
+		TransferGroup:     stripe.String("shopstops_" + transfer.CheckoutID),
 		Metadata: map[string]string{
 			"shopstops_checkout_id": transfer.CheckoutID,
 			"shopstops_merchant_id": transfer.MerchantID,
@@ -195,9 +198,7 @@ func paymentIntentFromStripe(intent *stripe.PaymentIntent) PaymentIntent {
 	result := PaymentIntent{
 		ID: intent.ID, Status: string(intent.Status),
 		AmountCents: intent.Amount, Currency: string(intent.Currency),
-	}
-	if intent.ClientSecret != nil {
-		result.ClientSecret = *intent.ClientSecret
+		ClientSecret: intent.ClientSecret,
 	}
 	return result
 }
@@ -238,24 +239,28 @@ func (s *Server) createCheckoutPayment(w http.ResponseWriter, r *http.Request) {
 		intent, err = s.payments.RetrievePaymentIntent(ctx, checkout.PaymentIntentID)
 	} else {
 		intent, err = s.payments.CreatePaymentIntent(
-			ctx, "shopstops-checkout-"+checkout.ID, checkout.ID,
+			ctx, checkout.IdempotencyKey, checkout.CheckoutID,
 			checkout.AmountCents, checkout.Currency,
 		)
 		if err == nil {
-			if intent.AmountCents != checkout.AmountCents ||
+			if intent.ID == "" || intent.AmountCents != checkout.AmountCents ||
 				!strings.EqualFold(intent.Currency, checkout.Currency) ||
 				intent.ClientSecret == "" {
-				writeError(w, http.StatusBadGateway, "payment provider returned an invalid payment intent")
-				return
+				err = errors.New("Stripe returned an invalid payment intent")
+			} else {
+				err = repository.RecordPaymentIntent(ctx, checkout.CheckoutID,
+					intent.ID, intent.AmountCents, intent.Status)
 			}
-			err = repository.RecordPaymentIntent(
-				ctx, checkout.ID, intent.ID, intent.AmountCents, intent.Status,
-			)
 		}
 	}
 	if err != nil {
 		s.log.Error("Stripe payment intent request failed")
 		writeError(w, http.StatusBadGateway, "payment could not be initialized")
+		return
+	}
+	if intent.ID == "" || intent.AmountCents != checkout.AmountCents ||
+		!strings.EqualFold(intent.Currency, checkout.Currency) {
+		writeError(w, http.StatusBadGateway, "payment provider returned an invalid payment intent")
 		return
 	}
 	if intent.ClientSecret == "" {
@@ -325,6 +330,13 @@ func (s *Server) stripeWebhook(w http.ResponseWriter, r *http.Request) {
 			}
 			continue
 		}
+		if err := repository.BeginConnectTransferAttempt(
+			ctx, transfer.CheckoutID, transfer.MerchantID,
+		); err != nil {
+			s.log.Error("Stripe Connect transfer requires reconciliation")
+			writeError(w, http.StatusServiceUnavailable, "payment event will be retried")
+			return
+		}
 		transferID, err := s.payments.CreateConnectTransfer(
 			ctx, transfer,
 			"shopstops-transfer-"+transfer.CheckoutID+"-"+transfer.MerchantID,
@@ -348,20 +360,22 @@ func (s *Server) stripeWebhook(w http.ResponseWriter, r *http.Request) {
 func (p *PostgresRepository) CheckoutForPayment(
 	ctx context.Context, checkoutID, customerRef string,
 ) (CheckoutPayment, error) {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return CheckoutPayment{}, err
+	}
+	defer tx.Rollback()
 	var payment CheckoutPayment
-	var paymentStatus sql.NullString
-	err := p.db.QueryRowContext(ctx, `
-		SELECT c.id, c.currency, COALESCE(sum(line.amount_cents), 0),
-		       c.status, cp.stripe_payment_intent_id, cp.status
+	var paymentIntentID sql.NullString
+	err = tx.QueryRowContext(ctx, `
+		SELECT c.id, c.currency, c.status, cp.stripe_payment_intent_id
 		FROM unified_checkouts c
-		LEFT JOIN checkout_invoice_lines line ON line.checkout_id = c.id
 		LEFT JOIN checkout_payments cp ON cp.checkout_id = c.id
 		WHERE c.id = $1 AND c.customer_ref = $2
-		GROUP BY c.id, c.currency, c.status, cp.stripe_payment_intent_id, cp.status`,
+		FOR UPDATE OF c`,
 		checkoutID, customerRef,
 	).Scan(
-		&payment.CheckoutID, &payment.Currency, &payment.AmountCents,
-		&payment.Status, &payment.PaymentIntentID, &paymentStatus,
+		&payment.CheckoutID, &payment.Currency, &payment.Status, &paymentIntentID,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return CheckoutPayment{}, ErrNotFound
@@ -369,12 +383,24 @@ func (p *PostgresRepository) CheckoutForPayment(
 	if err != nil {
 		return CheckoutPayment{}, err
 	}
+	if paymentIntentID.Valid {
+		payment.PaymentIntentID = paymentIntentID.String
+	}
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COALESCE(sum(amount_cents), 0)
+		FROM checkout_invoice_lines WHERE checkout_id = $1`, checkoutID,
+	).Scan(&payment.AmountCents); err != nil {
+		return CheckoutPayment{}, err
+	}
 	if payment.Status != "quoted" && !(payment.Status == "paid" && payment.PaymentIntentID != "") {
+		return CheckoutPayment{}, ErrConflict
+	}
+	if payment.PaymentIntentID == "" && payment.AmountCents < 50 {
 		return CheckoutPayment{}, ErrConflict
 	}
 	if payment.PaymentIntentID == "" {
 		var payoutAccountsReady bool
-		if err := p.db.QueryRowContext(ctx, `
+		if err := tx.QueryRowContext(ctx, `
 			SELECT NOT EXISTS (
 				SELECT 1
 				FROM checkout_invoice_lines line
@@ -390,6 +416,26 @@ func (p *PostgresRepository) CheckoutForPayment(
 		if !payoutAccountsReady {
 			return CheckoutPayment{}, ErrConflict
 		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO stripe_payment_intent_attempts (checkout_id, idempotency_key)
+			VALUES ($1, 'shopstops-checkout-' || $1::text)
+			ON CONFLICT (checkout_id) DO NOTHING`, checkoutID); err != nil {
+			return CheckoutPayment{}, err
+		}
+		var attemptIsRecent bool
+		if err := tx.QueryRowContext(ctx, `
+			SELECT idempotency_key, created_at > now() - interval '23 hours'
+			FROM stripe_payment_intent_attempts WHERE checkout_id = $1`,
+			checkoutID,
+		).Scan(&payment.IdempotencyKey, &attemptIsRecent); err != nil {
+			return CheckoutPayment{}, err
+		}
+		if !attemptIsRecent {
+			return CheckoutPayment{}, ErrConflict
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return CheckoutPayment{}, err
 	}
 	return payment, nil
 }
@@ -413,10 +459,11 @@ func (p *PostgresRepository) RecordPaymentIntent(
 	if existing {
 		return nil
 	}
-	_, err = p.db.ExecContext(ctx, `
-		SELECT record_checkout_payment($1, $2, $3, 0, $4)`,
+	var paymentRecordID string
+	err = p.db.QueryRowContext(ctx, `
+		SELECT record_checkout_payment($1, $2, $3, 0, $4)::text`,
 		checkoutID, paymentIntentID, amount, status,
-	)
+	).Scan(&paymentRecordID)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "P0001" {
@@ -494,6 +541,24 @@ func (p *PostgresRepository) RecordConnectTransfer(
 		checkoutID, merchantID, transferID,
 	)
 	if err != nil {
+		return err
+	}
+
+	func (p *PostgresRepository) BeginConnectTransferAttempt(
+		ctx context.Context, checkoutID, merchantID string,
+	) error {
+		var attemptIsRecent bool
+		err := p.db.QueryRowContext(ctx, `
+			UPDATE connect_transfers
+			SET transfer_attempted_at = COALESCE(transfer_attempted_at, now())
+			WHERE checkout_id = $1 AND merchant_id = $2
+			  AND status IN ('pending', 'failed')
+			RETURNING transfer_attempted_at > now() - interval '23 hours'`,
+			checkoutID, merchantID,
+		).Scan(&attemptIsRecent)
+		if errors.Is(err, sql.ErrNoRows) || err == nil && !attemptIsRecent {
+			return ErrConflict
+		}
 		return err
 	}
 	affected, err := result.RowsAffected()

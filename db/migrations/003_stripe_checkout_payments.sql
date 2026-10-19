@@ -1,5 +1,13 @@
 ALTER TABLE connect_transfers
     ADD COLUMN source_charge_id text;
+ALTER TABLE connect_transfers
+    ADD COLUMN transfer_attempted_at timestamptz;
+
+CREATE TABLE stripe_payment_intent_attempts (
+    checkout_id uuid PRIMARY KEY REFERENCES unified_checkouts(id),
+    idempotency_key text NOT NULL UNIQUE,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
 
 CREATE FUNCTION process_stripe_checkout_event(
     p_event_id text,
@@ -63,6 +71,12 @@ BEGIN
             RAISE EXCEPTION 'Stripe payment does not match a persisted checkout payment';
         END IF;
 
+        SELECT COALESCE(sum(amount_cents), 0)
+        INTO v_item_total
+        FROM checkout_invoice_lines
+        WHERE checkout_id = p_checkout_id
+          AND line_type = 'merchant_items';
+
         IF p_event_type = 'payment_intent.succeeded' THEN
             IF p_processing_fee_cents IS NULL OR p_processing_fee_cents < 0
                OR p_charge_id IS NULL OR btrim(p_charge_id) = '' THEN
@@ -75,15 +89,9 @@ BEGIN
                 );
             ELSIF NOT EXISTS (
                 SELECT 1 FROM connect_transfers WHERE checkout_id = p_checkout_id
-            ) THEN
+            ) AND v_item_total > 0 THEN
                 RAISE EXCEPTION 'successful payment is missing its transfer ledger';
             END IF;
-
-            SELECT COALESCE(sum(amount_cents), 0)
-            INTO v_item_total
-            FROM checkout_invoice_lines
-            WHERE checkout_id = p_checkout_id
-              AND line_type = 'merchant_items';
 
             IF NOT EXISTS (
                 SELECT 1 FROM connect_transfers WHERE checkout_id = p_checkout_id
@@ -137,7 +145,7 @@ BEGIN
                 IF EXISTS (
                     SELECT 1 FROM connect_transfers
                     WHERE checkout_id = p_checkout_id
-                      AND source_charge_id <> p_charge_id
+                      AND source_charge_id IS DISTINCT FROM p_charge_id
                 ) THEN
                     RAISE EXCEPTION 'payment charge does not match the existing transfer ledger';
                 END IF;
