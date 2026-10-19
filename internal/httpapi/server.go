@@ -510,9 +510,11 @@ func (p *PostgresRepository) CreateCheckout(
 		return checkoutResponse{}, err
 	}
 
-	response := checkoutResponse{
-		ID: checkoutID, Status: "quoted", Currency: "usd",
-		InvoiceLines: make([]checkoutInvoiceLine, 0),
+	response := checkoutResponse{ID: checkoutID, InvoiceLines: make([]checkoutInvoiceLine, 0)}
+	if err := tx.QueryRowContext(ctx, `
+		SELECT status, currency FROM unified_checkouts WHERE id = $1`, checkoutID,
+	).Scan(&response.Status, &response.Currency); err != nil {
+		return checkoutResponse{}, err
 	}
 	rows, err := tx.QueryContext(ctx, `
 		SELECT line_type, merchant_id, amount_cents

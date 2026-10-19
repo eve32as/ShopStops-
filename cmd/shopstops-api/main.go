@@ -90,8 +90,8 @@ func feeFromEnv(name string) (int, error) {
 		return 0, nil
 	}
 	value, err := strconv.Atoi(raw)
-	if err != nil || value < 0 {
-		return 0, errors.New("fee must be a non-negative integer number of cents")
+	if err != nil || value < 0 || int64(value) > 2147483647 {
+		return 0, errors.New("fee must be a non-negative 32-bit integer number of cents")
 	}
 	return value, nil
 }
