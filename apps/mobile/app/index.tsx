@@ -73,9 +73,20 @@ export default function HomeScreen() {
   const [longitude, setLongitude] = useState("");
   const [routeId, setRouteId] = useState("");
   const [tracking, setTracking] = useState(false);
+  const checkoutAttempt = useRef<{
+    key: string;
+    body: {
+      anchorStoreLocationId: string;
+      orderIds: string[];
+      dropoff: { latitude: number; longitude: number };
+      deliveryWindowStart: string;
+      deliveryWindowEnd: string;
+    };
+  } | null>(null);
   const routeLocation = useRef<Location.LocationObject | null>(null);
   const routeSubscription = useRef<Location.LocationSubscription | null>(null);
   const lastReportedAt = useRef(0);
+  const previousConnection = useRef({ gatewayUrl, sessionToken });
   const { initPaymentSheet, presentPaymentSheet } = useStripe();
 
   const run = useCallback(async <T,>(action: () => Promise<T>) => {
@@ -97,6 +108,21 @@ export default function HomeScreen() {
       routeSubscription.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    if (
+      previousConnection.current.gatewayUrl !== gatewayUrl ||
+      previousConnection.current.sessionToken !== sessionToken
+    ) {
+      previousConnection.current = { gatewayUrl, sessionToken };
+      endTracking();
+      checkoutAttempt.current = null;
+      setNearby([]);
+      setCheckout(null);
+      setRoute(null);
+      setSubscription(null);
+    }
+  }, [gatewayUrl, sessionToken]);
 
   useEffect(() => {
     if (!tracking) return;
@@ -146,21 +172,31 @@ export default function HomeScreen() {
       setMessage("Enter the anchor store, order IDs, and delivery coordinates.");
       return;
     }
-    const now = new Date();
-    const result = await run(() =>
-      apiRequest<Checkout>(settings, "checkouts", {
-        method: "POST",
-        headers: { "Idempotency-Key": idempotencyKey() },
-        body: JSON.stringify({
+    if (!checkoutAttempt.current) {
+      const now = new Date();
+      checkoutAttempt.current = {
+        key: idempotencyKey(),
+        body: {
           anchorStoreLocationId: anchorStore.trim(),
           orderIds: ids,
           dropoff: { latitude: lat, longitude: lon },
           deliveryWindowStart: now.toISOString(),
           deliveryWindowEnd: new Date(now.getTime() + 2 * 60 * 60 * 1000).toISOString(),
-        }),
+        },
+      };
+    }
+    const attempt = checkoutAttempt.current;
+    const result = await run(() =>
+      apiRequest<Checkout>(settings, "checkouts", {
+        method: "POST",
+        headers: { "Idempotency-Key": attempt.key },
+        body: JSON.stringify(attempt.body),
       }),
     );
-    if (result) setCheckout(result);
+    if (result) {
+      checkoutAttempt.current = null;
+      setCheckout(result);
+    }
   }
 
   async function payCheckout() {
@@ -238,8 +274,8 @@ export default function HomeScreen() {
   }
 
   useEffect(() => {
-    if (role !== "Driver" || !settings.sessionToken.trim()) endTracking();
-  }, [role, settings.sessionToken]);
+    if ((role !== "Driver" || !settings.sessionToken.trim()) && tracking) endTracking();
+  }, [role, settings.sessionToken, tracking]);
 
   async function refreshSubscription() {
     const result = await run(() => apiRequest<Subscription>(settings, "merchant/subscription"));
@@ -379,7 +415,15 @@ export default function HomeScreen() {
                 Find subscription-active grocery and retail partners within 500 meters of your
                 restaurant.
               </Text>
-              <Field label="Anchor restaurant store ID" onChangeText={setAnchorStore} value={anchorStore} />
+              <Field
+                editable={!checkout}
+                label="Anchor restaurant store ID"
+                onChangeText={(value) => {
+                  checkoutAttempt.current = null;
+                  setAnchorStore(value);
+                }}
+                value={anchorStore}
+              />
               <ActionButton disabled={busy} label="Find nearby shops" onPress={() => void findNearby()} />
               {nearby.map((merchant) => (
                 <View key={merchant.merchantId} style={styles.resultRow}>
@@ -399,12 +443,42 @@ export default function HomeScreen() {
                 The backend accepts existing order IDs. Catalog browsing and order creation are not
                 available in this API yet.
               </Text>
-              <Field label="Order IDs (comma separated)" onChangeText={setOrderIds} value={orderIds} />
+              <Field
+                editable={!checkout}
+                label="Order IDs (comma separated)"
+                onChangeText={(value) => {
+                  checkoutAttempt.current = null;
+                  setOrderIds(value);
+                }}
+                value={orderIds}
+              />
               <View style={styles.fieldGrid}>
-                <Field label="Drop-off latitude" keyboardType="decimal-pad" onChangeText={setLatitude} value={latitude} />
-                <Field label="Drop-off longitude" keyboardType="decimal-pad" onChangeText={setLongitude} value={longitude} />
+                <Field
+                  editable={!checkout}
+                  label="Drop-off latitude"
+                  keyboardType="decimal-pad"
+                  onChangeText={(value) => {
+                    checkoutAttempt.current = null;
+                    setLatitude(value);
+                  }}
+                  value={latitude}
+                />
+                <Field
+                  editable={!checkout}
+                  label="Drop-off longitude"
+                  keyboardType="decimal-pad"
+                  onChangeText={(value) => {
+                    checkoutAttempt.current = null;
+                    setLongitude(value);
+                  }}
+                  value={longitude}
+                />
               </View>
-              <ActionButton disabled={busy} label="Create basket" onPress={() => void createCheckout()} />
+              <ActionButton
+                disabled={busy || Boolean(checkout)}
+                label={checkout ? "Basket created" : "Create basket"}
+                onPress={() => void createCheckout()}
+              />
               {checkout ? (
                 <View style={styles.checkoutBox}>
                   <Text style={styles.checkoutLabel}>BASKET {checkout.id}</Text>
@@ -526,11 +600,13 @@ function Field({
   value,
   onChangeText,
   keyboardType = "default",
+  editable = true,
 }: {
   label: string;
   value: string;
   onChangeText: (value: string) => void;
   keyboardType?: "default" | "decimal-pad";
+  editable?: boolean;
 }) {
   return (
     <View style={styles.field}>
@@ -539,6 +615,7 @@ function Field({
         accessibilityLabel={label}
         autoCapitalize="none"
         autoCorrect={false}
+        editable={editable}
         keyboardType={keyboardType}
         onChangeText={onChangeText}
         placeholder={label}

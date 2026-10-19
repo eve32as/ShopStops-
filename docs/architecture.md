@@ -26,9 +26,8 @@ turn-by-turn route optimizer.
 
 The product targets native iOS and Android customer/driver clients and a web
 admin client. Clients should use versioned HTTPS APIs (`/v1`) and never connect
-directly to the database. The repository currently implements the shared
-relational dispatch foundation, not client applications or running API
-processes.
+directly to the database. The repository includes a Go API and API-backed
+mobile/admin MVP clients; an external identity-aware gateway remains required.
 
 Backend capabilities can be deployed independently as traffic and ownership
 needs emerge:

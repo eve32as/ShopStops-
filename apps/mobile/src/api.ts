@@ -28,6 +28,9 @@ export async function apiRequest<T>(
   } catch {
     throw new ApiError("Enter a valid gateway URL, including https://.");
   }
+  if (url.username || url.password || url.search || url.hash) {
+    throw new ApiError("Gateway URL must not include credentials or query parameters.");
+  }
   const localDevelopment =
     url.protocol === "http:" &&
     (url.hostname === "localhost" ||
@@ -42,7 +45,11 @@ export async function apiRequest<T>(
   const authorizationScheme = ["Bear", "er"].join("");
   headers.set("Authorization", authorizationScheme + " " + settings.sessionToken.trim());
   if (options.body) headers.set("Content-Type", "application/json");
-  const response = await fetch(url.toString(), { ...options, headers });
+  const response = await fetch(url.toString(), {
+    ...options,
+    headers,
+    redirect: "error",
+  });
   const payload = (await response.json().catch(() => null)) as
     | { error?: string }
     | T

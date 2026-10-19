@@ -46,6 +46,10 @@ function App() {
       setError('Enter a valid gateway URL, including https://.')
       return
     }
+    if (url.username || url.password || url.search || url.hash) {
+      setError('Gateway URL must not include credentials or query parameters.')
+      return
+    }
     if (url.protocol !== 'https:' && url.hostname !== 'localhost' && url.hostname !== '127.0.0.1') {
       setError('Gateway connections must use HTTPS.')
       return
@@ -57,6 +61,7 @@ function App() {
     try {
       const response = await fetch(url, {
         method: 'POST',
+        redirect: 'error',
         headers: {
           Accept: 'application/json',
           Authorization: ['Bear', 'er'].join('') + ' ' + token,
@@ -90,9 +95,7 @@ function App() {
           <span>shopstops<span className="brand-sub">CONTROL ROOM</span></span>
         </a>
         <div className="rail-label">WORKSPACE</div>
-        <div className="nav-item nav-active"><span className="nav-icon">▦</span>Payments</div>
-        <div className="nav-item nav-muted"><span className="nav-icon">◎</span>Refunds</div>
-        <div className="nav-item nav-muted"><span className="nav-icon">⌁</span>Disputes</div>
+        <div className="nav-item nav-active"><span className="nav-icon">◎</span>Refund desk</div>
         <div className="rail-bottom">
           <div className="connection-dot" />
           <span>Trusted gateway only</span>
@@ -151,7 +154,10 @@ function App() {
                   <input
                     autoCapitalize="none"
                     autoComplete="url"
-                    onChange={(event) => setGatewayUrl(event.target.value)}
+                    onChange={(event) => {
+                      setGatewayUrl(event.target.value)
+                      setIdempotencyKey('')
+                    }}
                     placeholder="https://api.shopstops.example/v1"
                     value={gatewayUrl}
                   />
@@ -162,7 +168,10 @@ function App() {
                   <input
                     autoCapitalize="none"
                     autoComplete="off"
-                    onChange={(event) => setSessionToken(event.target.value)}
+                    onChange={(event) => {
+                      setSessionToken(event.target.value)
+                      setIdempotencyKey('')
+                    }}
                     placeholder="Paste your user access token"
                     type="password"
                     value={sessionToken}

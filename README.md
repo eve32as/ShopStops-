@@ -94,8 +94,7 @@ connected accounts before payment initialization. Payment secrets are never
 returned to client applications; only the PaymentIntent client secret is
 returned to the authenticated customer.
 
-Native iOS and Android consumer/driver apps and the admin web application have
-starter clients are in `apps/mobile` (Expo iOS/Android) and `apps/admin` (Vite
+Starter clients are in `apps/mobile` (Expo iOS/Android) and `apps/admin` (Vite
 web). The mobile client provides nearby-store discovery, checkout/payment,
 assigned-route viewing and foreground GPS sharing, and merchant subscription
 setup. The admin client provides the existing full-refund operation. Both
@@ -103,8 +102,9 @@ expect an identity-aware public gateway to validate user session tokens and
 inject backend actor/role headers. Neither client may receive the backend
 Stripe secret or internal API token.
 
-Run the clients from their directories with `npm install` and `npm run start`
-for mobile or `npm run dev` for admin. Configure
+Run the mobile client from `apps/mobile` with `npm ci`, then use
+`npx expo run:ios` or `npx expo run:android` to create a development build.
+Run the admin client from `apps/admin` with `npm ci` and `npm run dev`. Configure
 `EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY` for mobile PaymentSheet flows. Checkout
 requires existing order IDs because catalog/order-creation endpoints and an
 identity gateway are not implemented here. Driver progress actions, background
