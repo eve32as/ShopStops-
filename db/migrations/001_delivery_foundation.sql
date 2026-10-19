@@ -93,6 +93,18 @@ CREATE INDEX delivery_stops_bundle_queue_idx
 CREATE INDEX delivery_stops_location_gix
     ON delivery_stops USING gist (location);
 
+CREATE TABLE delivery_stop_events (
+    event_id text PRIMARY KEY,
+    stop_id uuid NOT NULL REFERENCES delivery_stops(id) ON DELETE CASCADE,
+    driver_ref text NOT NULL,
+    event_type text NOT NULL CHECK (event_type IN ('arrived', 'completed', 'skipped')),
+    observed_at timestamptz NOT NULL,
+    received_at timestamptz NOT NULL DEFAULT now(),
+    payload jsonb NOT NULL DEFAULT '{}'::jsonb
+);
+CREATE INDEX delivery_stop_events_stop_idx
+    ON delivery_stop_events (stop_id, received_at);
+
 CREATE TABLE outbox_events (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     aggregate_type text NOT NULL,
@@ -121,7 +133,6 @@ DECLARE
     v_seed orders%ROWTYPE;
     v_seed_store store_locations%ROWTYPE;
     v_candidate orders%ROWTYPE;
-    v_candidate_store store_locations%ROWTYPE;
     v_order_ids uuid[];
     v_order_id uuid;
     v_picked_ids uuid[] := ARRAY[]::uuid[];
@@ -137,6 +148,10 @@ DECLARE
 BEGIN
     IF p_idempotency_key IS NULL OR btrim(p_idempotency_key) = '' THEN
         RAISE EXCEPTION 'idempotency key is required';
+    END IF;
+    IF p_seed_order_id IS NULL OR p_capacity_liters IS NULL OR p_max_orders IS NULL
+       OR p_pickup_radius_m IS NULL OR p_dropoff_radius_m IS NULL THEN
+        RAISE EXCEPTION 'seed order, capacity, limits, and radii are required';
     END IF;
     IF p_capacity_liters <= 0 OR p_max_orders <= 0
        OR p_pickup_radius_m < 0 OR p_dropoff_radius_m < 0 THEN
@@ -183,34 +198,36 @@ BEGIN
     v_order_ids := ARRAY[p_seed_order_id];
     v_total_volume := v_seed.volume_liters;
 
-    FOR v_candidate IN
-        SELECT o.*
-        FROM orders o
-        JOIN store_locations s ON s.id = o.store_location_id AND s.active
-        JOIN delivery_zones z ON z.id = o.delivery_zone_id AND z.enabled
-        WHERE o.id <> p_seed_order_id
-          AND o.delivery_zone_id = v_zone_id
-          AND o.state = 'ready'
-          AND o.delivery_window_start <= v_seed.delivery_window_end
-          AND o.delivery_window_end >= v_seed.delivery_window_start
-          AND ST_Covers(z.boundary, s.location::geometry)
-          AND ST_Covers(z.boundary, o.dropoff_location::geometry)
-          AND ST_DWithin(s.location, v_seed_store.location, p_pickup_radius_m)
-          AND ST_DWithin(o.dropoff_location, v_seed.dropoff_location, p_dropoff_radius_m)
-          AND NOT EXISTS (
-              SELECT 1 FROM bundle_orders bo WHERE bo.order_id = o.id
-          )
-        ORDER BY ST_Distance(s.location, v_seed_store.location),
-                 ST_Distance(o.dropoff_location, v_seed.dropoff_location),
-                 o.created_at, o.id
-        FOR UPDATE OF o SKIP LOCKED
-    LOOP
-        EXIT WHEN cardinality(v_order_ids) >= p_max_orders;
-        IF v_total_volume + v_candidate.volume_liters <= p_capacity_liters THEN
-            v_order_ids := array_append(v_order_ids, v_candidate.id);
-            v_total_volume := v_total_volume + v_candidate.volume_liters;
-        END IF;
-    END LOOP;
+    IF cardinality(v_order_ids) < p_max_orders THEN
+        FOR v_candidate IN
+            SELECT o.*
+            FROM orders o
+            JOIN store_locations s ON s.id = o.store_location_id AND s.active
+            JOIN delivery_zones z ON z.id = o.delivery_zone_id AND z.enabled
+            WHERE o.id <> p_seed_order_id
+              AND o.delivery_zone_id = v_zone_id
+              AND o.state = 'ready'
+              AND o.delivery_window_start <= v_seed.delivery_window_end
+              AND o.delivery_window_end >= v_seed.delivery_window_start
+              AND ST_Covers(z.boundary, s.location::geometry)
+              AND ST_Covers(z.boundary, o.dropoff_location::geometry)
+              AND ST_DWithin(s.location, v_seed_store.location, p_pickup_radius_m)
+              AND ST_DWithin(o.dropoff_location, v_seed.dropoff_location, p_dropoff_radius_m)
+              AND NOT EXISTS (
+                  SELECT 1 FROM bundle_orders bo WHERE bo.order_id = o.id
+              )
+            ORDER BY ST_Distance(s.location, v_seed_store.location),
+                     ST_Distance(o.dropoff_location, v_seed.dropoff_location),
+                     o.created_at, o.id
+            FOR UPDATE OF o SKIP LOCKED
+        LOOP
+            IF v_total_volume + v_candidate.volume_liters <= p_capacity_liters THEN
+                v_order_ids := array_append(v_order_ids, v_candidate.id);
+                v_total_volume := v_total_volume + v_candidate.volume_liters;
+                EXIT WHEN cardinality(v_order_ids) >= p_max_orders;
+            END IF;
+        END LOOP;
+    END IF;
 
     INSERT INTO delivery_bundles (
         delivery_zone_id, status, capacity_liters, max_orders, idempotency_key

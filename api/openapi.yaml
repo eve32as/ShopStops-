@@ -1,0 +1,196 @@
+openapi: 3.1.0
+info:
+  title: ShopStops Delivery API
+  version: 1.0.0
+  description: Versioned API contract for dispatch and driver delivery workflows.
+servers:
+  - url: https://api.shopstops.example/v1
+security:
+  - bearerAuth: []
+paths:
+  /dispatch/bundles:
+    post:
+      operationId: createDeliveryBundle
+      summary: Bundle eligible nearby orders and create an ordered stop queue
+      description: Requires a dispatch or admin role. The request is idempotent.
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateBundleRequest'
+      responses:
+        '201':
+          description: Bundle created and activated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Bundle'
+        '200':
+          description: Existing result returned for an idempotent retry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Bundle'
+        '400':
+          description: Invalid limits or ineligible seed order
+        '401':
+          description: Authentication required
+        '403':
+          description: Dispatch/admin role required
+        '409':
+          description: Seed order is unavailable or reserved
+  /driver/bundles/{bundleId}:
+    get:
+      operationId: getDriverBundle
+      summary: Get an assigned bundle and its ordered stops
+      description: Drivers can only retrieve bundles assigned to their identity.
+      parameters:
+        - $ref: '#/components/parameters/BundleId'
+      responses:
+        '200':
+          description: Bundle and ordered stops
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Bundle'
+        '401':
+          description: Authentication required
+        '403':
+          description: Bundle is not assigned to this driver
+        '404':
+          description: Bundle not found
+  /driver/bundles/{bundleId}/stops/{stopId}/events:
+    post:
+      operationId: recordStopEvent
+      summary: Record an idempotent driver stop event
+      parameters:
+        - $ref: '#/components/parameters/BundleId'
+        - in: path
+          name: stopId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StopEvent'
+      responses:
+        '200':
+          description: Event accepted or previously accepted
+        '400':
+          description: Invalid event or state transition
+        '403':
+          description: Bundle is not assigned to this driver
+        '404':
+          description: Bundle or stop not found
+        '409':
+          description: Event conflicts with current stop state
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    BundleId:
+      in: path
+      name: bundleId
+      required: true
+      schema:
+        type: string
+        format: uuid
+  schemas:
+    CreateBundleRequest:
+      type: object
+      additionalProperties: false
+      required: [seedOrderId, capacityLiters]
+      properties:
+        seedOrderId:
+          type: string
+          format: uuid
+        capacityLiters:
+          type: number
+          exclusiveMinimum: 0
+        maxOrders:
+          type: integer
+          minimum: 1
+          default: 3
+        pickupRadiusMeters:
+          type: integer
+          minimum: 0
+          default: 2000
+        dropoffRadiusMeters:
+          type: integer
+          minimum: 0
+          default: 2000
+    Bundle:
+      type: object
+      required: [id, status, stops]
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [active, in_progress, completed, cancelled]
+        stops:
+          type: array
+          items:
+            $ref: '#/components/schemas/Stop'
+    Stop:
+      type: object
+      required: [id, orderId, sequence, type, latitude, longitude, status]
+      properties:
+        id:
+          type: string
+          format: uuid
+        orderId:
+          type: string
+          format: uuid
+        sequence:
+          type: integer
+          minimum: 1
+        type:
+          type: string
+          enum: [pickup, dropoff]
+        latitude:
+          type: number
+          minimum: -90
+          maximum: 90
+        longitude:
+          type: number
+          minimum: -180
+          maximum: 180
+        status:
+          type: string
+          enum: [pending, arrived, completed, skipped]
+    StopEvent:
+      type: object
+      additionalProperties: false
+      required: [eventId, type, observedAt]
+      properties:
+        eventId:
+          type: string
+          minLength: 1
+          maxLength: 200
+        type:
+          type: string
+          enum: [arrived, completed, skipped]
+        observedAt:
+          type: string
+          format: date-time
+        payload:
+          type: object
+          additionalProperties: true

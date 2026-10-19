@@ -13,7 +13,8 @@ The function locks eligible orders, creates an active bundle, and writes its
 ordered stops in one transaction. Calls should use a stable idempotency key.
 
 See [`docs/architecture.md`](docs/architecture.md) for MVP assumptions, service
-boundaries, workflows, API contracts, and operational guidance.
+boundaries, workflows, and operational guidance. The initial HTTP interface is
+specified in [`api/openapi.yaml`](api/openapi.yaml).
 
 This repository currently contains the database/backend foundation only. Native
 iOS and Android apps, the admin web app, and deployable service/API processes

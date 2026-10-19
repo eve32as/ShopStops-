@@ -58,6 +58,8 @@ through versioned APIs/events rather than sharing in-process state.
 - `delivery_stops` persists the ordered pickup/drop-off queue and each stop's
   progress independently. Queue rows reference bundle membership and preserve
   the store location for pickups.
+- `delivery_stop_events` provides an event-ID uniqueness guard for idempotent
+  driver progress submissions.
 - `delivery_zones` stores service-area polygons. GiST indexes support zone and
   proximity checks.
 
@@ -87,6 +89,9 @@ event type, and observed timestamp. Progress writes must verify driver
 assignment, bundle/stop relationship, legal state transition, and that a
 drop-off's pickup is complete. Admin APIs manage zones and limits; customer
 APIs expose only that customer's orders and tracking data.
+
+The initial dispatch and driver HTTP request/response shapes are specified in
+`api/openapi.yaml`; serving implementations are not part of this repository yet.
 
 The database emits `delivery.bundle.activated` with `bundleId`, `orderIds`, and
 `stopCount` in the outbox. Suggested follow-on events are
@@ -121,3 +126,11 @@ After applying, exercise `create_proximity_bundle` with test zones and orders,
 checking overlapping/non-overlapping windows, out-of-zone locations, distance
 thresholds, capacity and order-count limits, duplicate idempotency keys,
 concurrent dispatch, and pickup-before-dropoff ordering.
+
+The fixture test in `db/tests/001_dispatch.sql` covers a basic nearby multi-store
+bundle, distance/window exclusion, idempotent retry, stop precedence, and the
+activation outbox event. Run it after applying the migration with:
+
+```sh
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/tests/001_dispatch.sql
+```
