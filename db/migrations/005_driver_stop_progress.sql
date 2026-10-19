@@ -96,7 +96,9 @@ BEGIN
             'unified_delivery_route', p_route_id, 'delivery.route.stop.arrived',
             jsonb_build_object(
                 'routeId', p_route_id, 'stopId', p_stop_id,
-                'sequence', v_stop.sequence, 'stopType', v_stop.stop_type
+                'sequence', v_stop.sequence, 'stopType', v_stop.stop_type,
+                'eventId', p_event_id, 'driverRef', p_driver_ref,
+                'observedAt', p_observed_at
             )
         );
     ELSIF p_event_type = 'complete' AND v_stop.status = 'arrived' THEN
@@ -108,7 +110,9 @@ BEGIN
             'unified_delivery_route', p_route_id, 'delivery.route.stop.completed',
             jsonb_build_object(
                 'routeId', p_route_id, 'stopId', p_stop_id,
-                'sequence', v_stop.sequence, 'stopType', v_stop.stop_type
+                'sequence', v_stop.sequence, 'stopType', v_stop.stop_type,
+                'eventId', p_event_id, 'driverRef', p_driver_ref,
+                'observedAt', p_observed_at
             )
         );
         IF NOT EXISTS (

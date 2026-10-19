@@ -158,7 +158,7 @@ paths:
     post:
       operationId: recordUnifiedRouteStopEvent
       summary: Confirm arrival or completion of the current assigned route stop
-      description: Stop events are idempotent and the API enforces the server-defined stop sequence. Use arrive before complete for each stop.
+      description: Requires the assigned driver identity. Stop events are idempotent and the API enforces the server-defined stop sequence. Use arrive before complete for each stop.
       parameters:
         - $ref: '#/components/parameters/RouteId'
         - in: path

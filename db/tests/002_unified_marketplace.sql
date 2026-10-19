@@ -429,6 +429,55 @@ SELECT record_driver_location(
 DO $$
 DECLARE
     v_route_id uuid := current_setting('shopstops.test_route_id')::uuid;
+    v_message text;
+BEGIN
+    IF (SELECT count(*) FROM unified_route_stops WHERE route_id = v_route_id) <> 3
+       OR (SELECT string_agg(stop_type, ',' ORDER BY sequence)
+           FROM unified_route_stops WHERE route_id = v_route_id)
+          <> 'pickup,pickup,dropoff'
+       OR (SELECT store_location_id FROM unified_route_stops
+           WHERE route_id = v_route_id AND sequence = 1)
+          <> current_setting('shopstops.test_anchor_store_id')::uuid
+       OR (SELECT store_location_id FROM unified_route_stops
+           WHERE route_id = v_route_id AND sequence = 2)
+          <> current_setting('shopstops.test_partner_store_id')::uuid THEN
+        RAISE EXCEPTION 'unified route should lock anchor pickup, market pickup, dropoff';
+    END IF;
+    IF (SELECT count(*) FROM driver_location_samples
+        WHERE route_id = v_route_id) <> 2 THEN
+        RAISE EXCEPTION 'driver GPS samples were not recorded';
+    END IF;
+
+    BEGIN
+        PERFORM record_driver_location(
+            v_route_id, 'driver-test',
+            ST_SetSRID(ST_MakePoint(-76.988, 38.91), 4326)::geography,
+            now() + interval '9 seconds', 'gps-too-soon'
+        );
+        RAISE EXCEPTION 'too-frequent GPS sample unexpectedly accepted';
+    EXCEPTION WHEN OTHERS THEN
+        GET STACKED DIAGNOSTICS v_message = MESSAGE_TEXT;
+        IF v_message NOT LIKE '%five seconds apart%' THEN
+            RAISE;
+        END IF;
+    END;
+
+    BEGIN
+        UPDATE unified_route_stops SET sequence = 4
+        WHERE route_id = v_route_id AND sequence = 2;
+        RAISE EXCEPTION 'route stop sequence unexpectedly changed';
+    EXCEPTION WHEN OTHERS THEN
+        GET STACKED DIAGNOSTICS v_message = MESSAGE_TEXT;
+        IF v_message NOT LIKE '%immutable%' THEN
+            RAISE;
+        END IF;
+    END;
+END;
+$$;
+
+DO $$
+DECLARE
+    v_route_id uuid := current_setting('shopstops.test_route_id')::uuid;
     v_stop_1 uuid := current_setting('shopstops.test_route_stop_1')::uuid;
     v_stop_2 uuid := current_setting('shopstops.test_route_stop_2')::uuid;
     v_stop_3 uuid := current_setting('shopstops.test_route_stop_3')::uuid;
@@ -493,55 +542,6 @@ BEGIN
        OR (SELECT count(*) FROM unified_route_stop_events WHERE route_id = v_route_id) <> 6 THEN
         RAISE EXCEPTION 'complete stop sequence should finish route and checkout exactly once';
     END IF;
-END;
-$$;
-
-DO $$
-DECLARE
-    v_route_id uuid := current_setting('shopstops.test_route_id')::uuid;
-    v_message text;
-BEGIN
-    IF (SELECT count(*) FROM unified_route_stops WHERE route_id = v_route_id) <> 3
-       OR (SELECT string_agg(stop_type, ',' ORDER BY sequence)
-           FROM unified_route_stops WHERE route_id = v_route_id)
-          <> 'pickup,pickup,dropoff'
-       OR (SELECT store_location_id FROM unified_route_stops
-           WHERE route_id = v_route_id AND sequence = 1)
-          <> current_setting('shopstops.test_anchor_store_id')::uuid
-       OR (SELECT store_location_id FROM unified_route_stops
-           WHERE route_id = v_route_id AND sequence = 2)
-          <> current_setting('shopstops.test_partner_store_id')::uuid THEN
-        RAISE EXCEPTION 'unified route should lock anchor pickup, market pickup, dropoff';
-    END IF;
-    IF (SELECT count(*) FROM driver_location_samples
-        WHERE route_id = v_route_id) <> 2 THEN
-        RAISE EXCEPTION 'driver GPS samples were not recorded';
-    END IF;
-
-    BEGIN
-        PERFORM record_driver_location(
-            v_route_id, 'driver-test',
-            ST_SetSRID(ST_MakePoint(-76.988, 38.91), 4326)::geography,
-            now() + interval '9 seconds', 'gps-too-soon'
-        );
-        RAISE EXCEPTION 'too-frequent GPS sample unexpectedly accepted';
-    EXCEPTION WHEN OTHERS THEN
-        GET STACKED DIAGNOSTICS v_message = MESSAGE_TEXT;
-        IF v_message NOT LIKE '%five seconds apart%' THEN
-            RAISE;
-        END IF;
-    END;
-
-    BEGIN
-        UPDATE unified_route_stops SET sequence = 4
-        WHERE route_id = v_route_id AND sequence = 2;
-        RAISE EXCEPTION 'route stop sequence unexpectedly changed';
-    EXCEPTION WHEN OTHERS THEN
-        GET STACKED DIAGNOSTICS v_message = MESSAGE_TEXT;
-        IF v_message NOT LIKE '%immutable%' THEN
-            RAISE;
-        END IF;
-    END;
 END;
 $$;
 
