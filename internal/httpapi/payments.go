@@ -544,23 +544,6 @@ func (p *PostgresRepository) RecordConnectTransfer(
 		return err
 	}
 
-	func (p *PostgresRepository) BeginConnectTransferAttempt(
-		ctx context.Context, checkoutID, merchantID string,
-	) error {
-		var attemptIsRecent bool
-		err := p.db.QueryRowContext(ctx, `
-			UPDATE connect_transfers
-			SET transfer_attempted_at = COALESCE(transfer_attempted_at, now())
-			WHERE checkout_id = $1 AND merchant_id = $2
-			  AND status IN ('pending', 'failed')
-			RETURNING transfer_attempted_at > now() - interval '23 hours'`,
-			checkoutID, merchantID,
-		).Scan(&attemptIsRecent)
-		if errors.Is(err, sql.ErrNoRows) || err == nil && !attemptIsRecent {
-			return ErrConflict
-		}
-		return err
-	}
 	affected, err := result.RowsAffected()
 	if err != nil {
 		return err
@@ -581,6 +564,24 @@ func (p *PostgresRepository) RecordConnectTransfer(
 		}
 	}
 	return nil
+}
+
+func (p *PostgresRepository) BeginConnectTransferAttempt(
+	ctx context.Context, checkoutID, merchantID string,
+) error {
+	var attemptIsRecent bool
+	err := p.db.QueryRowContext(ctx, `
+		UPDATE connect_transfers
+		SET transfer_attempted_at = COALESCE(transfer_attempted_at, now())
+		WHERE checkout_id = $1 AND merchant_id = $2
+		  AND status IN ('pending', 'failed')
+		RETURNING transfer_attempted_at > now() - interval '23 hours'`,
+		checkoutID, merchantID,
+	).Scan(&attemptIsRecent)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && !attemptIsRecent) {
+		return ErrConflict
+	}
+	return err
 }
 
 func nullableString(value string) any {

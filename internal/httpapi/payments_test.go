@@ -17,17 +17,17 @@ import (
 
 type fakePaymentRepository struct {
 	fakeRepository
-	checkout          CheckoutPayment
-	checkoutErr       error
-	recordedIntentID  string
-	recordedAmount    int64
-	recordedStatus    string
-	event             StripePaymentEvent
-	eventFee          int64
-	eventSummary      json.RawMessage
-	eventErr          error
-	transfers         []ConnectTransfer
-	recordedTransfers []string
+	checkout           CheckoutPayment
+	checkoutErr        error
+	recordedIntentID   string
+	recordedAmount     int64
+	recordedStatus     string
+	event              StripePaymentEvent
+	eventFee           int64
+	eventSummary       json.RawMessage
+	eventErr           error
+	transfers          []ConnectTransfer
+	recordedTransfers  []string
 	transferAttemptErr error
 }
 
