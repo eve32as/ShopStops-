@@ -276,9 +276,6 @@ AS $$
       AND s.id <> anchor.id
       AND m.id <> anchor_merchant.id
       AND m.merchant_type IN ('retail', 'grocery')
-      AND ms.status = 'active'
-      AND (ms.current_period_end IS NULL OR ms.current_period_end > now())
-      AND ms.payment_failed_at IS NULL
       AND p_radius_meters >= 0
       AND ST_DWithin(anchor.location, s.location, p_radius_meters)
     ORDER BY ST_Distance(anchor.location, s.location), m.name, s.id
