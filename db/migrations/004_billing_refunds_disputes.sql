@@ -368,18 +368,48 @@ BEGIN
             stripe_dispute_id, checkout_id, merchant_id,
             stripe_transfer_id, idempotency_key, amount_cents
         )
-        SELECT p_dispute_id, transfer.checkout_id, transfer.merchant_id,
-               transfer.stripe_transfer_id,
-               'shopstops-dispute-reversal-' || p_dispute_id || '-' || transfer.merchant_id::text,
-               transfer.transfer_amount_cents
-        FROM connect_transfers transfer
-        WHERE transfer.checkout_id = p_checkout_id
-          AND transfer.status = 'transferred'
-          AND transfer.stripe_transfer_id IS NOT NULL
-          AND transfer.transfer_amount_cents > 0
-        ON CONFLICT (stripe_dispute_id, merchant_id)
-            WHERE stripe_dispute_id IS NOT NULL DO NOTHING;
-    END IF;
+            WITH transfers AS (
+                SELECT transfer.checkout_id, transfer.merchant_id,
+                       transfer.stripe_transfer_id,
+                       transfer.transfer_amount_cents::bigint AS transfer_amount
+                FROM connect_transfers transfer
+                WHERE transfer.checkout_id = p_checkout_id
+                  AND transfer.status = 'transferred'
+                  AND transfer.stripe_transfer_id IS NOT NULL
+                  AND transfer.transfer_amount_cents > 0
+            ),
+            totals AS (
+                SELECT COALESCE(sum(transfer_amount), 0) AS transfer_total
+                FROM transfers
+            ),
+            shares AS (
+                SELECT transfers.*,
+                       LEAST(p_amount_cents::bigint, totals.transfer_total) AS reversal_total,
+                       floor(
+                           LEAST(p_amount_cents::bigint, totals.transfer_total)
+                           * transfers.transfer_amount::numeric / totals.transfer_total
+                       )::bigint AS base_amount,
+                       mod(
+                           LEAST(p_amount_cents::bigint, totals.transfer_total)
+                           * transfers.transfer_amount, totals.transfer_total
+                       ) AS remainder
+                FROM transfers CROSS JOIN totals
+                WHERE totals.transfer_total > 0
+            ),
+            ranked AS (
+                SELECT *,
+                       reversal_total - sum(base_amount) OVER () AS remaining_cents,
+                       row_number() OVER (ORDER BY remainder DESC, merchant_id) AS rank
+                FROM shares
+            )
+            SELECT p_dispute_id, checkout_id, merchant_id, stripe_transfer_id,
+                   'shopstops-dispute-reversal-' || p_dispute_id || '-' || merchant_id::text,
+                   base_amount + CASE WHEN rank <= remaining_cents THEN 1 ELSE 0 END
+            FROM ranked
+            WHERE base_amount + CASE WHEN rank <= remaining_cents THEN 1 ELSE 0 END > 0
+            ON CONFLICT (stripe_dispute_id, merchant_id)
+                WHERE stripe_dispute_id IS NOT NULL DO NOTHING;
+        END IF;
     UPDATE stripe_webhook_events SET processed_at = now()
     WHERE stripe_event_id = p_event_id;
 END;

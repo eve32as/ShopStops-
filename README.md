@@ -74,7 +74,8 @@ the storefront remains visible for at most 48 hours, as defined by
 Admins can request a full remaining refund with
 `POST /admin/checkouts/{checkoutId}/refund`. Refund and dispute webhooks record
 their status and create separately idempotent reversals for transfers already
-paid to merchants. Review disputes and refund outcomes operationally; a won
+paid to merchants. Dispute amounts are allocated proportionally across merchant
+transfers and capped at the total merchant payouts. Review disputes and refund outcomes operationally; a won
 dispute does not automatically re-transfer reversed merchant proceeds, and tax
 remittance/reporting remains a separate workflow.
 

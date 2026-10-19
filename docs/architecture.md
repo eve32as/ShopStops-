@@ -170,11 +170,9 @@ Processing fees are allocated proportionally over merchant item subtotals,
 rounded with largest remainders (merchant ID breaks ties), and capped at the
 total item value. The platform absorbs fee amounts above that cap. Delivery and
 service fees remain in the platform ledger; the D.C. surcharge is tracked in
-the municipal tax ledger. Refund/dispute reconciliation and transfer reversals
-still need an operational policy and implementation. Do not collect or store
-raw card details. The SaaS subscription table still only stores Stripe Billing
-references; `POST /merchant/subscription/setup-intent` creates a Stripe Customer when
-needed and returns a SetupIntent client secret so the merchant can save a
+the municipal tax ledger. Do not collect or store raw card details.
+`POST /merchant/subscription/setup-intent` creates a Stripe Customer when needed
+and returns a SetupIntent client secret so the merchant can save a
 payment method for off-session billing. `POST /merchant/subscription` validates
 the configured Stripe Price is exactly $199 USD monthly and schedules the
 subscription on the next first-of-month billing anchor. Subscription webhooks
@@ -187,7 +185,8 @@ Admins can request a full remaining checkout refund through
 refund attempt before calling Stripe. Verified refund events update the payment
 and tax ledgers and reserve idempotent Connect transfer reversals for each
 completed merchant payout. Dispute events persist status/evidence deadlines and
-reserve the same type of payout reversal after a dispute is opened. A won
+allocate reversals proportionally across completed merchant payouts, capped at
+their total. A won
 dispute does not automatically restore reversed payouts; that requires
 reconciliation. Refunds are currently full-remaining-balance only; partial
 refunds are not supported.
@@ -199,10 +198,9 @@ the database outbox alone does not deliver real-time client updates.
 `cmd/shopstops-api` is the runnable Go service. It implements health, nearby
 subscribed-merchant discovery, proximity dispatch, checkout creation and Stripe
 payment, subscription, refund, dispute, and webhook processing, driver route
-reads, and GPS ingestion backed by PostgreSQL. Billing requires
-`STRIPE_MERCHANT_MONTHLY_PRICE_ID` set to a $199 USD monthly Stripe Price in
-addition to the Stripe API and webhook secrets. It requires `DATABASE_URL` and a 32-character
-`SHOPSTOPS_INTERNAL_API_TOKEN`; the shared token is an internal service
+reads, and GPS ingestion backed by PostgreSQL. Billing requires `STRIPE_MERCHANT_MONTHLY_PRICE_ID` set to a $199 USD monthly
+Stripe Price in addition to the Stripe API and webhook secrets. It requires
+`DATABASE_URL` and a 32-character `SHOPSTOPS_INTERNAL_API_TOKEN`; the shared token is an internal service
 credential, not end-user authentication. Keep the API behind an identity-aware
 gateway that authenticates client sessions and enforces roles, and do not ship
 the internal token to applications. The gateway must strip any incoming

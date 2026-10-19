@@ -317,6 +317,7 @@ SELECT id AS refund_record_id
 FROM reserve_checkout_refund(
     :'checkout_id', 'admin-test', 'refund-test-key', 'requested_by_customer'
 ) \gset
+SELECT set_config('shopstops.test_refund_id', :'refund_record_id', true);
 SELECT record_checkout_refund(:'refund_record_id', 're_test', 'pending');
 SELECT process_checkout_refund_event(
     'evt_refund_success', 'refund.updated',
@@ -355,6 +356,12 @@ UPDATE merchant_subscriptions
 SET payment_failed_at = now() - interval '49 hours'
 WHERE merchant_id = :'anchor_merchant_id';
 SELECT process_stripe_dispute_event(
+    'evt_dispute_created', 'charge.dispute.created',
+    '{"eventId":"evt_dispute_created"}',
+    'dp_test', :'checkout_id', 'pi_test_success', 1250,
+    'product_not_received', 'needs_response', now() + interval '7 days'
+);
+SELECT process_stripe_dispute_event(
     'evt_dispute_won', 'charge.dispute.closed',
     '{"eventId":"evt_dispute_won"}',
     'dp_test', :'checkout_id', 'pi_test_success', 3120,
@@ -367,7 +374,8 @@ BEGIN
        OR (SELECT status FROM dc_tax_ledger
            WHERE checkout_id = current_setting('shopstops.test_checkout_id')::uuid) <> 'refunded'
        OR (SELECT count(*) FROM connect_transfer_reversals
-           WHERE checkout_refund_id = :'refund_record_id'::uuid) <> 2 THEN
+              WHERE checkout_refund_id =
+                  current_setting('shopstops.test_refund_id')::uuid) <> 2 THEN
         RAISE EXCEPTION 'refund should update ledgers and reserve one payout reversal per merchant';
     END IF;
     IF (SELECT status FROM merchant_subscriptions
@@ -378,6 +386,16 @@ BEGIN
     END IF;
     IF (SELECT status FROM stripe_disputes WHERE stripe_dispute_id = 'dp_test') <> 'won' THEN
         RAISE EXCEPTION 'dispute result was not persisted';
+    END IF;
+    IF (SELECT sum(amount_cents) FROM connect_transfer_reversals
+        WHERE stripe_dispute_id = 'dp_test') <> 1250
+       OR (SELECT amount_cents FROM connect_transfer_reversals
+           WHERE stripe_dispute_id = 'dp_test'
+             AND merchant_id = current_setting('shopstops.test_anchor_merchant_id')::uuid) <> 750
+       OR (SELECT amount_cents FROM connect_transfer_reversals
+           WHERE stripe_dispute_id = 'dp_test'
+             AND merchant_id = current_setting('shopstops.test_partner_merchant_id')::uuid) <> 500 THEN
+        RAISE EXCEPTION 'dispute reversals should be proportional and capped at the disputed amount';
     END IF;
 END;
 $$;
