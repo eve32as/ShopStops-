@@ -27,6 +27,11 @@ type fakeRepository struct {
 	locationID    int64
 	locationErr   error
 	location      driverLocationRequest
+	checkout      checkoutResponse
+	checkoutErr   error
+	checkoutReq   checkoutRequest
+	customerRef   string
+	checkoutKey   string
 }
 
 func (f *fakeRepository) PingContext(context.Context) error { return f.pingErr }
@@ -41,6 +46,12 @@ func (f *fakeRepository) CreateBundle(
 ) (bundleResponse, error) {
 	f.bundleRequest, f.bundleKey = request, key
 	return f.bundle, f.bundleErr
+}
+func (f *fakeRepository) CreateCheckout(
+	_ context.Context, request checkoutRequest, customerRef, idempotencyKey string,
+) (checkoutResponse, error) {
+	f.checkoutReq, f.customerRef, f.checkoutKey = request, customerRef, idempotencyKey
+	return f.checkout, f.checkoutErr
 }
 func (f *fakeRepository) DriverRoute(
 	_ context.Context, routeID, driverRef string,
@@ -232,6 +243,42 @@ func TestDriverLocationMapsTooFrequentSampleToConflict(t *testing.T) {
 		ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusConflict)
+	}
+}
+
+func TestCreateCheckoutUsesAuthenticatedCustomerAndIdempotency(t *testing.T) {
+	repo := &fakeRepository{checkout: checkoutResponse{
+		ID: "checkout-id", Status: "quoted", Currency: "usd",
+		InvoiceLines: []checkoutInvoiceLine{{Type: "dc_surcharge", AmountCents: 20}},
+		TotalCents:   20,
+	}}
+	request := httptest.NewRequest(http.MethodPost, "/checkouts", strings.NewReader(
+		`{"anchorStoreLocationId":"00000000-0000-0000-0000-000000000001","orderIds":["00000000-0000-0000-0000-000000000002"],"dropoff":{"latitude":38.91,"longitude":-76.99},"deliveryWindowStart":"2026-10-19T09:00:00Z","deliveryWindowEnd":"2026-10-19T11:00:00Z"}`))
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "customer-123")
+	request.Header.Set("Idempotency-Key", "checkout-request-1")
+	recorder := httptest.NewRecorder()
+	New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
+		ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || repo.customerRef != "customer-123" ||
+		repo.checkoutKey != "checkout-request-1" ||
+		repo.checkoutReq.AnchorStoreLocationID != "00000000-0000-0000-0000-000000000001" {
+		t.Fatalf("status=%d customer=%s key=%s body=%s", recorder.Code, repo.customerRef, repo.checkoutKey, recorder.Body.String())
+	}
+}
+
+func TestCreateCheckoutRejectsDuplicateOrderIDs(t *testing.T) {
+	repo := &fakeRepository{}
+	request := httptest.NewRequest(http.MethodPost, "/checkouts", strings.NewReader(
+		`{"anchorStoreLocationId":"00000000-0000-0000-0000-000000000001","orderIds":["00000000-0000-0000-0000-000000000002","00000000-0000-0000-0000-000000000002"],"dropoff":{"latitude":38.91,"longitude":-76.99},"deliveryWindowStart":"2026-10-19T09:00:00Z","deliveryWindowEnd":"2026-10-19T11:00:00Z"}`))
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "customer-123")
+	request.Header.Set("Idempotency-Key", "checkout-request-2")
+	recorder := httptest.NewRecorder()
+	New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
+		ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
 	}
 }
 

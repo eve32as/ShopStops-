@@ -11,6 +11,10 @@ CREATE TABLE merchants (
 ALTER TABLE store_locations
     ADD COLUMN merchant_id uuid REFERENCES merchants(id);
 
+ALTER TABLE orders
+    ADD COLUMN item_subtotal_cents integer NOT NULL DEFAULT 0
+        CHECK (item_subtotal_cents >= 0);
+
 CREATE TABLE merchant_subscriptions (
     merchant_id uuid PRIMARY KEY REFERENCES merchants(id),
     stripe_customer_id text,
@@ -49,6 +53,7 @@ CREATE INDEX jurisdictions_boundary_gix ON jurisdictions USING gist (boundary);
 
 CREATE TABLE unified_checkouts (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    idempotency_key text NOT NULL UNIQUE,
     customer_ref text NOT NULL,
     anchor_store_location_id uuid NOT NULL REFERENCES store_locations(id),
     delivery_zone_id uuid NOT NULL REFERENCES delivery_zones(id),
@@ -246,6 +251,156 @@ $$;
 CREATE TRIGGER checkout_orders_delete_guard
 BEFORE DELETE ON checkout_orders
 FOR EACH ROW EXECUTE FUNCTION prevent_checkout_order_removal();
+
+CREATE FUNCTION create_unified_checkout(
+    p_customer_ref text,
+    p_anchor_store_location_id uuid,
+    p_order_ids uuid[],
+    p_dropoff_latitude double precision,
+    p_dropoff_longitude double precision,
+    p_delivery_window_start timestamptz,
+    p_delivery_window_end timestamptz,
+    p_delivery_fee_cents integer,
+    p_service_fee_cents integer,
+    p_idempotency_key text
+) RETURNS uuid
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_checkout_id uuid;
+    v_existing unified_checkouts%ROWTYPE;
+    v_zone_id uuid;
+    v_anchor_store store_locations%ROWTYPE;
+    v_order_id uuid;
+    v_order_count integer;
+    v_distinct_order_count integer;
+    v_requested_orders uuid[];
+    v_existing_orders uuid[];
+BEGIN
+    IF p_customer_ref IS NULL OR btrim(p_customer_ref) = ''
+       OR p_anchor_store_location_id IS NULL
+       OR p_order_ids IS NULL OR cardinality(p_order_ids) = 0
+       OR cardinality(p_order_ids) > 100
+       OR p_dropoff_latitude IS NULL OR p_dropoff_longitude IS NULL
+       OR p_dropoff_latitude < -90 OR p_dropoff_latitude > 90
+       OR p_dropoff_longitude < -180 OR p_dropoff_longitude > 180
+       OR p_delivery_window_start IS NULL OR p_delivery_window_end IS NULL
+       OR p_delivery_window_end <= p_delivery_window_start
+       OR p_delivery_fee_cents IS NULL OR p_delivery_fee_cents < 0
+       OR p_service_fee_cents IS NULL OR p_service_fee_cents < 0
+       OR p_idempotency_key IS NULL OR btrim(p_idempotency_key) = ''
+       OR length(p_idempotency_key) > 200 THEN
+        RAISE EXCEPTION 'invalid unified checkout request';
+    END IF;
+    SELECT count(DISTINCT order_id) INTO v_distinct_order_count
+    FROM unnest(p_order_ids) AS requested(order_id);
+    IF v_distinct_order_count <> cardinality(p_order_ids) THEN
+        RAISE EXCEPTION 'checkout order IDs must be unique';
+    END IF;
+
+    PERFORM pg_advisory_xact_lock(hashtextextended(p_idempotency_key, 0));
+    SELECT * INTO v_existing
+    FROM unified_checkouts
+    WHERE idempotency_key = p_idempotency_key;
+    IF FOUND THEN
+        SELECT array_agg(order_id ORDER BY order_id) INTO v_existing_orders
+        FROM checkout_orders WHERE checkout_id = v_existing.id;
+        SELECT array_agg(order_id ORDER BY order_id) INTO v_requested_orders
+        FROM unnest(p_order_ids) AS requested(order_id);
+        IF v_existing.customer_ref <> p_customer_ref
+           OR v_existing.anchor_store_location_id <> p_anchor_store_location_id
+           OR v_existing.dropoff_location <>
+              ST_SetSRID(ST_MakePoint(p_dropoff_longitude, p_dropoff_latitude), 4326)::geography
+           OR v_existing.delivery_window_start <> p_delivery_window_start
+           OR v_existing.delivery_window_end <> p_delivery_window_end
+           OR v_existing.delivery_fee_cents <> p_delivery_fee_cents
+           OR v_existing.service_fee_cents <> p_service_fee_cents
+           OR v_existing_orders IS DISTINCT FROM v_requested_orders THEN
+            RAISE EXCEPTION 'idempotency key reused with different checkout request';
+        END IF;
+        RETURN v_existing.id;
+    END IF;
+
+    SELECT * INTO v_anchor_store
+    FROM store_locations
+    WHERE id = p_anchor_store_location_id AND active
+    FOR SHARE;
+    IF NOT FOUND OR v_anchor_store.merchant_id IS NULL
+       OR NOT EXISTS (
+           SELECT 1 FROM merchants m
+           WHERE m.id = v_anchor_store.merchant_id
+             AND m.active AND m.merchant_type = 'restaurant'
+       ) THEN
+        RAISE EXCEPTION 'anchor must be an active restaurant location';
+    END IF;
+
+    SELECT z.id INTO v_zone_id
+    FROM delivery_zones z
+    WHERE z.enabled
+      AND ST_Covers(z.boundary, v_anchor_store.location::geometry)
+      AND ST_Covers(
+          z.boundary,
+          ST_SetSRID(ST_MakePoint(p_dropoff_longitude, p_dropoff_latitude), 4326)
+      )
+    ORDER BY z.id
+    LIMIT 1;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'anchor and destination must be inside an enabled delivery zone';
+    END IF;
+
+    INSERT INTO unified_checkouts (
+        idempotency_key, customer_ref, anchor_store_location_id, delivery_zone_id,
+        dropoff_location, delivery_window_start, delivery_window_end,
+        delivery_fee_cents, service_fee_cents
+    ) VALUES (
+        p_idempotency_key, p_customer_ref, p_anchor_store_location_id, v_zone_id,
+        ST_SetSRID(ST_MakePoint(p_dropoff_longitude, p_dropoff_latitude), 4326)::geography,
+        p_delivery_window_start, p_delivery_window_end,
+        p_delivery_fee_cents, p_service_fee_cents
+    ) RETURNING id INTO v_checkout_id;
+
+    FOREACH v_order_id IN ARRAY p_order_ids LOOP
+        SELECT count(*) INTO v_order_count
+        FROM orders
+        WHERE id = v_order_id
+          AND customer_ref = p_customer_ref
+          AND state IN ('placed', 'preparing', 'ready')
+          AND item_subtotal_cents > 0
+          AND delivery_window_start <= p_delivery_window_end
+          AND delivery_window_end >= p_delivery_window_start;
+        IF v_order_count <> 1 THEN
+            RAISE EXCEPTION 'order is not eligible for checkout';
+        END IF;
+        INSERT INTO checkout_orders (checkout_id, order_id)
+        VALUES (v_checkout_id, v_order_id);
+    END LOOP;
+
+    INSERT INTO checkout_invoice_lines (
+        checkout_id, merchant_id, line_type, description, amount_cents
+    )
+    SELECT v_checkout_id, s.merchant_id, 'merchant_items',
+           m.name || ' items', sum(o.item_subtotal_cents)::integer
+    FROM checkout_orders co
+    JOIN orders o ON o.id = co.order_id
+    JOIN store_locations s ON s.id = o.store_location_id
+    JOIN merchants m ON m.id = s.merchant_id
+    WHERE co.checkout_id = v_checkout_id
+    GROUP BY s.merchant_id, m.name;
+
+    INSERT INTO checkout_invoice_lines (
+        checkout_id, line_type, description, amount_cents
+    ) VALUES
+        (v_checkout_id, 'delivery_fee', 'Delivery fee', p_delivery_fee_cents),
+        (v_checkout_id, 'service_fee', 'Service fee', p_service_fee_cents);
+
+    PERFORM apply_dc_delivery_surcharge(v_checkout_id);
+    UPDATE unified_checkouts
+    SET status = 'quoted', updated_at = now()
+    WHERE id = v_checkout_id;
+
+    RETURN v_checkout_id;
+END;
+$$;
 
 CREATE FUNCTION nearby_subscribed_merchants(
     p_anchor_store_location_id uuid,

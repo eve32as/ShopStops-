@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -22,6 +23,16 @@ func main() {
 	apiToken := os.Getenv("SHOPSTOPS_INTERNAL_API_TOKEN")
 	if databaseURL == "" || len(apiToken) < 32 {
 		logger.Error("DATABASE_URL and a 32-character SHOPSTOPS_INTERNAL_API_TOKEN are required")
+		os.Exit(1)
+	}
+	deliveryFeeCents, err := feeFromEnv("SHOPSTOPS_DELIVERY_FEE_CENTS")
+	if err != nil {
+		logger.Error("invalid delivery fee configuration", "error", err)
+		os.Exit(1)
+	}
+	serviceFeeCents, err := feeFromEnv("SHOPSTOPS_SERVICE_FEE_CENTS")
+	if err != nil {
+		logger.Error("invalid service fee configuration", "error", err)
 		os.Exit(1)
 	}
 
@@ -44,13 +55,17 @@ func main() {
 	startupCancel()
 
 	server := &http.Server{
-		Addr:              envOr("HTTP_ADDR", ":8080"),
-		Handler:           httpapi.New(httpapi.NewPostgresRepository(db), apiToken, logger),
+		Addr: envOr("HTTP_ADDR", ":8080"),
+		Handler: httpapi.New(
+			httpapi.NewPostgresRepository(db, deliveryFeeCents, serviceFeeCents),
+			apiToken, logger,
+		),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
+
 	go func() {
 		logger.Info("ShopStops API listening", "address", server.Addr)
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -67,6 +82,18 @@ func main() {
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		logger.Error("server shutdown failed", "error", err)
 	}
+}
+
+func feeFromEnv(name string) (int, error) {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return 0, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 0 {
+		return 0, errors.New("fee must be a non-negative integer number of cents")
+	}
+	return value, nil
 }
 
 func envOr(name, fallback string) string {
