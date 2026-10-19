@@ -55,6 +55,7 @@ paths:
     post:
       operationId: createUnifiedCheckout
       summary: Create a unified basket with one anchor and at most one adjacent merchant
+      description: The trusted gateway injects X-ShopStops-Actor from the authenticated customer identity. Delivery and service fees are configured by the platform, not accepted from clients.
       parameters:
         - in: header
           name: Idempotency-Key
@@ -72,6 +73,16 @@ paths:
       responses:
         '201':
           description: Checkout created and itemized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Checkout'
+        '200':
+          description: Existing checkout returned for an idempotent retry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Checkout'
         '400':
           description: Invalid basket or delivery location
         '409':
@@ -307,6 +318,37 @@ components:
         deliveryWindowEnd:
           type: string
           format: date-time
+    Checkout:
+      type: object
+      required: [id, status, currency, invoiceLines, totalCents]
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [quoted]
+        currency:
+          type: string
+          enum: [usd]
+        invoiceLines:
+          type: array
+          items:
+            type: object
+            required: [type, amountCents]
+            properties:
+              type:
+                type: string
+                enum: [merchant_items, delivery_fee, service_fee, dc_surcharge]
+              merchantId:
+                type: string
+                format: uuid
+              amountCents:
+                type: integer
+                minimum: 0
+        totalCents:
+          type: integer
+          minimum: 0
     GeoPoint:
       type: object
       required: [latitude, longitude]

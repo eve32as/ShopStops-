@@ -118,6 +118,7 @@ DECLARE
     v_checkout unified_checkouts%ROWTYPE;
     v_order_customer text;
     v_merchant_id uuid;
+    v_merchant_type text;
     v_anchor_merchant_id uuid;
     v_order_store_id uuid;
     v_order_zone_id uuid;
@@ -139,10 +140,10 @@ BEGIN
         RAISE EXCEPTION 'checkout does not exist or is no longer editable';
     END IF;
 
-    SELECT o.customer_ref, s.merchant_id, s.id, o.delivery_zone_id,
+    SELECT o.customer_ref, s.merchant_id, m.merchant_type, s.id, o.delivery_zone_id,
            o.dropoff_location, s.location, o.delivery_window_start,
            o.delivery_window_end
-    INTO v_order_customer, v_merchant_id, v_order_store_id,
+    INTO v_order_customer, v_merchant_id, v_merchant_type, v_order_store_id,
          v_order_zone_id, v_order_dropoff, v_order_store_location,
          v_order_window_start, v_order_window_end
     FROM orders o
@@ -171,7 +172,20 @@ BEGIN
     SELECT merchant_id INTO v_anchor_merchant_id
     FROM store_locations
     WHERE id = v_checkout.anchor_store_location_id;
+    IF v_merchant_id = v_anchor_merchant_id
+       AND v_order_store_id <> v_checkout.anchor_store_location_id THEN
+        RAISE EXCEPTION 'anchor orders must be from the selected restaurant location';
+    END IF;
     IF v_merchant_id <> v_anchor_merchant_id THEN
+        IF v_merchant_type NOT IN ('retail', 'grocery')
+           OR NOT ST_DWithin(
+               v_order_store_location,
+               (SELECT location FROM store_locations
+                WHERE id = v_checkout.anchor_store_location_id),
+               500
+           ) THEN
+            RAISE EXCEPTION 'additional merchant must be nearby retail or grocery';
+        END IF;
         IF NOT EXISTS (
             SELECT 1
             FROM merchant_subscriptions ms
@@ -374,6 +388,16 @@ BEGIN
         INSERT INTO checkout_orders (checkout_id, order_id)
         VALUES (v_checkout_id, v_order_id);
     END LOOP;
+    IF NOT EXISTS (
+        SELECT 1
+        FROM checkout_orders co
+        JOIN orders o ON o.id = co.order_id
+        JOIN store_locations s ON s.id = o.store_location_id
+        WHERE co.checkout_id = v_checkout_id
+          AND s.id = p_anchor_store_location_id
+    ) THEN
+        RAISE EXCEPTION 'checkout must include at least one anchor restaurant order';
+    END IF;
 
     INSERT INTO checkout_invoice_lines (
         checkout_id, merchant_id, line_type, description, amount_cents

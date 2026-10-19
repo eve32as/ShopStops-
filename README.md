@@ -27,6 +27,8 @@ token (at least 32 characters), then run:
 ```sh
 export DATABASE_URL='postgres://<user>:<password>@localhost:5432/shopstops?sslmode=disable'
 export SHOPSTOPS_INTERNAL_API_TOKEN="$(openssl rand -hex 32)"
+export SHOPSTOPS_DELIVERY_FEE_CENTS=500
+export SHOPSTOPS_SERVICE_FEE_CENTS=100
 go run ./cmd/shopstops-api
 ```
 
@@ -37,6 +39,10 @@ a shared internal bearer token and must be placed behind a gateway that
 authenticates users, enforces roles, strips
 client-supplied `X-ShopStops-Actor` headers, and injects the authenticated actor
 identity. Do not distribute this internal token to client applications.
+Delivery/service fee configuration is in integer cents and defaults to zero if
+unset. The checkout endpoint builds the merchant item lines from each order's
+`item_subtotal_cents` snapshot and applies the D.C. surcharge from the configured
+jurisdiction polygon.
 
 Native iOS and Android apps, the admin web app, the remaining contract
 endpoints, and live Stripe, routing, and WebSocket integrations remain

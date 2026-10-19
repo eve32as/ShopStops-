@@ -124,6 +124,16 @@ one $0.20 invoice line. Only after Stripe confirms payment does
 `record_checkout_payment` create the tax-holding ledger record and mark the
 checkout paid.
 
+The Go `POST /checkouts` handler accepts an authenticated customer's anchor
+store, order IDs, destination coordinates, and delivery window. Delivery and
+service fees come from `SHOPSTOPS_DELIVERY_FEE_CENTS` and
+`SHOPSTOPS_SERVICE_FEE_CENTS`; order item amounts come from the immutable
+`orders.item_subtotal_cents` snapshot. `create_unified_checkout` reserves all
+orders, applies merchant/zone/window constraints, writes merchant-level invoice
+lines and fees, applies the D.C. surcharge, and marks the checkout quoted in a
+single transaction. Repeating an idempotency key with the same request returns
+the original checkout; a different request using that key is rejected.
+
 `create_unified_route` requires a paid basket containing an anchor restaurant
 order and exactly one partner merchant. It persists the mandatory immutable
 sequence: restaurant pickup, adjacent merchant pickup, customer drop-off.
