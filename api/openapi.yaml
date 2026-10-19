@@ -1,0 +1,899 @@
+openapi: 3.1.0
+info:
+  title: ShopStops Delivery API
+  version: 1.0.0
+  description: >
+    Versioned public contract. Put the API behind an authenticated gateway; its
+    shared bearer token is for internal service traffic only.
+servers:
+  - url: https://api.shopstops.example/v1
+    description: Public gateway; strips /v1 before forwarding to the API service
+security:
+  - bearerAuth: []
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      summary: Check API and database readiness
+      security: []
+      responses:
+        '200':
+          description: API and database are ready
+        '503':
+          description: Database unavailable
+  /stores/{storeLocationId}/nearby-merchants:
+    get:
+      operationId: findNearbySubscribedMerchants
+      summary: Find eligible grocery and retail merchants within 500 meters
+      parameters:
+        - in: path
+          name: storeLocationId
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - in: query
+          name: radiusMeters
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 500
+            default: 500
+      responses:
+        '200':
+          description: Active, subscription-positive nearby merchants
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/NearbyMerchant'
+        '404':
+          description: Anchor store not found
+  /stores/{storeLocationId}/catalog:
+    get:
+      operationId: getStoreCatalog
+      summary: List available catalog items for a visible subscribed storefront
+      parameters:
+        - in: path
+          name: storeLocationId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Available catalog items with current prices and delivery-volume estimates
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CatalogItem'
+        '404':
+          description: Storefront is unavailable
+  /orders:
+    post:
+      operationId: createCustomerOrder
+      summary: Create an authenticated customer's order from one store catalog
+      description: Prices, volume, customer identity, and delivery-zone membership are resolved server-side. The request is idempotent.
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCustomerOrder'
+      responses:
+        '201':
+          description: Order created or returned for an idempotent retry
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, status, itemSubtotalCents]
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                  status:
+                    type: string
+                    enum: [placed]
+                  itemSubtotalCents:
+                    type: integer
+                    minimum: 1
+        '400':
+          description: Invalid order details or authenticated customer identity is missing
+        '404':
+          description: Storefront, catalog item, or delivery zone unavailable
+        '409':
+          description: Idempotency key conflicts or item is no longer available
+  /merchant/catalog:
+    get:
+      operationId: getMerchantCatalog
+      summary: List catalog items belonging to the authenticated merchant
+      description: Requires the trusted gateway to inject the authenticated merchant UUID and merchant role. Includes unavailable items for editing.
+      responses:
+        '200':
+          description: Items across the merchant's store locations
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MerchantCatalogItem'
+        '403':
+          description: Merchant role required
+        '404':
+          description: Merchant not found
+    post:
+      operationId: createMerchantCatalogItem
+      summary: Add a catalog item to one of the merchant's store locations
+      description: The database verifies store ownership. Price and volume are validated and used for future orders only. Requires an idempotency key.
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateMerchantCatalogItem'
+      responses:
+        '201':
+          description: Item created or returned after an identical retry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MerchantCatalogItem'
+        '400':
+          description: Invalid catalog item or idempotency key
+        '403':
+          description: Merchant role required
+        '404':
+          description: Merchant or owned store location not found
+  /merchant/store-locations:
+    get:
+      operationId: getMerchantStoreLocations
+      summary: List store locations owned by the authenticated merchant
+      description: Requires the trusted gateway to inject the authenticated merchant UUID and merchant role.
+      responses:
+        '200':
+          description: Merchant's store locations available for catalog management
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  required: [id, name]
+                  properties:
+                    id:
+                      type: string
+                      format: uuid
+                    name:
+                      type: string
+        '403':
+          description: Merchant role required
+        '404':
+          description: Merchant not found
+        '409':
+          description: Idempotency key conflicts with a different create request
+  /merchant/catalog/{itemId}:
+    patch:
+      operationId: updateMerchantCatalogItem
+      summary: Update or hide one of the authenticated merchant's catalog items
+      description: The database verifies item ownership. Price and name changes do not alter snapshots on existing orders.
+      parameters:
+        - in: path
+          name: itemId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateMerchantCatalogItem'
+      responses:
+        '200':
+          description: Catalog item updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MerchantCatalogItem'
+        '400':
+          description: Invalid catalog item
+        '403':
+          description: Merchant role required
+        '404':
+          description: Catalog item not found for merchant
+  /checkouts:
+    post:
+      operationId: createUnifiedCheckout
+      summary: Create a unified basket with one anchor and at most one adjacent merchant
+      description: The trusted gateway injects X-ShopStops-Actor from the authenticated customer identity. Delivery and service fees are configured by the platform, not accepted from clients.
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCheckoutRequest'
+      responses:
+        '201':
+          description: Checkout created and itemized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Checkout'
+        '200':
+          description: Existing checkout returned for an idempotent retry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Checkout'
+        '400':
+          description: Invalid basket or delivery location
+        '409':
+          description: More than two merchants or an ineligible merchant
+  /checkouts/{checkoutId}/payment:
+    post:
+      operationId: createCheckoutPayment
+      summary: Create a Stripe PaymentIntent for the itemized checkout
+      parameters:
+        - $ref: '#/components/parameters/CheckoutId'
+      responses:
+        '200':
+          description: Stripe PaymentIntent client configuration
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [paymentIntentId, clientSecret, status, amountCents, currency]
+                properties:
+                  paymentIntentId:
+                    type: string
+                  clientSecret:
+                    type: string
+                  status:
+                    type: string
+                  amountCents:
+                    type: integer
+                  currency:
+                    type: string
+                    enum: [usd]
+        '401':
+          description: Internal API authentication required
+        '404':
+          description: Checkout not found for the authenticated customer
+        '409':
+          description: Checkout is not payable or merchant payouts are not configured
+        '503':
+          description: Payment processing is unavailable
+  /driver/routes/{routeId}:
+    get:
+      operationId: getDriverRoute
+      summary: Get the assigned immutable route and routing legs
+      description: The trusted API gateway injects X-ShopStops-Actor from the authenticated driver identity.
+      parameters:
+        - $ref: '#/components/parameters/RouteId'
+      responses:
+        '200':
+          description: Ordered route waypoints and route matrix data
+        '403':
+          description: Route is not assigned to this driver
+        '404':
+          description: Route not found
+  /driver/routes/{routeId}/location:
+    post:
+      operationId: recordDriverLocation
+      summary: Record driver location during an active route
+      description: Driver clients should send samples every five seconds while active.
+      parameters:
+        - $ref: '#/components/parameters/RouteId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DriverLocation'
+      responses:
+        '202':
+          description: Location accepted
+        '400':
+          description: Invalid or too-frequent location sample
+        '403':
+          description: Route is not assigned to this driver
+  /driver/routes/{routeId}/stops/{stopId}/events:
+    post:
+      operationId: recordUnifiedRouteStopEvent
+      summary: Confirm arrival or completion of the current assigned route stop
+      description: Requires the assigned driver identity. Stop events are idempotent and the API enforces the server-defined stop sequence. Use arrive before complete for each stop.
+      parameters:
+        - $ref: '#/components/parameters/RouteId'
+        - in: path
+          name: stopId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DriverRouteStopEvent'
+      responses:
+        '200':
+          description: Stop event accepted or returned for an identical retry
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [stopId, stopStatus, routeStatus]
+                properties:
+                  stopId:
+                    type: string
+                    format: uuid
+                  stopStatus:
+                    type: string
+                    enum: [arrived, completed]
+                  routeStatus:
+                    type: string
+                    enum: [in_progress, completed]
+        '400':
+          description: Invalid stop event
+        '403':
+          description: Route is not assigned to this driver
+        '404':
+          description: Route or stop not found
+        '409':
+          description: Event conflicts with stop state or mandatory route order
+  /merchant/subscription/setup-intent:
+    post:
+      operationId: createMerchantBillingSetupIntent
+      summary: Create a SetupIntent for the authenticated merchant billing method
+      description: The trusted gateway must inject the authenticated merchant UUID and merchant role. The returned client secret is usable only to set up that merchant's payment method.
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+      responses:
+        '200':
+          description: Stripe SetupIntent client configuration
+        '403':
+          description: Merchant role required
+        '404':
+          description: Merchant not found
+        '409':
+          description: Billing customer requires reconciliation
+        '503':
+          description: Stripe billing is unavailable
+  /merchant/subscription:
+    get:
+      operationId: getMerchantSubscription
+      summary: Get merchant SaaS subscription status
+      description: The trusted gateway injects the authenticated merchant UUID and merchant role.
+      responses:
+        '200':
+          description: Monthly subscription amount and billing status
+        '403':
+          description: Merchant identity required
+    post:
+      operationId: createMerchantSubscription
+      summary: Start the fixed $199 monthly merchant subscription
+      description: Requires a saved merchant billing payment method. Stripe charges on the next monthly billing anchor; visibility is not enabled until the subscription invoice is paid.
+      responses:
+        '202':
+          description: Subscription created and awaiting first successful billing event
+        '403':
+          description: Merchant role required
+        '409':
+          description: Payment method missing or existing billing operation requires reconciliation
+        '503':
+          description: Stripe merchant price or billing credentials are unavailable
+  /admin/checkouts/{checkoutId}/refund:
+    post:
+      operationId: refundCheckout
+      summary: Issue a full remaining refund for a paid checkout
+      description: Admin-only. Transfer reversals are separately created for each merchant payout after Stripe confirms the refund. Requires an idempotency key.
+      parameters:
+        - $ref: '#/components/parameters/CheckoutId'
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason:
+                  type: string
+                  enum: [duplicate, fraudulent, requested_by_customer]
+      responses:
+        '202':
+          description: Refund accepted by Stripe and awaiting refund webhook confirmation
+        '400':
+          description: Invalid checkout, idempotency key, or refund reason
+        '403':
+          description: Admin role required
+        '404':
+          description: Checkout not found
+        '409':
+          description: Payment not refundable or prior Stripe operation requires reconciliation
+        '503':
+          description: Stripe billing is unavailable
+  /webhooks/stripe:
+    post:
+      operationId: receiveStripeWebhook
+      summary: Process idempotent Stripe Connect and Billing events
+      description: Configure subscription, invoice, SetupIntent, refund, and dispute event types in addition to checkout PaymentIntent events.
+      security: []
+      parameters:
+        - in: header
+          name: Stripe-Signature
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Event recorded, already processed, or retried transfers completed
+        '400':
+          description: Signature or event invalid
+        '503':
+          description: Event could not be processed; Stripe should retry it
+  /dispatch/bundles:
+    post:
+      operationId: createDeliveryBundle
+      summary: Bundle eligible nearby orders and create an ordered stop queue
+      description: Requires a dispatch or admin role. The request is idempotent.
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateBundleRequest'
+      responses:
+        '201':
+          description: Bundle created and activated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Bundle'
+        '200':
+          description: Existing result returned for an idempotent retry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Bundle'
+        '400':
+          description: Invalid limits or ineligible seed order
+        '401':
+          description: Authentication required
+        '403':
+          description: Dispatch/admin role required
+        '409':
+          description: Seed order is unavailable or reserved
+  /driver/bundles/{bundleId}:
+    get:
+      operationId: getDriverBundle
+      summary: Get an assigned bundle and its ordered stops
+      description: Drivers can only retrieve bundles assigned to their identity.
+      parameters:
+        - $ref: '#/components/parameters/BundleId'
+      responses:
+        '200':
+          description: Bundle and ordered stops
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Bundle'
+        '401':
+          description: Authentication required
+        '403':
+          description: Bundle is not assigned to this driver
+        '404':
+          description: Bundle not found
+  /driver/bundles/{bundleId}/stops/{stopId}/events:
+    post:
+      operationId: recordStopEvent
+      summary: Record an idempotent driver stop event
+      parameters:
+        - $ref: '#/components/parameters/BundleId'
+        - in: path
+          name: stopId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StopEvent'
+      responses:
+        '200':
+          description: Event accepted or previously accepted
+        '400':
+          description: Invalid event or state transition
+        '403':
+          description: Bundle is not assigned to this driver
+        '404':
+          description: Bundle or stop not found
+        '409':
+          description: Event conflicts with current stop state
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    CheckoutId:
+      in: path
+      name: checkoutId
+      required: true
+      schema:
+        type: string
+        format: uuid
+    RouteId:
+      in: path
+      name: routeId
+      required: true
+      schema:
+        type: string
+        format: uuid
+    BundleId:
+      in: path
+      name: bundleId
+      required: true
+      schema:
+        type: string
+        format: uuid
+  schemas:
+    NearbyMerchant:
+      type: object
+      required: [merchantId, name, merchantType, storeLocationId, distanceMeters]
+      properties:
+        merchantId:
+          type: string
+          format: uuid
+        name:
+          type: string
+        merchantType:
+          type: string
+          enum: [retail, grocery]
+        storeLocationId:
+          type: string
+          format: uuid
+        distanceMeters:
+          type: number
+          maximum: 500
+    CatalogItem:
+      type: object
+      required: [id, name, description, unitPriceCents, volumeLiters]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+        unitPriceCents:
+          type: integer
+          minimum: 1
+        volumeLiters:
+          type: string
+          pattern: '^[0-9]+(\.[0-9]{1,2})?$'
+    MerchantCatalogItem:
+      allOf:
+        - $ref: '#/components/schemas/CatalogItem'
+        - type: object
+          required: [storeLocationId, available]
+          properties:
+            storeLocationId:
+              type: string
+              format: uuid
+            available:
+              type: boolean
+    CreateMerchantCatalogItem:
+      type: object
+      additionalProperties: false
+      required: [storeLocationId, name, description, unitPriceCents, volumeLiters]
+      properties:
+        storeLocationId:
+          type: string
+          format: uuid
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        description:
+          type: string
+          maxLength: 1000
+        unitPriceCents:
+          type: integer
+          minimum: 1
+          maximum: 10000000
+        volumeLiters:
+          type: number
+          exclusiveMinimum: 0
+          maximum: 100000
+          multipleOf: 0.01
+    UpdateMerchantCatalogItem:
+      type: object
+      additionalProperties: false
+      required: [name, description, unitPriceCents, volumeLiters, available]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        description:
+          type: string
+          maxLength: 1000
+        unitPriceCents:
+          type: integer
+          minimum: 1
+          maximum: 10000000
+        volumeLiters:
+          type: number
+          exclusiveMinimum: 0
+          maximum: 100000
+          multipleOf: 0.01
+        available:
+          type: boolean
+    CreateCustomerOrder:
+      type: object
+      additionalProperties: false
+      required: [storeLocationId, dropoff, deliveryWindowStart, deliveryWindowEnd, items]
+      properties:
+        storeLocationId:
+          type: string
+          format: uuid
+        dropoff:
+          $ref: '#/components/schemas/GeoPoint'
+        deliveryWindowStart:
+          type: string
+          format: date-time
+        deliveryWindowEnd:
+          type: string
+          format: date-time
+        items:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items:
+            type: object
+            additionalProperties: false
+            required: [catalogItemId, quantity]
+            properties:
+              catalogItemId:
+                type: string
+                format: uuid
+              quantity:
+                type: integer
+                minimum: 1
+                maximum: 99
+    CreateCheckoutRequest:
+      type: object
+      additionalProperties: false
+      description: Orders may come from the anchor plus at most one adjacent merchant.
+      required: [anchorStoreLocationId, orderIds, dropoff, deliveryWindowStart, deliveryWindowEnd]
+      properties:
+        anchorStoreLocationId:
+          type: string
+          format: uuid
+        orderIds:
+          type: array
+          minItems: 1
+          maxItems: 100
+          uniqueItems: true
+          items:
+            type: string
+            format: uuid
+        dropoff:
+          $ref: '#/components/schemas/GeoPoint'
+        deliveryWindowStart:
+          type: string
+          format: date-time
+        deliveryWindowEnd:
+          type: string
+          format: date-time
+    Checkout:
+      type: object
+      required: [id, status, currency, invoiceLines, totalCents]
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [quoted]
+        currency:
+          type: string
+          enum: [usd]
+        invoiceLines:
+          type: array
+          items:
+            type: object
+            required: [type, amountCents]
+            properties:
+              type:
+                type: string
+                enum: [merchant_items, delivery_fee, service_fee, dc_surcharge]
+              merchantId:
+                type: string
+                format: uuid
+              amountCents:
+                type: integer
+                minimum: 0
+        totalCents:
+          type: integer
+          minimum: 0
+    GeoPoint:
+      type: object
+      required: [latitude, longitude]
+      properties:
+        latitude:
+          type: number
+          minimum: -90
+          maximum: 90
+        longitude:
+          type: number
+          minimum: -180
+          maximum: 180
+    DriverLocation:
+      type: object
+      additionalProperties: false
+      required: [eventId, observedAt, location]
+      properties:
+        eventId:
+          type: string
+          minLength: 1
+          maxLength: 200
+        observedAt:
+          type: string
+          format: date-time
+        location:
+          $ref: '#/components/schemas/GeoPoint'
+    DriverRouteStopEvent:
+      type: object
+      additionalProperties: false
+      required: [eventId, type, observedAt]
+      properties:
+        eventId:
+          type: string
+          minLength: 1
+          maxLength: 200
+        type:
+          type: string
+          enum: [arrive, complete]
+        observedAt:
+          type: string
+          format: date-time
+    CreateBundleRequest:
+      type: object
+      additionalProperties: false
+      required: [seedOrderId, capacityLiters]
+      properties:
+        seedOrderId:
+          type: string
+          format: uuid
+        capacityLiters:
+          type: number
+          exclusiveMinimum: 0
+        maxOrders:
+          type: integer
+          minimum: 1
+          default: 3
+        pickupRadiusMeters:
+          type: integer
+          minimum: 0
+          default: 2000
+        dropoffRadiusMeters:
+          type: integer
+          minimum: 0
+          default: 2000
+    Bundle:
+      type: object
+      required: [id, status, stops]
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [active, in_progress, completed, cancelled]
+        stops:
+          type: array
+          items:
+            $ref: '#/components/schemas/Stop'
+    Stop:
+      type: object
+      required: [id, orderId, sequence, type, latitude, longitude, status]
+      properties:
+        id:
+          type: string
+          format: uuid
+        orderId:
+          type: string
+          format: uuid
+        sequence:
+          type: integer
+          minimum: 1
+        type:
+          type: string
+          enum: [pickup, dropoff]
+        latitude:
+          type: number
+          minimum: -90
+          maximum: 90
+        longitude:
+          type: number
+          minimum: -180
+          maximum: 180
+        status:
+          type: string
+          enum: [pending, arrived, completed, skipped]
+    StopEvent:
+      type: object
+      additionalProperties: false
+      required: [eventId, type, observedAt]
+      properties:
+        eventId:
+          type: string
+          minLength: 1
+          maxLength: 200
+        type:
+          type: string
+          enum: [arrived, completed, skipped]
+        observedAt:
+          type: string
+          format: date-time
+        payload:
+          type: object
+          additionalProperties: true
