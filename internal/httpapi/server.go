@@ -16,10 +16,21 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
+var (
+	ErrNotFound   = errors.New("not found")
+	ErrIneligible = errors.New("not eligible")
+)
+
 type Server struct {
-	db    *sql.DB
+	repo  Repository
 	token string
 	log   *slog.Logger
+}
+
+type Repository interface {
+	PingContext(context.Context) error
+	NearbyMerchants(context.Context, string, int) ([]NearbyMerchant, error)
+	CreateBundle(context.Context, bundleRequest, string) (bundleResponse, error)
 }
 
 type NearbyMerchant struct {
@@ -33,9 +44,9 @@ type NearbyMerchant struct {
 type bundleRequest struct {
 	SeedOrderID         string  `json:"seedOrderId"`
 	CapacityLiters      float64 `json:"capacityLiters"`
-	MaxOrders           int     `json:"maxOrders"`
-	PickupRadiusMeters  int     `json:"pickupRadiusMeters"`
-	DropoffRadiusMeters int     `json:"dropoffRadiusMeters"`
+	MaxOrders           *int    `json:"maxOrders"`
+	PickupRadiusMeters  *int    `json:"pickupRadiusMeters"`
+	DropoffRadiusMeters *int    `json:"dropoffRadiusMeters"`
 }
 
 type bundleStop struct {
@@ -55,8 +66,8 @@ type bundleResponse struct {
 	Stops  []bundleStop `json:"stops"`
 }
 
-func New(db *sql.DB, token string, logger *slog.Logger) http.Handler {
-	s := &Server{db: db, token: token, log: logger}
+func New(repo Repository, token string, logger *slog.Logger) http.Handler {
+	s := &Server{repo: repo, token: token, log: logger}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.Handle("GET /stores/{storeLocationId}/nearby-merchants", s.authorized(http.HandlerFunc(s.nearbyMerchants)))
@@ -77,13 +88,13 @@ func (s *Server) authorized(next http.Handler) http.Handler {
 }
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
-	if s.db == nil {
+	if s.repo == nil {
 		writeError(w, http.StatusServiceUnavailable, "database unavailable")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
-	if err := s.db.PingContext(ctx); err != nil {
+	if err := s.repo.PingContext(ctx); err != nil {
 		writeError(w, http.StatusServiceUnavailable, "database unavailable")
 		return
 	}
@@ -109,43 +120,12 @@ func (s *Server) nearbyMerchants(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
-	var exists bool
-	if err := s.db.QueryRowContext(ctx,
-		`SELECT EXISTS (SELECT 1 FROM store_locations WHERE id = $1 AND active)`,
-		storeID,
-	).Scan(&exists); err != nil {
-		s.databaseError(w, err)
-		return
-	}
-	if !exists {
+	merchants, err := s.repo.NearbyMerchants(ctx, storeID, radius)
+	if errors.Is(err, ErrNotFound) {
 		writeError(w, http.StatusNotFound, "store location not found")
 		return
 	}
-
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT merchant_id, merchant_name, merchant_type, store_location_id, distance_meters
-		FROM nearby_subscribed_merchants($1, $2)`,
-		storeID, radius,
-	)
 	if err != nil {
-		s.databaseError(w, err)
-		return
-	}
-	defer rows.Close()
-
-	merchants := make([]NearbyMerchant, 0)
-	for rows.Next() {
-		var merchant NearbyMerchant
-		if err := rows.Scan(
-			&merchant.MerchantID, &merchant.Name, &merchant.MerchantType,
-			&merchant.StoreLocation, &merchant.DistanceMeters,
-		); err != nil {
-			s.databaseError(w, err)
-			return
-		}
-		merchants = append(merchants, merchant)
-	}
-	if err := rows.Err(); err != nil {
 		s.databaseError(w, err)
 		return
 	}
@@ -166,22 +146,18 @@ func (s *Server) createBundle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !isUUID(request.SeedOrderID) || request.CapacityLiters <= 0 ||
-		request.CapacityLiters > 10000 || request.MaxOrders < 0 ||
-		request.MaxOrders > 100 || request.PickupRadiusMeters < 0 ||
-		request.PickupRadiusMeters > 100000 || request.DropoffRadiusMeters < 0 ||
-		request.DropoffRadiusMeters > 100000 {
+		request.CapacityLiters > 10000 || optionalInt(request.MaxOrders, 3) < 1 ||
+		optionalInt(request.MaxOrders, 3) > 100 ||
+		optionalInt(request.PickupRadiusMeters, 2000) > 100000 ||
+		optionalInt(request.DropoffRadiusMeters, 2000) > 100000 ||
+		optionalInt(request.PickupRadiusMeters, 2000) < 0 ||
+		optionalInt(request.DropoffRadiusMeters, 2000) < 0 {
 		writeError(w, http.StatusBadRequest, "invalid bundle parameters")
 		return
 	}
-	if request.MaxOrders == 0 {
-		request.MaxOrders = 3
-	}
-	if request.PickupRadiusMeters == 0 {
-		request.PickupRadiusMeters = 2000
-	}
-	if request.DropoffRadiusMeters == 0 {
-		request.DropoffRadiusMeters = 2000
-	}
+	request.MaxOrders = intPointer(optionalInt(request.MaxOrders, 3))
+	request.PickupRadiusMeters = intPointer(optionalInt(request.PickupRadiusMeters, 2000))
+	request.DropoffRadiusMeters = intPointer(optionalInt(request.DropoffRadiusMeters, 2000))
 	idempotencyKey := r.Header.Get("Idempotency-Key")
 	if len(idempotencyKey) == 0 || len(idempotencyKey) > 200 || strings.TrimSpace(idempotencyKey) != idempotencyKey {
 		writeError(w, http.StatusBadRequest, "valid Idempotency-Key header is required")
@@ -190,40 +166,96 @@ func (s *Server) createBundle(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	tx, err := s.db.BeginTx(ctx, nil)
+	response, err := s.repo.CreateBundle(ctx, request, idempotencyKey)
+	if errors.Is(err, ErrIneligible) {
+		writeError(w, http.StatusConflict, "seed order is not eligible for dispatch")
+		return
+	}
 	if err != nil {
 		s.databaseError(w, err)
 		return
 	}
-	defer tx.Rollback()
+	writeJSON(w, http.StatusOK, response)
+}
 
+type PostgresRepository struct {
+	db *sql.DB
+}
+
+func NewPostgresRepository(db *sql.DB) *PostgresRepository {
+	return &PostgresRepository{db: db}
+}
+
+func (p *PostgresRepository) PingContext(ctx context.Context) error {
+	return p.db.PingContext(ctx)
+}
+
+func (p *PostgresRepository) NearbyMerchants(
+	ctx context.Context, storeID string, radius int,
+) ([]NearbyMerchant, error) {
+	var exists bool
+	if err := p.db.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM store_locations WHERE id = $1 AND active)`,
+		storeID,
+	).Scan(&exists); err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, ErrNotFound
+	}
+	rows, err := p.db.QueryContext(ctx, `
+		SELECT merchant_id, merchant_name, merchant_type, store_location_id, distance_meters
+		FROM nearby_subscribed_merchants($1, $2)`, storeID, radius)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	merchants := make([]NearbyMerchant, 0)
+	for rows.Next() {
+		var merchant NearbyMerchant
+		if err := rows.Scan(
+			&merchant.MerchantID, &merchant.Name, &merchant.MerchantType,
+			&merchant.StoreLocation, &merchant.DistanceMeters,
+		); err != nil {
+			return nil, err
+		}
+		merchants = append(merchants, merchant)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return merchants, nil
+}
+
+func (p *PostgresRepository) CreateBundle(
+	ctx context.Context, request bundleRequest, idempotencyKey string,
+) (bundleResponse, error) {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return bundleResponse{}, err
+	}
+	defer tx.Rollback()
 	var bundleID string
 	err = tx.QueryRowContext(ctx, `
 		SELECT create_proximity_bundle($1, $2, $3, $4, $5, $6)`,
 		request.SeedOrderID, idempotencyKey, request.CapacityLiters,
-		request.MaxOrders, request.PickupRadiusMeters, request.DropoffRadiusMeters,
+		*request.MaxOrders, *request.PickupRadiusMeters, *request.DropoffRadiusMeters,
 	).Scan(&bundleID)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "P0001" {
-			writeError(w, http.StatusConflict, "seed order is not eligible for dispatch")
-			return
+			return bundleResponse{}, ErrIneligible
 		}
-		s.databaseError(w, err)
-		return
+		return bundleResponse{}, err
 	}
-
 	response := bundleResponse{ID: bundleID, Status: "active", Stops: make([]bundleStop, 0)}
 	rows, err := tx.QueryContext(ctx, `
 		SELECT id, order_id, sequence, stop_type,
 		       ST_Y(location::geometry), ST_X(location::geometry), status,
 		       store_location_id
-		FROM delivery_stops
-		WHERE bundle_id = $1
-		ORDER BY sequence`, bundleID)
+		FROM delivery_stops WHERE bundle_id = $1 ORDER BY sequence`, bundleID)
 	if err != nil {
-		s.databaseError(w, err)
-		return
+		return bundleResponse{}, err
 	}
 	for rows.Next() {
 		var stop bundleStop
@@ -233,8 +265,7 @@ func (s *Server) createBundle(w http.ResponseWriter, r *http.Request) {
 			&stop.Latitude, &stop.Longitude, &stop.Status, &storeID,
 		); err != nil {
 			rows.Close()
-			s.databaseError(w, err)
-			return
+			return bundleResponse{}, err
 		}
 		if storeID.Valid {
 			stop.StoreLocationID = &storeID.String
@@ -243,15 +274,13 @@ func (s *Server) createBundle(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		s.databaseError(w, err)
-		return
+		return bundleResponse{}, err
 	}
 	rows.Close()
 	if err := tx.Commit(); err != nil {
-		s.databaseError(w, err)
-		return
+		return bundleResponse{}, err
 	}
-	writeJSON(w, http.StatusOK, response)
+	return response, nil
 }
 
 func (s *Server) databaseError(w http.ResponseWriter, err error) {
@@ -285,4 +314,15 @@ func isUUID(value string) bool {
 		}
 	}
 	return true
+}
+
+func optionalInt(value *int, fallback int) int {
+	if value == nil {
+		return fallback
+	}
+	return *value
+}
+
+func intPointer(value int) *int {
+	return &value
 }

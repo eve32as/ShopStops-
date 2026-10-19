@@ -45,7 +45,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:              envOr("HTTP_ADDR", ":8080"),
-		Handler:           httpapi.New(db, apiToken, logger),
+		Handler:           httpapi.New(httpapi.NewPostgresRepository(db), apiToken, logger),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,
