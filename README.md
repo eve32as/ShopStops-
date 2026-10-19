@@ -31,9 +31,10 @@ go run ./cmd/shopstops-api
 ```
 
 The service listens on `:8080` by default; set `HTTP_ADDR` to override it. It
-currently implements health checks, nearby subscribed-merchant discovery, and
-atomic dispatch. Protected endpoints use a shared internal bearer token and
-must be placed behind a gateway that authenticates users, enforces roles, strips
+currently implements health checks, nearby subscribed-merchant discovery,
+atomic dispatch, driver route reads, and GPS ingestion. Protected endpoints use
+a shared internal bearer token and must be placed behind a gateway that
+authenticates users, enforces roles, strips
 client-supplied `X-ShopStops-Actor` headers, and injects the authenticated actor
 identity. Do not distribute this internal token to client applications.
 
