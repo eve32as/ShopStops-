@@ -91,7 +91,7 @@ function App() {
     <main className="shell">
       <aside className="rail">
         <a className="brand" href="#" aria-label="ShopStops admin home">
-        <img className="brand-mark" src="/shopstops-mark.svg" alt="" />
+          <img className="brand-mark" src="/shopstops-mark.svg" alt="" />
           <span>shopstops<span className="brand-sub">CONTROL ROOM</span></span>
         </a>
         <div className="rail-label">WORKSPACE</div>

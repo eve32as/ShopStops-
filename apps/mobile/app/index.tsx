@@ -2,13 +2,13 @@ import * as Location from "expo-location";
 import { useStripe } from "@stripe/stripe-react-native";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Image,
   ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
   Pressable,
   ScrollView,
   StyleSheet,
-  Image,
   Text,
   TextInput,
   View,
@@ -664,7 +664,7 @@ export default function HomeScreen() {
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <View style={styles.header}>
           <View style={styles.brandLockup}>
-            <Image accessibilityLabel="ShopStops logo" source={require("../assets/icon.png")} style={styles.brandIcon} />
+            <Image accessible={false} source={require("../assets/icon.png")} style={styles.brandIcon} />
             <View>
               <Text style={styles.brand}>ShopStops</Text>
               <Text style={styles.tagline}>Neighborhood delivery, connected.</Text>
@@ -711,7 +711,7 @@ export default function HomeScreen() {
             <View style={styles.connectionCopy}>
               <Text style={styles.sectionEyebrow}>SECURE CONNECTION</Text>
               <Text style={styles.connectionStatus}>
-                {gatewayUrl && sessionToken ? "Gateway details ready" : "Connect to your gateway"}
+                {gatewayUrl && sessionToken ? "Gateway details entered" : "Connect to your gateway"}
               </Text>
             </View>
             <Pressable
@@ -1195,7 +1195,7 @@ const styles = StyleSheet.create({
   sectionEyebrow: { color: "#e5653d", fontSize: 10, fontWeight: "800", letterSpacing: 1.4 },
   sectionTitle: { color: "#19352f", fontSize: 20, fontWeight: "800", marginTop: 7 },
   helpText: { color: "#65756f", fontSize: 13, lineHeight: 19, marginTop: 6, marginBottom: 11 },
-  field: { flex: 1, minWidth: 140, marginTop: 6 },
+  field: { flex: 1, minWidth: 125, marginTop: 6 },
   fieldLabel: { color: "#52645e", fontSize: 11, fontWeight: "700", marginBottom: 6 },
   fieldGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
   input: { backgroundColor: "#f8f9f7", borderColor: "#e4e9e5", borderWidth: 1, borderRadius: 10, color: "#203b34", fontSize: 13, paddingHorizontal: 12, paddingVertical: 11, marginTop: 8 },
