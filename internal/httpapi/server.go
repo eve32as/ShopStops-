@@ -19,6 +19,8 @@ import (
 var (
 	ErrNotFound   = errors.New("not found")
 	ErrIneligible = errors.New("not eligible")
+	ErrForbidden  = errors.New("forbidden")
+	ErrConflict   = errors.New("conflict")
 )
 
 type Server struct {
@@ -31,6 +33,8 @@ type Repository interface {
 	PingContext(context.Context) error
 	NearbyMerchants(context.Context, string, int) ([]NearbyMerchant, error)
 	CreateBundle(context.Context, bundleRequest, string) (bundleResponse, error)
+	DriverRoute(context.Context, string, string) (routeResponse, error)
+	RecordDriverLocation(context.Context, string, string, driverLocationRequest) (int64, error)
 }
 
 type NearbyMerchant struct {
@@ -66,12 +70,52 @@ type bundleResponse struct {
 	Stops  []bundleStop `json:"stops"`
 }
 
+type routeResponse struct {
+	ID       string      `json:"id"`
+	Checkout string      `json:"checkoutId"`
+	Status   string      `json:"status"`
+	Provider string      `json:"routingProvider"`
+	Stops    []routeStop `json:"stops"`
+	Legs     []routeLeg  `json:"legs"`
+}
+
+type routeStop struct {
+	ID              string  `json:"id"`
+	Sequence        int     `json:"sequence"`
+	Type            string  `json:"type"`
+	Latitude        float64 `json:"latitude"`
+	Longitude       float64 `json:"longitude"`
+	Status          string  `json:"status"`
+	StoreLocationID *string `json:"storeLocationId,omitempty"`
+}
+
+type routeLeg struct {
+	FromSequence    int    `json:"fromSequence"`
+	ToSequence      int    `json:"toSequence"`
+	DistanceMeters  int    `json:"distanceMeters"`
+	DurationSeconds int    `json:"durationSeconds"`
+	Provider        string `json:"provider"`
+}
+
+type driverLocationRequest struct {
+	EventID    string    `json:"eventId"`
+	ObservedAt time.Time `json:"observedAt"`
+	Location   geoPoint  `json:"location"`
+}
+
+type geoPoint struct {
+	Latitude  float64 `json:"latitude"`
+	Longitude float64 `json:"longitude"`
+}
+
 func New(repo Repository, token string, logger *slog.Logger) http.Handler {
 	s := &Server{repo: repo, token: token, log: logger}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.Handle("GET /stores/{storeLocationId}/nearby-merchants", s.authorized(http.HandlerFunc(s.nearbyMerchants)))
 	mux.Handle("POST /dispatch/bundles", s.authorized(http.HandlerFunc(s.createBundle)))
+	mux.Handle("GET /driver/routes/{routeId}", s.authorized(http.HandlerFunc(s.getDriverRoute)))
+	mux.Handle("POST /driver/routes/{routeId}/location", s.authorized(http.HandlerFunc(s.recordDriverLocation)))
 	return mux
 }
 
@@ -178,6 +222,75 @@ func (s *Server) createBundle(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
+func (s *Server) getDriverRoute(w http.ResponseWriter, r *http.Request) {
+	routeID := r.PathValue("routeId")
+	driverRef := strings.TrimSpace(r.Header.Get("X-ShopStops-Actor"))
+	if !isUUID(routeID) || driverRef == "" || len(driverRef) > 200 {
+		writeError(w, http.StatusBadRequest, "valid route and authenticated driver are required")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	route, err := s.repo.DriverRoute(ctx, routeID, driverRef)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "route not found")
+		return
+	}
+	if errors.Is(err, ErrForbidden) {
+		writeError(w, http.StatusForbidden, "route is not assigned to this driver")
+		return
+	}
+	if err != nil {
+		s.databaseError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, route)
+}
+
+func (s *Server) recordDriverLocation(w http.ResponseWriter, r *http.Request) {
+	routeID := r.PathValue("routeId")
+	driverRef := strings.TrimSpace(r.Header.Get("X-ShopStops-Actor"))
+	if !isUUID(routeID) || driverRef == "" || len(driverRef) > 200 {
+		writeError(w, http.StatusBadRequest, "valid route and authenticated driver are required")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 8*1024)
+	var request driverLocationRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "request body must contain one JSON object")
+		return
+	}
+	if request.EventID == "" || len(request.EventID) > 200 ||
+		request.ObservedAt.IsZero() || request.Location.Latitude < -90 ||
+		request.Location.Latitude > 90 || request.Location.Longitude < -180 ||
+		request.Location.Longitude > 180 ||
+		request.ObservedAt.After(time.Now().Add(time.Minute)) {
+		writeError(w, http.StatusBadRequest, "invalid location event")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	sampleID, err := s.repo.RecordDriverLocation(ctx, routeID, driverRef, request)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		writeError(w, http.StatusNotFound, "route not found")
+	case errors.Is(err, ErrForbidden):
+		writeError(w, http.StatusForbidden, "route is not assigned to this driver")
+	case errors.Is(err, ErrConflict):
+		writeError(w, http.StatusConflict, "location conflicts with route state or sample interval")
+	case err != nil:
+		s.databaseError(w, err)
+	default:
+		writeJSON(w, http.StatusAccepted, map[string]int64{"sampleId": sampleID})
+	}
+}
+
 type PostgresRepository struct {
 	db *sql.DB
 }
@@ -281,6 +394,146 @@ func (p *PostgresRepository) CreateBundle(
 		return bundleResponse{}, err
 	}
 	return response, nil
+}
+
+func (p *PostgresRepository) DriverRoute(
+	ctx context.Context, routeID, driverRef string,
+) (routeResponse, error) {
+	var exists bool
+	if err := p.db.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM unified_delivery_routes WHERE id = $1)`,
+		routeID,
+	).Scan(&exists); err != nil {
+		return routeResponse{}, err
+	}
+	if !exists {
+		return routeResponse{}, ErrNotFound
+	}
+	var assigned bool
+	if err := p.db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM unified_delivery_routes
+			WHERE id = $1 AND driver_ref = $2
+		)`, routeID, driverRef,
+	).Scan(&assigned); err != nil {
+		return routeResponse{}, err
+	}
+	if !assigned {
+		return routeResponse{}, ErrForbidden
+	}
+
+	var response routeResponse
+	err := p.db.QueryRowContext(ctx, `
+		SELECT id, checkout_id, status, routing_provider
+		FROM unified_delivery_routes WHERE id = $1`,
+		routeID,
+	).Scan(&response.ID, &response.Checkout, &response.Status, &response.Provider)
+	if err != nil {
+		return routeResponse{}, err
+	}
+	response.Stops = make([]routeStop, 0)
+	rows, err := p.db.QueryContext(ctx, `
+		SELECT id, sequence, stop_type, ST_Y(location::geometry),
+		       ST_X(location::geometry), status, store_location_id
+		FROM unified_route_stops WHERE route_id = $1 ORDER BY sequence`,
+		routeID,
+	)
+	if err != nil {
+		return routeResponse{}, err
+	}
+	for rows.Next() {
+		var stop routeStop
+		var storeID sql.NullString
+		if err := rows.Scan(
+			&stop.ID, &stop.Sequence, &stop.Type, &stop.Latitude,
+			&stop.Longitude, &stop.Status, &storeID,
+		); err != nil {
+			rows.Close()
+			return routeResponse{}, err
+		}
+		if storeID.Valid {
+			stop.StoreLocationID = &storeID.String
+		}
+		response.Stops = append(response.Stops, stop)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return routeResponse{}, err
+	}
+	rows.Close()
+
+	response.Legs = make([]routeLeg, 0)
+	rows, err = p.db.QueryContext(ctx, `
+		SELECT from_sequence, to_sequence, distance_meters, duration_seconds, provider
+		FROM unified_route_legs WHERE route_id = $1 ORDER BY from_sequence`,
+		routeID,
+	)
+	if err != nil {
+		return routeResponse{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var leg routeLeg
+		if err := rows.Scan(
+			&leg.FromSequence, &leg.ToSequence, &leg.DistanceMeters,
+			&leg.DurationSeconds, &leg.Provider,
+		); err != nil {
+			return routeResponse{}, err
+		}
+		response.Legs = append(response.Legs, leg)
+	}
+	if err := rows.Err(); err != nil {
+		return routeResponse{}, err
+	}
+	return response, nil
+}
+
+func (p *PostgresRepository) RecordDriverLocation(
+	ctx context.Context, routeID, driverRef string, request driverLocationRequest,
+) (int64, error) {
+	var routeStatus string
+	err := p.db.QueryRowContext(ctx, `
+		SELECT status FROM unified_delivery_routes WHERE id = $1`,
+		routeID,
+	).Scan(&routeStatus)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	if err != nil {
+		return 0, err
+	}
+	var assigned bool
+	if err := p.db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM unified_delivery_routes
+			WHERE id = $1 AND driver_ref = $2
+		)`, routeID, driverRef,
+	).Scan(&assigned); err != nil {
+		return 0, err
+	}
+	if !assigned {
+		return 0, ErrForbidden
+	}
+	if routeStatus != "in_progress" {
+		return 0, ErrConflict
+	}
+
+	var sampleID int64
+	err = p.db.QueryRowContext(ctx, `
+		SELECT record_driver_location(
+			$1, $2, ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography, $5, $6
+		)`,
+		routeID, driverRef, request.Location.Longitude,
+		request.Location.Latitude, request.ObservedAt, request.EventID,
+	).Scan(&sampleID)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "P0001" {
+			return 0, ErrConflict
+		}
+		return 0, err
+	}
+	return sampleID, nil
 }
 
 func (s *Server) databaseError(w http.ResponseWriter, err error) {

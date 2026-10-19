@@ -155,7 +155,9 @@ PostgreSQL functions. It requires `DATABASE_URL` and a 32-character
 `SHOPSTOPS_INTERNAL_API_TOKEN`; the shared token is an internal service
 credential, not end-user authentication. Keep the API behind an identity-aware
 gateway that authenticates client sessions and enforces roles, and do not ship
-the internal token to applications.
+the internal token to applications. The gateway must strip any incoming
+`X-ShopStops-Actor` value and inject the authenticated actor identity; driver
+route handlers trust this internal header for assignment checks.
 
 The OpenAPI contract additionally describes checkout/payment, driver routes/GPS,
 merchant subscription status, and Stripe webhooks, but those routes are not yet

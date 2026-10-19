@@ -91,6 +91,7 @@ paths:
     get:
       operationId: getDriverRoute
       summary: Get the assigned immutable route and routing legs
+      description: The trusted API gateway injects X-ShopStops-Actor from the authenticated driver identity.
       parameters:
         - $ref: '#/components/parameters/RouteId'
       responses:
