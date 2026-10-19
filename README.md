@@ -6,15 +6,18 @@ ready orders into a bundle and persisting its pickup/drop-off queue.
 
 ## Database
 
-Apply `db/migrations/001_delivery_foundation.sql` to PostgreSQL 14+ with PostGIS
-3.x installed. The migration enables PostGIS and creates the relational model,
-dispatch indexes, event outbox, and `create_proximity_bundle(...)` function.
-The function locks eligible orders, creates an active bundle, and writes its
-ordered stops in one transaction. Calls should use a stable idempotency key.
+Apply `db/migrations/001_delivery_foundation.sql` and then
+`db/migrations/002_unified_marketplace.sql` to PostgreSQL 14+ with PostGIS 3.x
+installed. The migrations create the dispatch and unified-basket relational
+models, spatial queries, transaction-safe order/merchant limits, immutable
+multi-stop routes, payment/tax ledger records, and outbox events.
 
 See [`docs/architecture.md`](docs/architecture.md) for MVP assumptions, service
 boundaries, workflows, and operational guidance. The initial HTTP interface is
 specified in [`api/openapi.yaml`](api/openapi.yaml).
+
+Database integration fixtures are in `db/tests/`; apply both migrations before
+running the matching SQL test files.
 
 This repository currently contains the database/backend foundation only. Native
 iOS and Android apps, the admin web app, and deployable service/API processes

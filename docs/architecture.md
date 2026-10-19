@@ -99,6 +99,68 @@ The database emits `delivery.bundle.activated` with `bundleId`, `orderIds`, and
 `delivery.bundle.cancelled`, and `order.delivered`. Consumers should deduplicate
 by event ID and handlers should accept request idempotency keys.
 
+## D.C. Unified Basket, routing, and payments
+
+Migration `002_unified_marketplace.sql` adds merchants, $199/month Stripe
+subscription references, unified customer checkouts, jurisdiction polygons,
+invoice lines, Connect transfer records, and driver route/location tables.
+Existing store rows can be associated with a merchant by setting
+`store_locations.merchant_id`.
+
+`nearby_subscribed_merchants(anchor_store, 500)` uses PostGIS geography distance
+to suggest active grocery/retail storefronts within 500 meters. It excludes
+inactive stores, expired/unpaid subscriptions, and subscriptions with a payment
+failure. The storefront visibility view allows an active subscription or a
+past-due subscription for less than 48 hours after payment failure; clients
+should use that view to suppress late-paying stores.
+
+`checkout_orders` represents the unified basket while existing `orders` remain
+merchant-level fulfillment orders. A transaction-scoped lock in the membership
+trigger serializes basket edits and rejects a third merchant, a second pickup
+location for one merchant, mismatched customer/destination/zone, or an
+unsubscribed additional merchant. D.C. delivery addresses are identified by
+`US-DC` jurisdiction polygons. `apply_dc_delivery_surcharge` idempotently adds
+one $0.20 invoice line. Only after Stripe confirms payment does
+`record_checkout_payment` create the tax-holding ledger record and mark the
+checkout paid.
+
+`create_unified_route` requires a paid basket containing an anchor restaurant
+order and exactly one partner merchant. It persists the mandatory immutable
+sequence: restaurant pickup, adjacent merchant pickup, customer drop-off.
+`unified_route_legs` stores road-network distance/duration returned by an OSRM
+or Google Maps matrix integration; this repository does not call either vendor
+or provide turn-by-turn navigation. Driver clients should sample GPS every five
+seconds; `record_driver_location` enforces assigned active routes, idempotency,
+and no more than one sample per five seconds. Route/authenticated API processes
+must reject client attempts to reorder stops.
+
+Stripe Connect needs one customer charge and separate transfers to each
+merchant; a single Stripe destination charge targets one connected account and
+does not by itself split across two merchants. Transfer records capture item
+gross, allocated processing fee, and net transfer. Delivery/service fees and
+the D.C. surcharge are kept in the platform ledger; the surcharge also has a
+separate municipal tax ledger. The SaaS subscription table stores Stripe Billing
+references and fixed monthly price, but subscription creation, recurring
+collection, webhook signature verification, and actual Connect transfers must
+be implemented by a trusted backend integration. Do not collect or store raw
+card details in ShopStops.
+
+Order state updates append transactional outbox events. A WebSocket/push
+gateway should consume these events and target a <1.5 second propagation SLO;
+the database outbox alone does not deliver real-time client updates.
+
+The API contract now includes nearby merchant discovery, checkout/payment,
+driver routes/GPS, merchant subscription status, and Stripe webhooks. These are
+contracts, not running endpoints or mobile/web clients. Four separate consumer,
+driver, merchant, and admin applications plus identity, catalog, payment,
+routing, and real-time service implementations remain to be built.
+
+For rollout, configure the initial Union Market corridor as the only enabled
+zone and cap onboarding operationally at 15 merchants and 30 screened drivers.
+Only expand to NoMa and Capitol Hill after operational review; shift scheduling,
+tax remittance reporting, geocoding, and production route-matrix credentials
+are not implemented in this database/API foundation.
+
 ## Reliability, security, and operations
 
 Use role- and resource-based authorization for customer, merchant, driver, and
@@ -120,6 +182,8 @@ Install PostgreSQL 14+ and PostGIS 3.x, then apply the migration with `psql`:
 ```sh
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
   -f db/migrations/001_delivery_foundation.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
+  -f db/migrations/002_unified_marketplace.sql
 ```
 
 After applying, exercise `create_proximity_bundle` with test zones and orders,
@@ -133,4 +197,5 @@ activation outbox event. Run it after applying the migration with:
 
 ```sh
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/tests/001_dispatch.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/tests/002_unified_marketplace.sql
 ```
