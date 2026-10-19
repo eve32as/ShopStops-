@@ -1,0 +1,642 @@
+import * as Location from "expo-location";
+import { useStripe } from "@stripe/stripe-react-native";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from "react-native";
+import { ApiError, apiRequest, idempotencyKey, type ApiSettings } from "../src/api";
+
+type Role = "Shopper" | "Driver" | "Merchant";
+type NearbyMerchant = {
+  merchantId: string;
+  name: string;
+  merchantType: string;
+  storeLocationId: string;
+  distanceMeters: number;
+};
+type Checkout = {
+  id: string;
+  status: string;
+  currency: string;
+  totalCents: number;
+  invoiceLines: { type: string; merchantId?: string; amountCents: number }[];
+};
+type Route = {
+  id: string;
+  status: string;
+  routingProvider: string;
+  stops: {
+    id: string;
+    sequence: number;
+    type: string;
+    latitude: number;
+    longitude: number;
+    status: string;
+  }[];
+};
+type Subscription = {
+  status: string;
+  monthlyAmountCents: number;
+  currency: string;
+  storefrontVisible: boolean;
+  currentPeriodEnd: string | null;
+  paymentMethodReady: boolean;
+};
+
+const stripeKeyConfigured = Boolean(process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY);
+
+export default function HomeScreen() {
+  const [role, setRole] = useState<Role>("Shopper");
+  const [gatewayUrl, setGatewayUrl] = useState("");
+  const [sessionToken, setSessionToken] = useState("");
+  const settings = useMemo<ApiSettings>(
+    () => ({ baseUrl: gatewayUrl, sessionToken }),
+    [gatewayUrl, sessionToken],
+  );
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [nearby, setNearby] = useState<NearbyMerchant[]>([]);
+  const [checkout, setCheckout] = useState<Checkout | null>(null);
+  const [route, setRoute] = useState<Route | null>(null);
+  const [subscription, setSubscription] = useState<Subscription | null>(null);
+  const [anchorStore, setAnchorStore] = useState("");
+  const [orderIds, setOrderIds] = useState("");
+  const [latitude, setLatitude] = useState("");
+  const [longitude, setLongitude] = useState("");
+  const [routeId, setRouteId] = useState("");
+  const [tracking, setTracking] = useState(false);
+  const routeLocation = useRef<Location.LocationObject | null>(null);
+  const routeSubscription = useRef<Location.LocationSubscription | null>(null);
+  const lastReportedAt = useRef(0);
+  const { initPaymentSheet, presentPaymentSheet } = useStripe();
+
+  const run = useCallback(async <T,>(action: () => Promise<T>) => {
+    setBusy(true);
+    setMessage("");
+    try {
+      return await action();
+    } catch (error) {
+      setMessage(error instanceof ApiError ? error.message : "The request could not be completed.");
+      return undefined;
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      routeSubscription.current?.remove();
+      routeSubscription.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!tracking) return;
+    const timer = setInterval(() => {
+      const current = routeLocation.current;
+      if (!current || !routeId || current.timestamp <= lastReportedAt.current) return;
+      lastReportedAt.current = current.timestamp;
+      void apiRequest(
+        settings,
+        `driver/routes/${encodeURIComponent(routeId)}/location`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            eventId: `gps-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+            observedAt: new Date(current.timestamp).toISOString(),
+            location: {
+              latitude: current.coords.latitude,
+              longitude: current.coords.longitude,
+            },
+          }),
+        },
+      ).catch((error: unknown) => {
+        setMessage(error instanceof Error ? error.message : "GPS update failed.");
+      });
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [routeId, settings, tracking]);
+
+  async function findNearby() {
+    const results = await run(() =>
+      apiRequest<NearbyMerchant[]>(
+        settings,
+        `stores/${encodeURIComponent(anchorStore)}/nearby-merchants?radiusMeters=500`,
+      ),
+    );
+    if (results) setNearby(results);
+  }
+
+  async function createCheckout() {
+    const ids = orderIds
+      .split(/[\s,]+/)
+      .map((id) => id.trim())
+      .filter(Boolean);
+    const lat = Number(latitude);
+    const lon = Number(longitude);
+    if (!anchorStore.trim() || ids.length === 0 || !Number.isFinite(lat) || !Number.isFinite(lon)) {
+      setMessage("Enter the anchor store, order IDs, and delivery coordinates.");
+      return;
+    }
+    const now = new Date();
+    const result = await run(() =>
+      apiRequest<Checkout>(settings, "checkouts", {
+        method: "POST",
+        headers: { "Idempotency-Key": idempotencyKey() },
+        body: JSON.stringify({
+          anchorStoreLocationId: anchorStore.trim(),
+          orderIds: ids,
+          dropoff: { latitude: lat, longitude: lon },
+          deliveryWindowStart: now.toISOString(),
+          deliveryWindowEnd: new Date(now.getTime() + 2 * 60 * 60 * 1000).toISOString(),
+        }),
+      }),
+    );
+    if (result) setCheckout(result);
+  }
+
+  async function payCheckout() {
+    if (!checkout || !stripeKeyConfigured) return;
+    const intent = await run(() =>
+      apiRequest<{ clientSecret: string; amountCents: number; currency: string }>(
+        settings,
+        `checkouts/${encodeURIComponent(checkout.id)}/payment`,
+        { method: "POST" },
+      ),
+    );
+    if (!intent) return;
+    const initialized = await initPaymentSheet({
+      merchantDisplayName: "ShopStops",
+      paymentIntentClientSecret: intent.clientSecret,
+    });
+    if (initialized.error) {
+      setMessage(initialized.error.message);
+      return;
+    }
+    const presented = await presentPaymentSheet();
+    if (presented.error) setMessage(presented.error.message);
+    else setMessage("Payment submitted. Your order updates when Stripe confirms it.");
+  }
+
+  async function loadRoute() {
+    if (!routeId.trim()) {
+      setMessage("Enter your assigned route ID.");
+      return;
+    }
+    const result = await run(() =>
+      apiRequest<Route>(settings, `driver/routes/${encodeURIComponent(routeId.trim())}`),
+    );
+    if (result) setRoute(result);
+  }
+
+  async function beginTracking() {
+    if (!routeId.trim()) {
+      setMessage("Load your assigned route before starting location sharing.");
+      return;
+    }
+    const permission = await Location.requestForegroundPermissionsAsync();
+    if (permission.status !== "granted") {
+      setMessage("Allow location access while using the app to share your active route.");
+      return;
+    }
+    try {
+      routeLocation.current = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+      routeSubscription.current = await Location.watchPositionAsync(
+        {
+          accuracy: Location.Accuracy.Balanced,
+          timeInterval: 5000,
+          distanceInterval: 0,
+        },
+        (position) => {
+          routeLocation.current = position;
+        },
+      );
+      setTracking(true);
+      setMessage("Location sharing is active while this screen remains open.");
+    } catch {
+      setMessage("Could not start location updates. Check device location services.");
+    }
+  }
+
+  function endTracking() {
+    routeSubscription.current?.remove();
+    routeSubscription.current = null;
+    routeLocation.current = null;
+    lastReportedAt.current = 0;
+    setTracking(false);
+    setMessage("Location sharing stopped.");
+  }
+
+  useEffect(() => {
+    if (role !== "Driver" || !settings.sessionToken.trim()) endTracking();
+  }, [role, settings.sessionToken]);
+
+  async function refreshSubscription() {
+    const result = await run(() => apiRequest<Subscription>(settings, "merchant/subscription"));
+    if (result) setSubscription(result);
+  }
+
+  async function setupMerchantPaymentMethod() {
+    const intent = await run(() =>
+      apiRequest<{ clientSecret: string }>(settings, "merchant/subscription/setup-intent", {
+        method: "POST",
+        headers: { "Idempotency-Key": idempotencyKey() },
+      }),
+    );
+    if (!intent) return;
+    const initialized = await initPaymentSheet({
+      merchantDisplayName: "ShopStops Merchant",
+      setupIntentClientSecret: intent.clientSecret,
+    });
+    if (initialized.error) {
+      setMessage(initialized.error.message);
+      return;
+    }
+    const presented = await presentPaymentSheet();
+    if (presented.error) {
+      setMessage(presented.error.message);
+      return;
+    }
+    setMessage("Billing method saved. Refresh status before starting your subscription.");
+    await refreshSubscription();
+  }
+
+  async function startSubscription() {
+    const result = await run(() =>
+      apiRequest<{ status: string }>(settings, "merchant/subscription", { method: "POST" }),
+    );
+    if (result) {
+      setMessage(`Subscription is ${result.status}. Storefront activation waits for a paid invoice.`);
+      await refreshSubscription();
+    }
+  }
+
+  const sharedForm = (
+    <View style={styles.configCard}>
+      <Text style={styles.sectionEyebrow}>SECURE CONNECTION</Text>
+      <Text style={styles.sectionTitle}>Connect to your ShopStops gateway</Text>
+      <Text style={styles.helpText}>
+        Use the public HTTPS gateway and a user session from your identity provider. Never enter
+        the backend service token here.
+      </Text>
+      <TextInput
+        accessibilityLabel="Gateway URL"
+        autoCapitalize="none"
+        autoCorrect={false}
+        keyboardType="url"
+        onChangeText={setGatewayUrl}
+        placeholder="https://api.example.com/v1"
+        placeholderTextColor="#94a3b8"
+        style={styles.input}
+        value={gatewayUrl}
+      />
+      <TextInput
+        accessibilityLabel="Session token"
+        autoCapitalize="none"
+        autoCorrect={false}
+        onChangeText={setSessionToken}
+        placeholder="User session token (held in memory only)"
+        placeholderTextColor="#94a3b8"
+        secureTextEntry
+        style={styles.input}
+        value={sessionToken}
+      />
+    </View>
+  );
+
+  return (
+    <KeyboardAvoidingView
+      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      style={styles.screen}
+    >
+      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+        <View style={styles.header}>
+          <View>
+            <Text style={styles.brand}>shopstops</Text>
+            <Text style={styles.tagline}>Neighborhood delivery, connected.</Text>
+          </View>
+          <View style={styles.livePill}>
+            <View style={styles.liveDot} />
+            <Text style={styles.liveText}>BETA</Text>
+          </View>
+        </View>
+
+        <View style={styles.hero}>
+          <Text style={styles.heroEyebrow}>ONE CHECKOUT. MORE LOCAL.</Text>
+          <Text style={styles.heroTitle}>Your neighborhood, on the way.</Text>
+          <Text style={styles.heroCopy}>
+            One local delivery for the restaurant and the shop next door.
+          </Text>
+          <View style={styles.heroStats}>
+            <View><Text style={styles.statValue}>500m</Text><Text style={styles.statLabel}>local picks</Text></View>
+            <View><Text style={styles.statValue}>2</Text><Text style={styles.statLabel}>stores per basket</Text></View>
+            <View><Text style={styles.statValue}>1</Text><Text style={styles.statLabel}>shared route</Text></View>
+          </View>
+        </View>
+
+        <View style={styles.rolePicker}>
+          {(["Shopper", "Driver", "Merchant"] as const).map((item) => (
+            <Pressable
+              accessibilityRole="tab"
+              accessibilityState={{ selected: role === item }}
+              key={item}
+              onPress={() => {
+                setRole(item);
+                setMessage("");
+              }}
+              style={[styles.roleButton, role === item && styles.roleButtonActive]}
+            >
+              <Text style={[styles.roleText, role === item && styles.roleTextActive]}>{item}</Text>
+            </Pressable>
+          ))}
+        </View>
+
+        {sharedForm}
+
+        {message ? (
+          <View style={styles.messageBox} accessibilityLiveRegion="polite">
+            <Text style={styles.messageText}>{message}</Text>
+          </View>
+        ) : null}
+        {busy ? <ActivityIndicator color="#e5653d" style={styles.loader} /> : null}
+
+        {role === "Shopper" ? (
+          <>
+            <View style={styles.card}>
+              <Text style={styles.sectionEyebrow}>01 / DISCOVER</Text>
+              <Text style={styles.sectionTitle}>Good things, close by.</Text>
+              <Text style={styles.helpText}>
+                Find subscription-active grocery and retail partners within 500 meters of your
+                restaurant.
+              </Text>
+              <Field label="Anchor restaurant store ID" onChangeText={setAnchorStore} value={anchorStore} />
+              <ActionButton disabled={busy} label="Find nearby shops" onPress={() => void findNearby()} />
+              {nearby.map((merchant) => (
+                <View key={merchant.merchantId} style={styles.resultRow}>
+                  <View style={styles.resultIcon}><Text style={styles.resultIconText}>+</Text></View>
+                  <View style={styles.resultCopy}>
+                    <Text style={styles.resultTitle}>{merchant.name}</Text>
+                    <Text style={styles.resultSub}>{merchant.merchantType} · {Math.round(merchant.distanceMeters)} m away</Text>
+                  </View>
+                </View>
+              ))}
+            </View>
+
+            <View style={styles.card}>
+              <Text style={styles.sectionEyebrow}>02 / CHECKOUT</Text>
+              <Text style={styles.sectionTitle}>Bring the whole block together.</Text>
+              <Text style={styles.helpText}>
+                The backend accepts existing order IDs. Catalog browsing and order creation are not
+                available in this API yet.
+              </Text>
+              <Field label="Order IDs (comma separated)" onChangeText={setOrderIds} value={orderIds} />
+              <View style={styles.fieldGrid}>
+                <Field label="Drop-off latitude" keyboardType="decimal-pad" onChangeText={setLatitude} value={latitude} />
+                <Field label="Drop-off longitude" keyboardType="decimal-pad" onChangeText={setLongitude} value={longitude} />
+              </View>
+              <ActionButton disabled={busy} label="Create basket" onPress={() => void createCheckout()} />
+              {checkout ? (
+                <View style={styles.checkoutBox}>
+                  <Text style={styles.checkoutLabel}>BASKET {checkout.id}</Text>
+                  {checkout.invoiceLines.map((line, index) => (
+                    <View key={`${line.type}-${index}`} style={styles.invoiceRow}>
+                      <Text style={styles.invoiceLabel}>{line.type.replaceAll("_", " ")}</Text>
+                      <Text style={styles.invoiceAmount}>
+                        {(line.amountCents / 100).toLocaleString("en-US", {
+                          style: "currency",
+                          currency: checkout.currency.toUpperCase(),
+                        })}
+                      </Text>
+                    </View>
+                  ))}
+                  <View style={[styles.invoiceRow, styles.totalRow]}>
+                    <Text style={styles.totalLabel}>Total</Text>
+                    <Text style={styles.totalValue}>
+                      {(checkout.totalCents / 100).toLocaleString("en-US", {
+                        style: "currency",
+                        currency: checkout.currency.toUpperCase(),
+                      })}
+                    </Text>
+                  </View>
+                  <ActionButton
+                    disabled={busy || !stripeKeyConfigured}
+                    label={stripeKeyConfigured ? "Continue to secure payment" : "Add Stripe publishable key to pay"}
+                    onPress={() => void payCheckout()}
+                  />
+                  <Text style={styles.tinyNote}>Checkout ID · {checkout.id}</Text>
+                </View>
+              ) : null}
+            </View>
+          </>
+        ) : null}
+
+        {role === "Driver" ? (
+          <View style={styles.card}>
+            <Text style={styles.sectionEyebrow}>DRIVER / ACTIVE DELIVERY</Text>
+            <Text style={styles.sectionTitle}>Every stop, in the right order.</Text>
+            <Text style={styles.helpText}>
+              Load your assigned route and share location every five seconds while this screen is
+              open. Stop sequencing is controlled by the server.
+            </Text>
+            <Field label="Assigned route ID" onChangeText={setRouteId} value={routeId} />
+            <ActionButton disabled={busy} label="Load route" onPress={() => void loadRoute()} />
+            {route ? (
+              <View style={styles.routeBox}>
+                <Text style={styles.checkoutLabel}>ROUTE · {route.status.toUpperCase()}</Text>
+                {route.stops
+                  .slice()
+                  .sort((a, b) => a.sequence - b.sequence)
+                  .map((stop, index) => (
+                    <View key={stop.id} style={styles.stopRow}>
+                      <View style={[styles.stopNumber, index === route.stops.length - 1 && styles.stopNumberLast]}>
+                        <Text style={styles.stopNumberText}>{stop.sequence}</Text>
+                      </View>
+                      <View style={styles.resultCopy}>
+                        <Text style={styles.resultTitle}>{stop.type === "dropoff" ? "Customer drop-off" : `Pickup ${stop.sequence}`}</Text>
+                        <Text style={styles.resultSub}>{stop.status} · {stop.latitude.toFixed(4)}, {stop.longitude.toFixed(4)}</Text>
+                      </View>
+                    </View>
+                  ))}
+                <Text style={styles.tinyNote}>Routing matrix · {route.routingProvider}</Text>
+              </View>
+            ) : null}
+            <ActionButton
+              disabled={tracking || !route}
+              label={tracking ? "Location sharing is active" : "Start 5-second location sharing"}
+              onPress={() => void beginTracking()}
+            />
+            {tracking ? <ActionButton label="End location sharing" onPress={endTracking} secondary /> : null}
+          </View>
+        ) : null}
+
+        {role === "Merchant" ? (
+          <View style={styles.card}>
+            <Text style={styles.sectionEyebrow}>MERCHANT / SUBSCRIPTION</Text>
+            <Text style={styles.sectionTitle}>Your storefront, in good standing.</Text>
+            <Text style={styles.helpText}>
+              Manage the flat $199 monthly ShopStops subscription. A successful invoice activates
+              storefront visibility.
+            </Text>
+            <View style={styles.actionRow}>
+              <ActionButton disabled={busy} label="Refresh billing status" onPress={() => void refreshSubscription()} />
+              <ActionButton disabled={busy || !stripeKeyConfigured} label="Save payment method" onPress={() => void setupMerchantPaymentMethod()} secondary />
+            </View>
+            {subscription ? (
+              <View style={styles.statusCard}>
+                <Text style={styles.statusWord}>{subscription.status.replaceAll("_", " ")}</Text>
+                <Text style={styles.resultSub}>
+                  {subscription.storefrontVisible ? "Storefront visible" : "Storefront hidden"}
+                  {" · "}
+                  {subscription.paymentMethodReady ? "Payment method saved" : "Payment method needed"}
+                </Text>
+                {subscription.currentPeriodEnd ? (
+                  <Text style={styles.resultSub}>Next billing period ends {new Date(subscription.currentPeriodEnd).toLocaleDateString()}</Text>
+                ) : null}
+              </View>
+            ) : null}
+            <ActionButton
+              disabled={busy || !subscription?.paymentMethodReady}
+              label="Start $199 monthly subscription"
+              onPress={() => void startSubscription()}
+            />
+            <Text style={styles.tinyNote}>USD · billed monthly through Stripe</Text>
+          </View>
+        ) : null}
+
+        <Text style={styles.footer}>
+          Securely connected through your identity gateway · ShopStops {new Date().getFullYear()}
+        </Text>
+      </ScrollView>
+    </KeyboardAvoidingView>
+  );
+}
+
+function Field({
+  label,
+  value,
+  onChangeText,
+  keyboardType = "default",
+}: {
+  label: string;
+  value: string;
+  onChangeText: (value: string) => void;
+  keyboardType?: "default" | "decimal-pad";
+}) {
+  return (
+    <View style={styles.field}>
+      <Text style={styles.fieldLabel}>{label}</Text>
+      <TextInput
+        accessibilityLabel={label}
+        autoCapitalize="none"
+        autoCorrect={false}
+        keyboardType={keyboardType}
+        onChangeText={onChangeText}
+        placeholder={label}
+        placeholderTextColor="#94a3b8"
+        style={styles.input}
+        value={value}
+      />
+    </View>
+  );
+}
+
+function ActionButton({
+  label,
+  onPress,
+  disabled = false,
+  secondary = false,
+}: {
+  label: string;
+  onPress: () => void;
+  disabled?: boolean;
+  secondary?: boolean;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      disabled={disabled}
+      onPress={onPress}
+      style={[
+        styles.actionButton,
+        secondary && styles.actionButtonSecondary,
+        disabled && styles.actionButtonDisabled,
+      ]}
+    >
+      <Text style={[styles.actionText, secondary && styles.actionTextSecondary]}>{label}</Text>
+    </Pressable>
+  );
+}
+
+const styles = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: "#f6f5f1" },
+  content: { width: "100%", maxWidth: 760, alignSelf: "center", padding: 20, paddingBottom: 64 },
+  header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingVertical: 12, marginBottom: 18 },
+  brand: { color: "#19352f", fontSize: 23, fontWeight: "900", letterSpacing: -1.2 },
+  tagline: { color: "#64756e", fontSize: 12, marginTop: 2 },
+  livePill: { flexDirection: "row", alignItems: "center", borderRadius: 24, paddingHorizontal: 11, paddingVertical: 7, backgroundColor: "#e4efe8" },
+  liveDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: "#398260", marginRight: 6 },
+  liveText: { color: "#28694d", fontSize: 10, fontWeight: "800", letterSpacing: 1 },
+  hero: { backgroundColor: "#19352f", borderRadius: 22, padding: 24, overflow: "hidden" },
+  heroEyebrow: { color: "#f6a17e", fontSize: 10, fontWeight: "800", letterSpacing: 1.7 },
+  heroTitle: { color: "#fffdf7", fontSize: 31, fontWeight: "800", lineHeight: 37, marginTop: 10, maxWidth: 430 },
+  heroCopy: { color: "#c3d2cb", fontSize: 14, lineHeight: 21, marginTop: 8, maxWidth: 390 },
+  heroStats: { flexDirection: "row", justifyContent: "space-between", marginTop: 24, paddingTop: 17, borderTopWidth: 1, borderTopColor: "#436057" },
+  statValue: { color: "#fffdf7", fontSize: 19, fontWeight: "800" },
+  statLabel: { color: "#afc4bb", fontSize: 10, marginTop: 3 },
+  rolePicker: { flexDirection: "row", gap: 7, padding: 5, backgroundColor: "#e9e8e2", borderRadius: 14, marginTop: 18 },
+  roleButton: { flex: 1, alignItems: "center", paddingVertical: 11, borderRadius: 10 },
+  roleButtonActive: { backgroundColor: "#fff", elevation: 1 },
+  roleText: { color: "#64756e", fontSize: 12, fontWeight: "700" },
+  roleTextActive: { color: "#19352f" },
+  configCard: { backgroundColor: "#fff", borderRadius: 18, padding: 18, marginTop: 14, borderWidth: 1, borderColor: "#ecece7" },
+  card: { backgroundColor: "#fff", borderRadius: 18, padding: 20, marginTop: 14, borderWidth: 1, borderColor: "#ecece7" },
+  sectionEyebrow: { color: "#e5653d", fontSize: 10, fontWeight: "800", letterSpacing: 1.4 },
+  sectionTitle: { color: "#19352f", fontSize: 20, fontWeight: "800", marginTop: 7 },
+  helpText: { color: "#65756f", fontSize: 13, lineHeight: 19, marginTop: 6, marginBottom: 11 },
+  field: { flex: 1, marginTop: 6 },
+  fieldLabel: { color: "#52645e", fontSize: 11, fontWeight: "700", marginBottom: 6 },
+  fieldGrid: { flexDirection: "row", gap: 10 },
+  input: { backgroundColor: "#f8f9f7", borderColor: "#e4e9e5", borderWidth: 1, borderRadius: 10, color: "#203b34", fontSize: 13, paddingHorizontal: 12, paddingVertical: 11, marginTop: 8 },
+  actionButton: { backgroundColor: "#e5653d", minHeight: 45, justifyContent: "center", alignItems: "center", borderRadius: 11, paddingHorizontal: 15, marginTop: 13 },
+  actionButtonSecondary: { backgroundColor: "#e9f0ec" },
+  actionButtonDisabled: { opacity: 0.48 },
+  actionText: { color: "#fff", fontWeight: "800", fontSize: 12, textAlign: "center" },
+  actionTextSecondary: { color: "#24443b" },
+  actionRow: { gap: 3 },
+  messageBox: { padding: 13, borderRadius: 11, backgroundColor: "#fff1e9", marginTop: 12 },
+  messageText: { color: "#8e4229", fontSize: 12, lineHeight: 18 },
+  loader: { marginTop: 12 },
+  resultRow: { flexDirection: "row", alignItems: "center", paddingVertical: 12, borderTopWidth: 1, borderTopColor: "#edf0ed", marginTop: 12 },
+  resultIcon: { width: 38, height: 38, borderRadius: 12, backgroundColor: "#e7f1eb", justifyContent: "center", alignItems: "center", marginRight: 11 },
+  resultIconText: { color: "#397457", fontSize: 22, fontWeight: "500" },
+  resultCopy: { flex: 1 },
+  resultTitle: { color: "#213b34", fontWeight: "800", fontSize: 13 },
+  resultSub: { color: "#73817b", fontSize: 11, marginTop: 4 },
+  checkoutBox: { backgroundColor: "#f8f9f7", borderRadius: 13, padding: 14, marginTop: 16 },
+  routeBox: { backgroundColor: "#f8f9f7", borderRadius: 13, padding: 14, marginTop: 14 },
+  checkoutLabel: { color: "#77857f", fontSize: 9, fontWeight: "800", letterSpacing: 1.2, marginBottom: 11 },
+  invoiceRow: { flexDirection: "row", justifyContent: "space-between", paddingVertical: 7 },
+  invoiceLabel: { color: "#5f706a", fontSize: 12, textTransform: "capitalize" },
+  invoiceAmount: { color: "#213b34", fontSize: 12, fontWeight: "700" },
+  totalRow: { borderTopWidth: 1, borderTopColor: "#dfe6e1", marginTop: 4, paddingTop: 11 },
+  totalLabel: { color: "#203b34", fontWeight: "800", fontSize: 13 },
+  totalValue: { color: "#203b34", fontWeight: "900", fontSize: 15 },
+  tinyNote: { color: "#829089", fontSize: 10, marginTop: 9, lineHeight: 15 },
+  stopRow: { flexDirection: "row", alignItems: "center", paddingVertical: 9 },
+  stopNumber: { width: 28, height: 28, borderRadius: 14, backgroundColor: "#e5653d", justifyContent: "center", alignItems: "center", marginRight: 11 },
+  stopNumberLast: { backgroundColor: "#397457" },
+  stopNumberText: { color: "#fff", fontWeight: "800", fontSize: 11 },
+  statusCard: { backgroundColor: "#f8f9f7", padding: 15, borderRadius: 12, marginTop: 15 },
+  statusWord: { color: "#24443b", fontWeight: "900", fontSize: 18, textTransform: "capitalize", marginBottom: 5 },
+  footer: { color: "#8b9892", textAlign: "center", fontSize: 10, marginTop: 25, lineHeight: 15 },
+});

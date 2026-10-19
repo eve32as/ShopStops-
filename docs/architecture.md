@@ -207,11 +207,15 @@ the internal token to applications. The gateway must strip any incoming
 `X-ShopStops-Actor` value and inject the authenticated actor identity; driver
 route handlers trust this internal header for assignment checks.
 
-The OpenAPI contract describes subscription, refund, and webhook flows. Native
-iOS and Android consumer/driver apps and the admin web application remain
-unimplemented; they must use the trusted gateway and Stripe's client SDKs.
-Identity, production routing, and real-time service integrations remain to be
-built.
+The OpenAPI contract describes subscription, refund, and webhook flows. The
+`apps/mobile` Expo client targets iOS and Android and exposes current shopper,
+driver, and merchant billing API flows; `apps/admin` provides the current
+full-refund operation. Both expect an external trusted identity gateway and
+Stripe publishable key configuration. The clients are API-backed MVP
+foundations, not complete consumer, driver, merchant, or admin products.
+Catalog/order creation, native identity, driver stop-completion APIs, background
+location, admin search/zone/reporting controls, production routing, and
+real-time integrations remain unimplemented.
 
 For rollout, configure the initial Union Market corridor as the only enabled
 zone and cap onboarding operationally at 15 merchants and 30 screened drivers.
