@@ -265,11 +265,22 @@ $$;
 
 UPDATE unified_checkouts SET status = 'quoted'
 WHERE id = :'checkout_id';
+UPDATE merchants SET stripe_account_id = 'acct_anchor_test'
+WHERE id = :'anchor_merchant_id';
+UPDATE merchants SET stripe_account_id = 'acct_partner_test'
+WHERE id = :'partner_merchant_id';
 SELECT record_checkout_payment(
-    :'checkout_id', 'pi_test_success', 3120, 100, 'succeeded'
+    :'checkout_id', 'pi_test_success', 3120, 0, 'requires_payment_method'
 );
-SELECT record_checkout_payment(
-    :'checkout_id', 'pi_test_success', 3120, 100, 'succeeded'
+SELECT process_stripe_checkout_event(
+    'evt_test_success', 'payment_intent.succeeded',
+    '{"eventId":"evt_test_success","type":"payment_intent.succeeded"}',
+    :'checkout_id', 'pi_test_success', 3120, 'usd', 'succeeded', 100, 'ch_test_success'
+);
+SELECT process_stripe_checkout_event(
+    'evt_test_success', 'payment_intent.succeeded',
+    '{"eventId":"evt_test_success","type":"payment_intent.succeeded"}',
+    :'checkout_id', 'pi_test_success', 3120, 'usd', 'succeeded', 100, 'ch_test_success'
 );
 DO $$
 BEGIN
@@ -277,6 +288,16 @@ BEGIN
         WHERE checkout_id = current_setting('shopstops.test_checkout_id')::uuid
           AND amount_cents = 20) <> 1 THEN
         RAISE EXCEPTION 'successful payment should post surcharge to tax ledger';
+    END IF;
+    IF (SELECT count(*) FROM connect_transfers
+        WHERE checkout_id = current_setting('shopstops.test_checkout_id')::uuid
+          AND status = 'pending'
+          AND source_charge_id = 'ch_test_success') <> 2
+       OR (SELECT sum(processing_fee_cents) FROM connect_transfers
+           WHERE checkout_id = current_setting('shopstops.test_checkout_id')::uuid) <> 100
+       OR (SELECT sum(transfer_amount_cents) FROM connect_transfers
+           WHERE checkout_id = current_setting('shopstops.test_checkout_id')::uuid) <> 2400 THEN
+        RAISE EXCEPTION 'successful payment should create idempotent merchant transfers with allocated fees';
     END IF;
 END;
 $$;

@@ -3,9 +3,8 @@ info:
   title: ShopStops Delivery API
   version: 1.0.0
   description: >
-    Versioned public contract. The initial Go service implements health,
-    nearby-merchant discovery, and dispatch only. Put it behind an authenticated
-    API gateway; its shared bearer token is for internal service traffic only.
+    Versioned public contract. Put the API behind an authenticated gateway; its
+    shared bearer token is for internal service traffic only.
 servers:
   - url: https://api.shopstops.example/v1
     description: Public gateway; strips /v1 before forwarding to the API service
@@ -95,9 +94,32 @@ paths:
         - $ref: '#/components/parameters/CheckoutId'
       responses:
         '200':
-          description: Stripe payment client configuration
+          description: Stripe PaymentIntent client configuration
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [paymentIntentId, clientSecret, status, amountCents, currency]
+                properties:
+                  paymentIntentId:
+                    type: string
+                  clientSecret:
+                    type: string
+                  status:
+                    type: string
+                  amountCents:
+                    type: integer
+                  currency:
+                    type: string
+                    enum: [usd]
+        '401':
+          description: Internal API authentication required
+        '404':
+          description: Checkout not found for the authenticated customer
         '409':
-          description: Checkout is not payable
+          description: Checkout is not payable or merchant payouts are not configured
+        '503':
+          description: Payment processing is unavailable
   /driver/routes/{routeId}:
     get:
       operationId: getDriverRoute
@@ -154,9 +176,11 @@ paths:
             type: string
       responses:
         '200':
-          description: Event recorded or already processed
+          description: Event recorded, already processed, or retried transfers completed
         '400':
           description: Signature or event invalid
+        '503':
+          description: Event could not be processed; Stripe should retry it
   /dispatch/bundles:
     post:
       operationId: createDeliveryBundle

@@ -24,9 +24,11 @@ var (
 )
 
 type Server struct {
-	repo  Repository
-	token string
-	log   *slog.Logger
+	repo          Repository
+	token         string
+	log           *slog.Logger
+	payments      PaymentGateway
+	webhookSecret string
 }
 
 type Repository interface {
@@ -133,6 +135,21 @@ type checkoutResponse struct {
 
 func New(repo Repository, token string, logger *slog.Logger) http.Handler {
 	s := &Server{repo: repo, token: token, log: logger}
+	return s.handler()
+}
+
+func NewWithPayments(
+	repo Repository, token string, logger *slog.Logger,
+	payments PaymentGateway, webhookSecret string,
+) http.Handler {
+	s := &Server{
+		repo: repo, token: token, log: logger,
+		payments: payments, webhookSecret: webhookSecret,
+	}
+	return s.handler()
+}
+
+func (s *Server) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.Handle("GET /stores/{storeLocationId}/nearby-merchants", s.authorized(http.HandlerFunc(s.nearbyMerchants)))
@@ -140,6 +157,8 @@ func New(repo Repository, token string, logger *slog.Logger) http.Handler {
 	mux.Handle("GET /driver/routes/{routeId}", s.authorized(http.HandlerFunc(s.getDriverRoute)))
 	mux.Handle("POST /driver/routes/{routeId}/location", s.authorized(http.HandlerFunc(s.recordDriverLocation)))
 	mux.Handle("POST /checkouts", s.authorized(http.HandlerFunc(s.createCheckout)))
+	mux.Handle("POST /checkouts/{checkoutId}/payment", s.authorized(http.HandlerFunc(s.createCheckoutPayment)))
+	mux.HandleFunc("POST /webhooks/stripe", s.stripeWebhook)
 	return mux
 }
 

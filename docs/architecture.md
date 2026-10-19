@@ -91,7 +91,9 @@ drop-off's pickup is complete. Admin APIs manage zones and limits; customer
 APIs expose only that customer's orders and tracking data.
 
 The initial dispatch and driver HTTP request/response shapes are specified in
-`api/openapi.yaml`; serving implementations are not part of this repository yet.
+`api/openapi.yaml`; the Go API implements proximity dispatch, assigned route
+reads, and driver GPS ingestion. The customer, merchant, and admin applications
+and their remaining workflows are not part of this repository.
 
 The database emits `delivery.bundle.activated` with `bundleId`, `orderIds`, and
 `stopCount` in the outbox. Suggested follow-on events are
@@ -144,24 +146,38 @@ seconds; `record_driver_location` enforces assigned active routes, idempotency,
 and no more than one sample per five seconds. Route/authenticated API processes
 must reject client attempts to reorder stops.
 
-Stripe Connect needs one customer charge and separate transfers to each
-merchant; a single Stripe destination charge targets one connected account and
-does not by itself split across two merchants. Transfer records capture item
-gross, allocated processing fee, and net transfer. Delivery/service fees and
-the D.C. surcharge are kept in the platform ledger; the surcharge also has a
-separate municipal tax ledger. The SaaS subscription table stores Stripe Billing
-references and fixed monthly price, but subscription creation, recurring
-collection, webhook signature verification, and actual Connect transfers must
-be implemented by a trusted backend integration. Do not collect or store raw
-card details in ShopStops.
+Migration `003_stripe_checkout_payments.sql` records verified Stripe checkout
+events and transfer source charges. The Go API's authenticated
+`POST /checkouts/{checkoutId}/payment` creates one idempotent PaymentIntent using
+the persisted invoice total. The public client receives only the
+PaymentIntent's client secret, not the Stripe API key. Configure both
+`STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` server-side; without both, the
+payment endpoints return unavailable.
+
+`POST /webhooks/stripe` verifies Stripe's signature, stores a sanitized event
+summary, and atomically updates the checkout/payment/tax ledger. Only after
+`payment_intent.succeeded` does it initiate separate Connect transfers to each
+merchant. Stripe transfer calls use stable idempotency keys and source charge
+IDs; an event retry resumes any transfer not persisted after Stripe accepted
+it. Every merchant with a positive item subtotal must have a connected account
+before payment can be initialized.
+
+Processing fees are allocated proportionally over merchant item subtotals,
+rounded with largest remainders (merchant ID breaks ties), and capped at the
+total item value. The platform absorbs fee amounts above that cap. Delivery and
+service fees remain in the platform ledger; the D.C. surcharge is tracked in
+the municipal tax ledger. Do not collect or store raw card details. The SaaS
+subscription table still only stores Stripe Billing references; subscription
+creation and recurring collection are not implemented.
 
 Order state updates append transactional outbox events. A WebSocket/push
 gateway should consume these events and target a <1.5 second propagation SLO;
 the database outbox alone does not deliver real-time client updates.
 
-`cmd/shopstops-api` is the initial runnable Go service. It implements health,
-nearby subscribed-merchant discovery, and proximity dispatch backed by the
-PostgreSQL functions. It requires `DATABASE_URL` and a 32-character
+`cmd/shopstops-api` is the runnable Go service. It implements health, nearby
+subscribed-merchant discovery, proximity dispatch, checkout creation and Stripe
+payment/webhook processing, driver route reads, and GPS ingestion backed by
+PostgreSQL. It requires `DATABASE_URL` and a 32-character
 `SHOPSTOPS_INTERNAL_API_TOKEN`; the shared token is an internal service
 credential, not end-user authentication. Keep the API behind an identity-aware
 gateway that authenticates client sessions and enforces roles, and do not ship
@@ -169,11 +185,10 @@ the internal token to applications. The gateway must strip any incoming
 `X-ShopStops-Actor` value and inject the authenticated actor identity; driver
 route handlers trust this internal header for assignment checks.
 
-The OpenAPI contract additionally describes checkout/payment, driver routes/GPS,
-merchant subscription status, and Stripe webhooks, but those routes are not yet
-implemented. Four separate consumer, driver, merchant, and admin applications,
-identity, checkout/payment, routing, and real-time service integrations remain
-to be built.
+The OpenAPI contract also describes merchant subscription status, which is not
+yet implemented. Four separate consumer, driver, merchant, and admin
+applications, identity, subscription billing, routing, and real-time service
+integrations remain to be built.
 
 For rollout, configure the initial Union Market corridor as the only enabled
 zone and cap onboarding operationally at 15 merchants and 30 screened drivers.
@@ -204,9 +219,11 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
   -f db/migrations/001_delivery_foundation.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
   -f db/migrations/002_unified_marketplace.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
+  -f db/migrations/003_stripe_checkout_payments.sql
 ```
 
-After applying, exercise `create_proximity_bundle` with test zones and orders,
+After applying all migrations, exercise `create_proximity_bundle` with test zones and orders,
 checking overlapping/non-overlapping windows, out-of-zone locations, distance
 thresholds, capacity and order-count limits, duplicate idempotency keys,
 concurrent dispatch, and pickup-before-dropoff ordering.

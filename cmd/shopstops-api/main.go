@@ -35,6 +35,12 @@ func main() {
 		logger.Error("invalid service fee configuration", "error", err)
 		os.Exit(1)
 	}
+	stripeSecretKey := os.Getenv("STRIPE_SECRET_KEY")
+	stripeWebhookSecret := os.Getenv("STRIPE_WEBHOOK_SECRET")
+	if (stripeSecretKey == "") != (stripeWebhookSecret == "") {
+		logger.Error("STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET must both be configured")
+		os.Exit(1)
+	}
 
 	db, err := sql.Open("pgx", databaseURL)
 	if err != nil {
@@ -54,15 +60,23 @@ func main() {
 	}
 	startupCancel()
 
+	repository := httpapi.NewPostgresRepository(db, deliveryFeeCents, serviceFeeCents)
+	var handler http.Handler
+	if stripeSecretKey == "" {
+		handler = httpapi.New(repository, apiToken, logger)
+	} else {
+		handler = httpapi.NewWithPayments(
+			repository, apiToken, logger,
+			httpapi.NewStripeGateway(stripeSecretKey), stripeWebhookSecret,
+		)
+	}
+
 	server := &http.Server{
 		Addr: envOr("HTTP_ADDR", ":8080"),
-		Handler: httpapi.New(
-			httpapi.NewPostgresRepository(db, deliveryFeeCents, serviceFeeCents),
-			apiToken, logger,
-		),
+		Handler: handler,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      15 * time.Second,
+		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
 
