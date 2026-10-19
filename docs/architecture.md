@@ -173,7 +173,24 @@ service fees remain in the platform ledger; the D.C. surcharge is tracked in
 the municipal tax ledger. Refund/dispute reconciliation and transfer reversals
 still need an operational policy and implementation. Do not collect or store
 raw card details. The SaaS subscription table still only stores Stripe Billing
-references; subscription creation and recurring collection are not implemented.
+references; `POST /merchant/subscription/setup-intent` creates a Stripe Customer when
+needed and returns a SetupIntent client secret so the merchant can save a
+payment method for off-session billing. `POST /merchant/subscription` validates
+the configured Stripe Price is exactly $199 USD monthly and schedules the
+subscription on the next first-of-month billing anchor. Subscription webhooks
+update the persisted state; storefront visibility is not activated until an
+invoice payment succeeds. `invoice.payment_failed` starts the existing 48-hour
+grace period, and successful collection clears it.
+
+Admins can request a full remaining checkout refund through
+`POST /admin/checkouts/{checkoutId}/refund`. The API persists an idempotent
+refund attempt before calling Stripe. Verified refund events update the payment
+and tax ledgers and reserve idempotent Connect transfer reversals for each
+completed merchant payout. Dispute events persist status/evidence deadlines and
+reserve the same type of payout reversal after a dispute is opened. A won
+dispute does not automatically restore reversed payouts; that requires
+reconciliation. Refunds are currently full-remaining-balance only; partial
+refunds are not supported.
 
 Order state updates append transactional outbox events. A WebSocket/push
 gateway should consume these events and target a <1.5 second propagation SLO;
@@ -181,8 +198,10 @@ the database outbox alone does not deliver real-time client updates.
 
 `cmd/shopstops-api` is the runnable Go service. It implements health, nearby
 subscribed-merchant discovery, proximity dispatch, checkout creation and Stripe
-payment/webhook processing, driver route reads, and GPS ingestion backed by
-PostgreSQL. It requires `DATABASE_URL` and a 32-character
+payment, subscription, refund, dispute, and webhook processing, driver route
+reads, and GPS ingestion backed by PostgreSQL. Billing requires
+`STRIPE_MERCHANT_MONTHLY_PRICE_ID` set to a $199 USD monthly Stripe Price in
+addition to the Stripe API and webhook secrets. It requires `DATABASE_URL` and a 32-character
 `SHOPSTOPS_INTERNAL_API_TOKEN`; the shared token is an internal service
 credential, not end-user authentication. Keep the API behind an identity-aware
 gateway that authenticates client sessions and enforces roles, and do not ship
@@ -190,10 +209,11 @@ the internal token to applications. The gateway must strip any incoming
 `X-ShopStops-Actor` value and inject the authenticated actor identity; driver
 route handlers trust this internal header for assignment checks.
 
-The OpenAPI contract also describes merchant subscription status, which is not
-yet implemented. Four separate consumer, driver, merchant, and admin
-applications, identity, subscription billing, routing, and real-time service
-integrations remain to be built.
+The OpenAPI contract describes subscription, refund, and webhook flows. Native
+iOS and Android consumer/driver apps and the admin web application remain
+unimplemented; they must use the trusted gateway and Stripe's client SDKs.
+Identity, production routing, and real-time service integrations remain to be
+built.
 
 For rollout, configure the initial Union Market corridor as the only enabled
 zone and cap onboarding operationally at 15 merchants and 30 screened drivers.
@@ -226,6 +246,8 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
   -f db/migrations/002_unified_marketplace.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
   -f db/migrations/003_stripe_checkout_payments.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
+  -f db/migrations/004_billing_refunds_disputes.sql
 ```
 
 After applying all migrations, exercise `create_proximity_bundle` with test zones and orders,

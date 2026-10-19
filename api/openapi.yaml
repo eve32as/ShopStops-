@@ -154,19 +154,96 @@ paths:
           description: Invalid or too-frequent location sample
         '403':
           description: Route is not assigned to this driver
+  /merchant/subscription/setup-intent:
+    post:
+      operationId: createMerchantBillingSetupIntent
+      summary: Create a SetupIntent for the authenticated merchant billing method
+      description: The trusted gateway must inject the authenticated merchant UUID and merchant role. The returned client secret is usable only to set up that merchant's payment method.
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+      responses:
+        '200':
+          description: Stripe SetupIntent client configuration
+        '403':
+          description: Merchant role required
+        '404':
+          description: Merchant not found
+        '409':
+          description: Billing customer requires reconciliation
+        '503':
+          description: Stripe billing is unavailable
   /merchant/subscription:
     get:
       operationId: getMerchantSubscription
       summary: Get merchant SaaS subscription status
+      description: The trusted gateway injects the authenticated merchant UUID and merchant role.
       responses:
         '200':
           description: Monthly subscription amount and billing status
         '403':
           description: Merchant identity required
+    post:
+      operationId: createMerchantSubscription
+      summary: Start the fixed $199 monthly merchant subscription
+      description: Requires a saved merchant billing payment method. Stripe charges on the next monthly billing anchor; visibility is not enabled until the subscription invoice is paid.
+      responses:
+        '202':
+          description: Subscription created and awaiting first successful billing event
+        '403':
+          description: Merchant role required
+        '409':
+          description: Payment method missing or existing billing operation requires reconciliation
+        '503':
+          description: Stripe merchant price or billing credentials are unavailable
+  /admin/checkouts/{checkoutId}/refund:
+    post:
+      operationId: refundCheckout
+      summary: Issue a full remaining refund for a paid checkout
+      description: Admin-only. Transfer reversals are separately created for each merchant payout after Stripe confirms the refund. Requires an idempotency key.
+      parameters:
+        - $ref: '#/components/parameters/CheckoutId'
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason:
+                  type: string
+                  enum: [duplicate, fraudulent, requested_by_customer]
+      responses:
+        '202':
+          description: Refund accepted by Stripe and awaiting refund webhook confirmation
+        '400':
+          description: Invalid checkout, idempotency key, or refund reason
+        '403':
+          description: Admin role required
+        '404':
+          description: Checkout not found
+        '409':
+          description: Payment not refundable or prior Stripe operation requires reconciliation
+        '503':
+          description: Stripe billing is unavailable
   /webhooks/stripe:
     post:
       operationId: receiveStripeWebhook
       summary: Process idempotent Stripe Connect and Billing events
+      description: Configure subscription, invoice, SetupIntent, refund, and dispute event types in addition to checkout PaymentIntent events.
       security: []
       parameters:
         - in: header

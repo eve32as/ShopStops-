@@ -33,26 +33,27 @@ type PaymentIntent struct {
 }
 
 type StripePaymentEvent struct {
-	ID                 string
-	Type               string
-	CheckoutID         string
-	PaymentIntentID    string
-	AmountCents        int64
-	Currency           string
-	PaymentStatus      string
-	ChargeID           string
-	MerchantID         string
-	CustomerID         string
-	SubscriptionID     string
-	SubscriptionStatus string
-	PeriodEnd          time.Time
-	PaymentMethodID    string
-	RefundID           string
-	RefundStatus       string
-	DisputeID          string
-	DisputeStatus      string
-	DisputeReason      string
-	EvidenceDueBy      time.Time
+	ID                   string
+	Type                 string
+	CheckoutID           string
+	PaymentIntentID      string
+	AmountCents          int64
+	Currency             string
+	PaymentStatus        string
+	ChargeID             string
+	MerchantID           string
+	CustomerID           string
+	SubscriptionID       string
+	SubscriptionStatus   string
+	PeriodEnd            time.Time
+	PaymentMethodID      string
+	RefundID             string
+	RefundStatus         string
+	RefundIdempotencyKey string
+	DisputeID            string
+	DisputeStatus        string
+	DisputeReason        string
+	EvidenceDueBy        time.Time
 }
 
 type ConnectTransfer struct {
@@ -141,7 +142,8 @@ func (g *StripeGateway) VerifyWebhook(
 			"periodEnd":          result.PeriodEnd, "paymentMethodId": result.PaymentMethodID,
 			"checkoutId": result.CheckoutID, "paymentIntentId": result.PaymentIntentID,
 			"refundId": result.RefundID, "refundStatus": result.RefundStatus,
-			"disputeId": result.DisputeID, "disputeStatus": result.DisputeStatus,
+			"refundIdempotencyKey": result.RefundIdempotencyKey,
+			"disputeId":            result.DisputeID, "disputeStatus": result.DisputeStatus,
 			"disputeReason": result.DisputeReason,
 		})
 		return result, summary, err
@@ -234,6 +236,15 @@ func parseStripeLifecycleEvent(
 	case "invoice.payment_succeeded", "invoice.payment_failed":
 		event.SubscriptionID = stripeInvoiceSubscriptionID(object)
 		event.PeriodEnd = stripeInvoicePeriodEnd(object)
+		if event.MerchantID == "" {
+			var parent struct {
+				SubscriptionDetails struct {
+					Metadata map[string]string `json:"metadata"`
+				} `json:"subscription_details"`
+			}
+			_ = json.Unmarshal(object["parent"], &parent)
+			event.MerchantID = parent.SubscriptionDetails.Metadata["shopstops_merchant_id"]
+		}
 		if event.Type == "invoice.payment_failed" {
 			event.PaymentStatus = "failed"
 		} else {
@@ -245,6 +256,7 @@ func parseStripeLifecycleEvent(
 		event.RefundID = readString("id")
 		event.RefundStatus = readString("status")
 		event.AmountCents = readAmount("amount")
+		event.RefundIdempotencyKey = metadata["shopstops_refund_key"]
 	case "charge.dispute.created", "charge.dispute.updated", "charge.dispute.closed":
 		event.DisputeID = readString("id")
 		event.DisputeStatus = readString("status")

@@ -29,6 +29,21 @@ type fakePaymentRepository struct {
 	transfers          []ConnectTransfer
 	recordedTransfers  []string
 	transferAttemptErr error
+	billingProfile     MerchantBillingProfile
+	billingProfileErr  error
+	refund             RefundRecord
+	refundErr          error
+	refundRecord       RefundRecord
+	billingEvent       StripePaymentEvent
+	billingPayload     json.RawMessage
+	billingEventErr    error
+	refundEvent        StripePaymentEvent
+	refundEventErr     error
+	disputeEvent       StripePaymentEvent
+	disputeEventErr    error
+	reversals          []TransferReversal
+	reversalIDs        []string
+	reversalErr        error
 }
 
 func (f *fakePaymentRepository) CheckoutForPayment(
@@ -77,6 +92,88 @@ func (f *fakePaymentRepository) BeginConnectTransferAttempt(
 	return f.transferAttemptErr
 }
 
+func (f *fakePaymentRepository) MerchantBillingProfile(
+	context.Context, string,
+) (MerchantBillingProfile, error) {
+	return f.billingProfile, f.billingProfileErr
+}
+
+func (f *fakePaymentRepository) ReserveMerchantBillingAttempt(
+	context.Context, string, string,
+) (MerchantBillingProfile, error) {
+	return f.billingProfile, f.billingProfileErr
+}
+
+func (f *fakePaymentRepository) RecordMerchantStripeCustomer(
+	context.Context, string, string,
+) error {
+	return nil
+}
+
+func (f *fakePaymentRepository) RecordMerchantStripeSubscription(
+	context.Context, string, string, string,
+) error {
+	return nil
+}
+
+func (f *fakePaymentRepository) ApplyMerchantBillingEvent(
+	_ context.Context, event StripePaymentEvent, summary json.RawMessage,
+) error {
+	f.billingEvent, f.billingPayload = event, summary
+	return f.billingEventErr
+}
+
+func (f *fakePaymentRepository) ReserveCheckoutRefund(
+	_ context.Context, checkoutID, actor, key, reason string,
+) (RefundRecord, error) {
+	if f.refundErr != nil {
+		return RefundRecord{}, f.refundErr
+	}
+	f.refund = RefundRecord{
+		ID: "refund-record", CheckoutID: checkoutID, PaymentIntentID: "pi_test",
+		IdempotencyKey: key, AmountCents: 3120, Reason: reason,
+	}
+	return f.refund, nil
+}
+
+func (f *fakePaymentRepository) RecordStripeRefund(
+	_ context.Context, refundID, stripeRefundID, status string,
+) error {
+	f.refundRecord = RefundRecord{ID: refundID, StripeRefundID: stripeRefundID, Status: status}
+	return nil
+}
+
+func (f *fakePaymentRepository) ApplyCheckoutRefundEvent(
+	_ context.Context, event StripePaymentEvent, _ json.RawMessage,
+) error {
+	f.refundEvent = event
+	return f.refundEventErr
+}
+
+func (f *fakePaymentRepository) ApplyStripeDisputeEvent(
+	_ context.Context, event StripePaymentEvent, _ json.RawMessage,
+) error {
+	f.disputeEvent = event
+	return f.disputeEventErr
+}
+
+func (f *fakePaymentRepository) PendingTransferReversals(
+	context.Context, string, string,
+) ([]TransferReversal, error) {
+	return f.reversals, nil
+}
+
+func (f *fakePaymentRepository) BeginTransferReversalAttempt(context.Context, string) error {
+	return f.reversalErr
+}
+
+func (f *fakePaymentRepository) RecordTransferReversal(
+	_ context.Context, reversalID, stripeReversalID string,
+) error {
+	f.reversalIDs = append(f.reversalIDs, stripeReversalID)
+	return nil
+}
+
 type fakePaymentGateway struct {
 	createdIntent      PaymentIntent
 	retrievedIntent    PaymentIntent
@@ -90,6 +187,19 @@ type fakePaymentGateway struct {
 	createCheckoutID   string
 	createAmount       int64
 	transferKey        string
+	customerID         string
+	setupIntentID      string
+	setupClientSecret  string
+	subscriptionID     string
+	subscriptionStatus string
+	refundID           string
+	refundStatus       string
+	reversalID         string
+	reversalEvent      TransferReversal
+	refundEvent        RefundRecord
+	setupMerchantID    string
+	subscriptionPrice  string
+	lifecycleErr       error
 }
 
 func (f *fakePaymentGateway) CreatePaymentIntent(
@@ -120,6 +230,53 @@ func (f *fakePaymentGateway) CreateConnectTransfer(
 ) (string, error) {
 	f.transferKey = key
 	return f.transferID, f.transferErr
+}
+
+func (f *fakePaymentGateway) CreateMerchantCustomer(
+	_ context.Context, merchantID, _ string, _ string,
+) (string, error) {
+	f.setupMerchantID = merchantID
+	return f.customerID, f.lifecycleErr
+}
+
+func (f *fakePaymentGateway) CreateMerchantSetupIntent(
+	_ context.Context, merchantID, customerID, _ string,
+) (string, string, error) {
+	f.setupMerchantID = merchantID
+	if customerID == "" {
+		return "", "", errors.New("customer required")
+	}
+	return f.setupIntentID, f.setupClientSecret, f.lifecycleErr
+}
+
+func (f *fakePaymentGateway) SetMerchantDefaultPaymentMethod(
+	context.Context, string, string,
+) error {
+	return f.lifecycleErr
+}
+
+func (f *fakePaymentGateway) CreateMerchantSubscription(
+	_ context.Context, merchantID, customerID, paymentMethodID, priceID string,
+) (string, string, error) {
+	f.setupMerchantID, f.subscriptionPrice = merchantID, priceID
+	if customerID == "" || paymentMethodID == "" {
+		return "", "", errors.New("customer and payment method required")
+	}
+	return f.subscriptionID, f.subscriptionStatus, f.lifecycleErr
+}
+
+func (f *fakePaymentGateway) CreateCheckoutRefund(
+	_ context.Context, refund RefundRecord,
+) (string, string, error) {
+	f.refundEvent = refund
+	return f.refundID, f.refundStatus, f.lifecycleErr
+}
+
+func (f *fakePaymentGateway) CreateTransferReversal(
+	_ context.Context, reversal TransferReversal,
+) (string, error) {
+	f.reversalEvent = reversal
+	return f.reversalID, f.lifecycleErr
 }
 
 func paymentTestHandler(repo *fakePaymentRepository, gateway *fakePaymentGateway) http.Handler {
@@ -231,5 +388,130 @@ func TestStripeGatewayWebhookSignatureVerification(t *testing.T) {
 	_, _, err = gateway.VerifyWebhook(payload, signed+"x", "webhook-test-secret")
 	if err == nil {
 		t.Fatal("modified Stripe signature was accepted")
+	}
+}
+
+func TestMerchantBillingRequiresTrustedMerchantRole(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/merchant/subscription", nil)
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "00000000-0000-0000-0000-000000000001")
+	recorder := httptest.NewRecorder()
+	paymentTestHandler(&fakePaymentRepository{}, &fakePaymentGateway{}).
+		ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusForbidden)
+	}
+}
+
+func TestMerchantSetupIntentCreatesCustomerAndReturnsClientSecret(t *testing.T) {
+	const merchantID = "00000000-0000-0000-0000-000000000001"
+	repo := &fakePaymentRepository{billingProfile: MerchantBillingProfile{
+		MerchantID: merchantID, Name: "Test Market", Status: "incomplete",
+	}}
+	gateway := &fakePaymentGateway{
+		customerID: "cus_test", setupIntentID: "seti_test",
+		setupClientSecret: "seti_test_secret",
+	}
+	request := httptest.NewRequest(
+		http.MethodPost, "/merchant/subscription/setup-intent", nil,
+	)
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", merchantID)
+	request.Header.Set("X-ShopStops-Actor-Role", "merchant")
+	request.Header.Set("Idempotency-Key", "billing-setup-1")
+	recorder := httptest.NewRecorder()
+	NewWithPayments(repo, strings.Repeat("t", 32),
+		slog.New(slog.NewTextHandler(io.Discard, nil)), gateway, "webhook-secret").
+		ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || gateway.setupMerchantID != merchantID ||
+		!strings.Contains(recorder.Body.String(), `"clientSecret":"seti_test_secret"`) {
+		t.Fatalf("status=%d gateway=%+v body=%s", recorder.Code, gateway, recorder.Body.String())
+	}
+}
+
+func TestMerchantSubscriptionUsesConfiguredPriceAndPersistsIncompleteUntilPaid(t *testing.T) {
+	const merchantID = "00000000-0000-0000-0000-000000000001"
+	repo := &fakePaymentRepository{billingProfile: MerchantBillingProfile{
+		MerchantID: merchantID, CustomerID: "cus_test",
+		PaymentMethodID: "pm_test", Status: "incomplete",
+	}}
+	gateway := &fakePaymentGateway{
+		subscriptionID: "sub_test", subscriptionStatus: "active",
+	}
+	request := httptest.NewRequest(http.MethodPost, "/merchant/subscription", nil)
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", merchantID)
+	request.Header.Set("X-ShopStops-Actor-Role", "merchant")
+	recorder := httptest.NewRecorder()
+	NewWithPayments(repo, strings.Repeat("t", 32),
+		slog.New(slog.NewTextHandler(io.Discard, nil)), gateway, "webhook-secret",
+		"price_merchant_199").
+		ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusAccepted || gateway.subscriptionPrice != "price_merchant_199" ||
+		!strings.Contains(recorder.Body.String(), `"status":"incomplete"`) {
+		t.Fatalf("status=%d gateway=%+v body=%s", recorder.Code, gateway, recorder.Body.String())
+	}
+}
+
+func TestAdminRefundRequiresAdminRoleAndUsesIdempotencyKey(t *testing.T) {
+	const checkoutID = "00000000-0000-0000-0000-000000000001"
+	repo := &fakePaymentRepository{}
+	gateway := &fakePaymentGateway{refundID: "re_test", refundStatus: "pending"}
+	request := httptest.NewRequest(http.MethodPost,
+		"/admin/checkouts/"+checkoutID+"/refund",
+		strings.NewReader(`{"reason":"requested_by_customer"}`))
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "admin-1")
+	request.Header.Set("X-ShopStops-Actor-Role", "admin")
+	request.Header.Set("Idempotency-Key", "refund-key-1")
+	recorder := httptest.NewRecorder()
+	paymentTestHandler(repo, gateway).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusAccepted || repo.refund.IdempotencyKey != "refund-key-1" ||
+		gateway.refundEvent.AmountCents != 3120 ||
+		repo.refundRecord.StripeRefundID != "re_test" {
+		t.Fatalf("status=%d repository=%+v gateway=%+v body=%s",
+			recorder.Code, repo, gateway, recorder.Body.String())
+	}
+}
+
+func TestRefundWebhookCreatesIdempotentTransferReversals(t *testing.T) {
+	const checkoutID = "00000000-0000-0000-0000-000000000001"
+	repo := &fakePaymentRepository{
+		reversals: []TransferReversal{{
+			ID: "reversal-row", RefundID: "refund-row", CheckoutID: checkoutID,
+			MerchantID: "merchant-1", TransferID: "tr_test",
+			IdempotencyKey: "refund-reversal-key", AmountCents: 1440,
+		}},
+	}
+	gateway := &fakePaymentGateway{
+		event: StripePaymentEvent{
+			ID: "evt_refund", Type: "refund.updated", RefundID: "re_test",
+			RefundStatus: "succeeded",
+		},
+		summary:    json.RawMessage(`{"eventId":"evt_refund"}`),
+		reversalID: "trr_test",
+	}
+	request := httptest.NewRequest(http.MethodPost, "/webhooks/stripe", strings.NewReader("{}"))
+	recorder := httptest.NewRecorder()
+	paymentTestHandler(repo, gateway).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || repo.refundEvent.RefundID != "re_test" ||
+		len(repo.reversalIDs) != 1 || repo.reversalIDs[0] != "trr_test" ||
+		gateway.reversalEvent.IdempotencyKey != "refund-reversal-key" {
+		t.Fatalf("status=%d repository=%+v gateway=%+v body=%s",
+			recorder.Code, repo, gateway, recorder.Body.String())
+	}
+}
+
+func TestStripeLifecycleEventParserExtractsMerchantPaymentSetup(t *testing.T) {
+	event, err := parseStripeLifecycleEvent(StripePaymentEvent{
+		ID: "evt_setup", Type: "setup_intent.succeeded",
+	}, json.RawMessage(`{
+		"id":"seti_test","customer":"cus_test","payment_method":"pm_test",
+		"metadata":{"shopstops_merchant_id":"00000000-0000-0000-0000-000000000001"},
+		"client_secret":"secret-not-to-store"
+	}`))
+	if err != nil || event.MerchantID != "00000000-0000-0000-0000-000000000001" ||
+		event.CustomerID != "cus_test" || event.PaymentMethodID != "pm_test" {
+		t.Fatalf("event=%+v err=%v", event, err)
 	}
 }

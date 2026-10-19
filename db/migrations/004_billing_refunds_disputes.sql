@@ -137,11 +137,9 @@ BEGIN
                 payment_failed_at = COALESCE(payment_failed_at, now()),
                 updated_at = now()
             WHERE merchant_id = v_merchant_id;
-        ELSIF p_event_type = 'invoice.payment_succeeded'
-              OR p_subscription_status IN ('active', 'trialing') THEN
+        ELSIF p_event_type = 'invoice.payment_succeeded' THEN
             UPDATE merchant_subscriptions
-            SET status = CASE WHEN p_event_type = 'invoice.payment_succeeded'
-                              THEN 'active' ELSE p_subscription_status END,
+            SET status = 'active',
                 stripe_subscription_id = COALESCE(
                     p_stripe_subscription_id, stripe_subscription_id
                 ),
@@ -152,6 +150,21 @@ BEGIN
                     p_current_period_end, current_period_end
                 ),
                 payment_failed_at = NULL,
+                updated_at = now()
+            WHERE merchant_id = v_merchant_id;
+        ELSIF p_subscription_status IN ('active', 'trialing') THEN
+            UPDATE merchant_subscriptions
+            SET status = CASE WHEN status = 'incomplete'
+                              THEN 'incomplete' ELSE p_subscription_status END,
+                stripe_subscription_id = COALESCE(
+                    p_stripe_subscription_id, stripe_subscription_id
+                ),
+                stripe_customer_id = COALESCE(
+                    p_stripe_customer_id, stripe_customer_id
+                ),
+                current_period_end = COALESCE(
+                    p_current_period_end, current_period_end
+                ),
                 updated_at = now()
             WHERE merchant_id = v_merchant_id;
         ELSIF p_subscription_status = 'incomplete' THEN
@@ -257,7 +270,7 @@ BEGIN
     SELECT * INTO v_event FROM stripe_webhook_events
     WHERE stripe_event_id = p_event_id FOR UPDATE;
     IF v_event.processed_at IS NOT NULL THEN
-        SELECT id INTO v_refund FROM checkout_refunds
+        SELECT * INTO v_refund FROM checkout_refunds
         WHERE stripe_refund_id = p_refund_id;
         RETURN v_refund.id;
     END IF;
@@ -271,7 +284,7 @@ BEGIN
         updated_at = now()
     WHERE stripe_refund_id = p_refund_id
        OR (stripe_refund_id IS NULL AND idempotency_key =
-           p_payload->'data'->'object'->'metadata'->>'shopstops_refund_key')
+           p_payload->>'refundIdempotencyKey')
     RETURNING * INTO v_refund;
     IF NOT FOUND THEN
         RAISE EXCEPTION 'Stripe refund event does not match a pending refund';
@@ -298,7 +311,8 @@ BEGIN
           AND transfer.status = 'transferred'
           AND transfer.stripe_transfer_id IS NOT NULL
           AND transfer.transfer_amount_cents > 0
-        ON CONFLICT (checkout_refund_id, merchant_id) DO NOTHING;
+        ON CONFLICT (checkout_refund_id, merchant_id)
+            WHERE checkout_refund_id IS NOT NULL DO NOTHING;
     END IF;
     UPDATE stripe_webhook_events SET processed_at = now()
     WHERE stripe_event_id = p_event_id;

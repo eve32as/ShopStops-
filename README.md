@@ -8,7 +8,8 @@ ready orders into a bundle and persisting its pickup/drop-off queue.
 
 Apply `db/migrations/001_delivery_foundation.sql`,
 `db/migrations/002_unified_marketplace.sql`, and
-`db/migrations/003_stripe_checkout_payments.sql` to PostgreSQL 14+ with PostGIS 3.x
+`db/migrations/003_stripe_checkout_payments.sql`, and
+`db/migrations/004_billing_refunds_disputes.sql` to PostgreSQL 14+ with PostGIS 3.x
 installed. The migrations create the dispatch and unified-basket relational
 models, spatial queries, transaction-safe order/merchant limits, immutable
 multi-stop routes, payment/tax ledger records, and outbox events.
@@ -33,6 +34,8 @@ export SHOPSTOPS_SERVICE_FEE_CENTS=100
 # Set both through a server-side secret manager to enable Stripe payments.
 export STRIPE_SECRET_KEY
 export STRIPE_WEBHOOK_SECRET
+# Configure a Stripe Price for USD 199/month to enable merchant subscriptions.
+export STRIPE_MERCHANT_MONTHLY_PRICE_ID
 go run ./cmd/shopstops-api
 ```
 
@@ -51,12 +54,33 @@ jurisdiction polygon.
 
 The payment endpoint creates one idempotent PaymentIntent from the persisted
 invoice. Configure Stripe to send `payment_intent.succeeded`,
-`payment_intent.processing`, and `payment_intent.payment_failed` to
-`/webhooks/stripe`. Verified, deduplicated events update the payment/tax ledger
-and create separate, idempotent Connect transfers to merchant accounts. Retries
-resume transfers not recorded after Stripe successfully created them. Pin the
-webhook endpoint's Stripe API version to the version supported by the installed
-Stripe Go SDK. If a PaymentIntent or transfer attempt remains unresolved for 23
+`payment_intent.processing`, `payment_intent.payment_failed`,
+`customer.subscription.created`, `customer.subscription.updated`,
+`customer.subscription.deleted`, `invoice.payment_succeeded`,
+`invoice.payment_failed`, `setup_intent.succeeded`, `refund.created`,
+`refund.updated`, `charge.dispute.created`, `charge.dispute.updated`, and
+`charge.dispute.closed` to `/webhooks/stripe`. Verified, deduplicated events
+update the payment/tax/subscription ledgers, create separate Connect transfers,
+and handle merchant payout reversals after refunds and disputes.
+
+Merchants use `POST /merchant/subscription/setup-intent` to attach a reusable
+payment method, then `POST /merchant/subscription` to start the fixed Stripe
+Price. Stripe validates the configured Price as USD 199 billed monthly and
+anchors collection to the next first day of the month. Subscription visibility
+is not activated until a successful invoice webhook. After a failed invoice,
+the storefront remains visible for at most 48 hours, as defined by
+`merchant_storefront_visibility`.
+
+Admins can request a full remaining refund with
+`POST /admin/checkouts/{checkoutId}/refund`. Refund and dispute webhooks record
+their status and create separately idempotent reversals for transfers already
+paid to merchants. Review disputes and refund outcomes operationally; a won
+dispute does not automatically re-transfer reversed merchant proceeds, and tax
+remittance/reporting remains a separate workflow.
+
+Retries resume transfers/reversals not recorded after Stripe accepted them. Pin
+the webhook endpoint's Stripe API version to the version supported by the
+installed Stripe Go SDK. If an external operation remains unresolved for 23
 hours, the API stops resubmitting it rather than risk a duplicate after Stripe's
 idempotency-key retention window; reconcile it with Stripe before retrying.
 
@@ -69,5 +93,8 @@ connected accounts before payment initialization. Payment secrets are never
 returned to client applications; only the PaymentIntent client secret is
 returned to the authenticated customer.
 
-Native iOS and Android apps, the admin web app, merchant subscription billing,
-routing, and WebSocket integrations remain follow-on work.
+Native iOS and Android consumer/driver apps and the admin web application have
+not been implemented in this repository. They should use the versioned API,
+Stripe's native client SDKs, and trusted gateway actor/role headers; no client
+should receive the backend Stripe secret or internal API token. Production
+routing and WebSocket integrations remain follow-on work.

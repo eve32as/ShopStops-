@@ -310,6 +310,77 @@ BEGIN
     END IF;
 END;
 $$;
+UPDATE connect_transfers
+SET stripe_transfer_id = 'tr_test_' || merchant_id::text, status = 'transferred'
+WHERE checkout_id = :'checkout_id';
+SELECT id AS refund_record_id
+FROM reserve_checkout_refund(
+    :'checkout_id', 'admin-test', 'refund-test-key', 'requested_by_customer'
+) \gset
+SELECT record_checkout_refund(:'refund_record_id', 're_test', 'pending');
+SELECT process_checkout_refund_event(
+    'evt_refund_success', 'refund.updated',
+    '{"refundIdempotencyKey":"refund-test-key"}',
+    're_test', 'succeeded'
+);
+SELECT process_checkout_refund_event(
+    'evt_refund_success', 'refund.updated',
+    '{"refundIdempotencyKey":"refund-test-key"}',
+    're_test', 'succeeded'
+);
+SELECT process_merchant_billing_event(
+    'evt_setup_success', 'setup_intent.succeeded',
+    '{"eventId":"evt_setup_success"}',
+    :'anchor_merchant_id', 'cus_anchor', NULL, NULL, NULL, false, 'pm_anchor'
+);
+SELECT process_merchant_billing_event(
+    'evt_subscription_created', 'customer.subscription.created',
+    '{"eventId":"evt_subscription_created"}',
+    :'anchor_merchant_id', 'cus_anchor', 'sub_anchor', 'active',
+    now() + interval '1 month', false, NULL
+);
+SELECT process_merchant_billing_event(
+    'evt_invoice_paid', 'invoice.payment_succeeded',
+    '{"eventId":"evt_invoice_paid"}',
+    :'anchor_merchant_id', 'cus_anchor', 'sub_anchor', NULL,
+    now() + interval '1 month', false, NULL
+);
+SELECT process_merchant_billing_event(
+    'evt_invoice_failed', 'invoice.payment_failed',
+    '{"eventId":"evt_invoice_failed"}',
+    :'anchor_merchant_id', 'cus_anchor', 'sub_anchor', NULL,
+    now() + interval '1 month', true, NULL
+);
+UPDATE merchant_subscriptions
+SET payment_failed_at = now() - interval '49 hours'
+WHERE merchant_id = :'anchor_merchant_id';
+SELECT process_stripe_dispute_event(
+    'evt_dispute_won', 'charge.dispute.closed',
+    '{"eventId":"evt_dispute_won"}',
+    'dp_test', :'checkout_id', 'pi_test_success', 3120,
+    'product_not_received', 'won', NULL
+);
+DO $$
+BEGIN
+    IF (SELECT status FROM checkout_payments
+        WHERE checkout_id = current_setting('shopstops.test_checkout_id')::uuid) <> 'refunded'
+       OR (SELECT status FROM dc_tax_ledger
+           WHERE checkout_id = current_setting('shopstops.test_checkout_id')::uuid) <> 'refunded'
+       OR (SELECT count(*) FROM connect_transfer_reversals
+           WHERE checkout_refund_id = :'refund_record_id'::uuid) <> 2 THEN
+        RAISE EXCEPTION 'refund should update ledgers and reserve one payout reversal per merchant';
+    END IF;
+    IF (SELECT status FROM merchant_subscriptions
+        WHERE merchant_id = current_setting('shopstops.test_anchor_merchant_id')::uuid) <> 'past_due'
+       OR (SELECT visible FROM merchant_storefront_visibility
+           WHERE merchant_id = current_setting('shopstops.test_anchor_merchant_id')::uuid) THEN
+        RAISE EXCEPTION 'subscription failure should update status and hide storefront after 48 hours';
+    END IF;
+    IF (SELECT status FROM stripe_disputes WHERE stripe_dispute_id = 'dp_test') <> 'won' THEN
+        RAISE EXCEPTION 'dispute result was not persisted';
+    END IF;
+END;
+$$;
 SELECT create_unified_route(:'checkout_id', 'route-test-key', 'osrm')
     AS route_id \gset
 UPDATE unified_delivery_routes

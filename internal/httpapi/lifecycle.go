@@ -317,7 +317,7 @@ func (s *Server) createMerchantSubscription(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if profile.SubscriptionID == "" {
-		subscriptionID, status, err := gateway.CreateMerchantSubscription(
+		subscriptionID, _, err := gateway.CreateMerchantSubscription(
 			ctx, merchantID, profile.CustomerID, profile.PaymentMethodID, s.merchantPriceID,
 		)
 		if err != nil {
@@ -326,12 +326,12 @@ func (s *Server) createMerchantSubscription(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		if err := repository.RecordMerchantStripeSubscription(
-			ctx, merchantID, subscriptionID, mapStripeSubscriptionStatus(status),
+			ctx, merchantID, subscriptionID, "incomplete",
 		); err != nil {
 			s.databaseError(w, err)
 			return
 		}
-		profile.SubscriptionID, profile.Status = subscriptionID, mapStripeSubscriptionStatus(status)
+		profile.SubscriptionID, profile.Status = subscriptionID, "incomplete"
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"subscriptionId": profile.SubscriptionID,
@@ -524,27 +524,17 @@ func (p *PostgresRepository) ReserveMerchantBillingAttempt(
 	if err != nil {
 		return MerchantBillingProfile{}, err
 	}
-	var conflict bool
+	var reserved int
 	err = tx.QueryRowContext(ctx, `
-		SELECT stripe_customer_id IS NULL AND
-		       stripe_customer_attempted_at < now() - interval '23 hours'
-		       OR $2 = 'subscription' AND stripe_subscription_id IS NULL AND
-		       (stripe_default_payment_method_id IS NULL
-		        OR subscription_attempted_at < now() - interval '23 hours')
-		FROM (
-		    SELECT * FROM reserve_merchant_billing_attempt($1, $2)
-		) attempt`,
+		SELECT 1 FROM reserve_merchant_billing_attempt($1, $2)`,
 		merchantID, attemptKind,
-	).Scan(&conflict)
+	).Scan(&reserved)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "P0001" {
 			return MerchantBillingProfile{}, ErrConflict
 		}
 		return MerchantBillingProfile{}, err
-	}
-	if conflict {
-		return MerchantBillingProfile{}, ErrConflict
 	}
 	var profile MerchantBillingProfile
 	err = tx.QueryRowContext(ctx, `
