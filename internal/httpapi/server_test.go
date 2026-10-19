@@ -2,12 +2,14 @@ package httpapi
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 type fakeRepository struct {
@@ -16,6 +18,15 @@ type fakeRepository struct {
 	nearbyErr     error
 	nearbyStoreID string
 	nearbyRadius  int
+	catalog       []CatalogItem
+	catalogErr    error
+	catalogStoreID string
+	order         customerOrderResponse
+	orderErr      error
+	orderReq      customerOrderRequest
+	orderCustomer string
+	orderKey      string
+	orderFingerprint string
 	bundle        bundleResponse
 	bundleErr     error
 	bundleRequest bundleRequest
@@ -44,6 +55,19 @@ func (f *fakeRepository) NearbyMerchants(
 ) ([]NearbyMerchant, error) {
 	f.nearbyStoreID, f.nearbyRadius = storeID, radius
 	return f.nearby, f.nearbyErr
+}
+func (f *fakeRepository) CatalogItems(
+	_ context.Context, storeID string,
+) ([]CatalogItem, error) {
+	f.catalogStoreID = storeID
+	return f.catalog, f.catalogErr
+}
+func (f *fakeRepository) CreateCustomerOrder(
+	_ context.Context, request customerOrderRequest, customerRef, idempotencyKey, fingerprint string,
+) (customerOrderResponse, error) {
+	f.orderReq, f.orderCustomer, f.orderKey, f.orderFingerprint =
+		request, customerRef, idempotencyKey, fingerprint
+	return f.order, f.orderErr
 }
 func (f *fakeRepository) CreateBundle(
 	_ context.Context, request bundleRequest, key string,
@@ -126,6 +150,60 @@ func TestNearbyReturnsNotFound(t *testing.T) {
 		ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusNotFound)
+	}
+}
+
+func TestCatalogReturnsItemsForStore(t *testing.T) {
+	repo := &fakeRepository{catalog: []CatalogItem{{ID: "item-1", Name: "Bread"}}}
+	request := httptest.NewRequest(http.MethodGet,
+		"/stores/00000000-0000-0000-0000-000000000001/catalog", nil)
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	recorder := httptest.NewRecorder()
+	New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
+		ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK ||
+		repo.catalogStoreID != "00000000-0000-0000-0000-000000000001" ||
+		!strings.Contains(recorder.Body.String(), `"name":"Bread"`) {
+		t.Fatalf("status=%d store=%s body=%s", recorder.Code, repo.catalogStoreID, recorder.Body.String())
+	}
+}
+
+func TestCreateCustomerOrderUsesAuthenticatedActorAndIdempotency(t *testing.T) {
+	repo := &fakeRepository{order: customerOrderResponse{
+		ID: "order-1", Status: "placed", ItemSubtotalCents: 250,
+	}}
+	start := time.Now().Add(time.Hour).Format(time.RFC3339)
+	end := time.Now().Add(3 * time.Hour).Format(time.RFC3339)
+	request := httptest.NewRequest(http.MethodPost, "/orders", strings.NewReader(fmt.Sprintf(
+		`{"storeLocationId":"00000000-0000-0000-0000-000000000001","dropoff":{"latitude":38.91,"longitude":-76.99},"deliveryWindowStart":%q,"deliveryWindowEnd":%q,"items":[{"catalogItemId":"00000000-0000-0000-0000-000000000002","quantity":2}]}`,
+		start, end,
+	)))
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "customer-123")
+	request.Header.Set("Idempotency-Key", "order-attempt-1")
+	recorder := httptest.NewRecorder()
+	New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
+		ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated || repo.orderCustomer != "customer-123" ||
+		repo.orderKey != "order-attempt-1" || repo.orderReq.Items[0].Quantity != 2 ||
+		len(repo.orderFingerprint) != 64 ||
+		!strings.Contains(recorder.Body.String(), `"itemSubtotalCents":250`) {
+		t.Fatalf("status=%d order=%+v key=%s body=%s", recorder.Code, repo.orderReq, repo.orderKey, recorder.Body.String())
+	}
+}
+
+func TestCreateCustomerOrderRejectsDuplicateCatalogItems(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "/orders", strings.NewReader(
+		`{"storeLocationId":"00000000-0000-0000-0000-000000000001","dropoff":{"latitude":38.91,"longitude":-76.99},"deliveryWindowStart":"2099-01-01T10:00:00Z","deliveryWindowEnd":"2099-01-01T12:00:00Z","items":[{"catalogItemId":"00000000-0000-0000-0000-000000000002","quantity":1},{"catalogItemId":"00000000-0000-0000-0000-000000000002","quantity":2}]}`))
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "customer-123")
+	request.Header.Set("Idempotency-Key", "order-attempt-duplicate")
+	recorder := httptest.NewRecorder()
+	repo := &fakeRepository{}
+	New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
+		ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest || repo.orderKey != "" {
+		t.Fatalf("status=%d repository key=%s", recorder.Code, repo.orderKey)
 	}
 }
 

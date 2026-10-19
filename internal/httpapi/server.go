@@ -3,8 +3,10 @@ package httpapi
 import (
 	"context"
 	"crypto/subtle"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
+	"encoding/hex"
 	"errors"
 	"io"
 	"log/slog"
@@ -35,6 +37,10 @@ type Server struct {
 type Repository interface {
 	PingContext(context.Context) error
 	NearbyMerchants(context.Context, string, int) ([]NearbyMerchant, error)
+	CatalogItems(context.Context, string) ([]CatalogItem, error)
+	CreateCustomerOrder(
+		context.Context, customerOrderRequest, string, string, string,
+	) (customerOrderResponse, error)
 	CreateBundle(context.Context, bundleRequest, string) (bundleResponse, error)
 	CreateCheckout(context.Context, checkoutRequest, string, string) (checkoutResponse, error)
 	DriverRoute(context.Context, string, string) (routeResponse, error)
@@ -50,6 +56,33 @@ type NearbyMerchant struct {
 	MerchantType   string  `json:"merchantType"`
 	StoreLocation  string  `json:"storeLocationId"`
 	DistanceMeters float64 `json:"distanceMeters"`
+}
+
+type CatalogItem struct {
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	Description    string `json:"description"`
+	UnitPriceCents int    `json:"unitPriceCents"`
+	VolumeLiters   string `json:"volumeLiters"`
+}
+
+type customerOrderRequest struct {
+	StoreLocationID    string           `json:"storeLocationId"`
+	Dropoff            geoPoint         `json:"dropoff"`
+	DeliveryWindowStart time.Time       `json:"deliveryWindowStart"`
+	DeliveryWindowEnd   time.Time       `json:"deliveryWindowEnd"`
+	Items              []customerOrderItem `json:"items"`
+}
+
+type customerOrderItem struct {
+	CatalogItemID string `json:"catalogItemId"`
+	Quantity      int    `json:"quantity"`
+}
+
+type customerOrderResponse struct {
+	ID               string `json:"id"`
+	Status           string `json:"status"`
+	ItemSubtotalCents int   `json:"itemSubtotalCents"`
 }
 
 type bundleRequest struct {
@@ -172,6 +205,8 @@ func (s *Server) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.Handle("GET /stores/{storeLocationId}/nearby-merchants", s.authorized(http.HandlerFunc(s.nearbyMerchants)))
+	mux.Handle("GET /stores/{storeLocationId}/catalog", s.authorized(http.HandlerFunc(s.catalogItems)))
+	mux.Handle("POST /orders", s.authorized(http.HandlerFunc(s.createCustomerOrder)))
 	mux.Handle("POST /dispatch/bundles", s.authorized(http.HandlerFunc(s.createBundle)))
 	mux.Handle("GET /driver/routes/{routeId}", s.authorized(http.HandlerFunc(s.getDriverRoute)))
 	mux.Handle("POST /driver/routes/{routeId}/location", s.authorized(http.HandlerFunc(s.recordDriverLocation)))
@@ -241,6 +276,97 @@ func (s *Server) nearbyMerchants(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, merchants)
+}
+
+func (s *Server) catalogItems(w http.ResponseWriter, r *http.Request) {
+	storeID := r.PathValue("storeLocationId")
+	if !isUUID(storeID) {
+		writeError(w, http.StatusBadRequest, "invalid storeLocationId")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	items, err := s.repo.CatalogItems(ctx, storeID)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		writeError(w, http.StatusNotFound, "storefront not found or unavailable")
+	case err != nil:
+		s.databaseError(w, err)
+	default:
+		writeJSON(w, http.StatusOK, items)
+	}
+}
+
+func (s *Server) createCustomerOrder(w http.ResponseWriter, r *http.Request) {
+	customerRef := strings.TrimSpace(r.Header.Get("X-ShopStops-Actor"))
+	if customerRef == "" || len(customerRef) > 200 {
+		writeError(w, http.StatusBadRequest, "authenticated customer identity is required")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 32*1024)
+	var request customerOrderRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "request body must contain one JSON object")
+		return
+	}
+	if !isUUID(request.StoreLocationID) ||
+		request.Dropoff.Latitude < -90 || request.Dropoff.Latitude > 90 ||
+		request.Dropoff.Longitude < -180 || request.Dropoff.Longitude > 180 ||
+		request.DeliveryWindowStart.IsZero() || request.DeliveryWindowEnd.IsZero() ||
+		!request.DeliveryWindowEnd.After(request.DeliveryWindowStart) ||
+		request.DeliveryWindowStart.Before(time.Now().Add(-time.Minute)) ||
+		request.DeliveryWindowStart.After(time.Now().Add(30*24*time.Hour)) ||
+		len(request.Items) == 0 || len(request.Items) > 50 {
+		writeError(w, http.StatusBadRequest, "invalid order details")
+		return
+	}
+	seenItems := make(map[string]struct{}, len(request.Items))
+	for _, item := range request.Items {
+		if !isUUID(item.CatalogItemID) || item.Quantity < 1 || item.Quantity > 99 {
+			writeError(w, http.StatusBadRequest, "invalid catalog item or quantity")
+			return
+		}
+		if _, exists := seenItems[item.CatalogItemID]; exists {
+			writeError(w, http.StatusBadRequest, "catalog item IDs must be unique")
+			return
+		}
+		seenItems[item.CatalogItemID] = struct{}{}
+	}
+	idempotencyKey := r.Header.Get("Idempotency-Key")
+	if len(idempotencyKey) == 0 || len(idempotencyKey) > 200 ||
+		strings.TrimSpace(idempotencyKey) != idempotencyKey {
+		writeError(w, http.StatusBadRequest, "valid Idempotency-Key header is required")
+		return
+	}
+	canonicalRequest, err := json.Marshal(request)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid order details")
+		return
+	}
+	fingerprintBytes := sha256.Sum256(canonicalRequest)
+	fingerprint := hex.EncodeToString(fingerprintBytes[:])
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	response, err := s.repo.CreateCustomerOrder(
+		ctx, request, customerRef, idempotencyKey, fingerprint,
+	)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		writeError(w, http.StatusNotFound, "storefront, catalog item, or delivery zone unavailable")
+	case errors.Is(err, ErrConflict):
+		writeError(w, http.StatusConflict, "order is unavailable or idempotency key conflicts")
+	case err != nil:
+		s.databaseError(w, err)
+	default:
+		writeJSON(w, http.StatusCreated, response)
+	}
 }
 
 func (s *Server) createBundle(w http.ResponseWriter, r *http.Request) {
@@ -512,6 +638,100 @@ func (p *PostgresRepository) NearbyMerchants(
 		return nil, err
 	}
 	return merchants, nil
+}
+
+func (p *PostgresRepository) CatalogItems(
+	ctx context.Context, storeID string,
+) ([]CatalogItem, error) {
+	var visible bool
+	if err := p.db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM store_locations s
+			JOIN merchants m ON m.id = s.merchant_id AND m.active
+			JOIN merchant_storefront_visibility v
+			  ON v.merchant_id = m.id AND v.visible
+			WHERE s.id = $1 AND s.active
+		)`, storeID,
+	).Scan(&visible); err != nil {
+		return nil, err
+	}
+	if !visible {
+		return nil, ErrNotFound
+	}
+	rows, err := p.db.QueryContext(ctx, `
+		SELECT id, name, description, unit_price_cents, volume_liters::text
+		FROM catalog_items
+		WHERE store_location_id = $1 AND available
+		ORDER BY name, id
+		LIMIT 100`, storeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]CatalogItem, 0)
+	for rows.Next() {
+		var item CatalogItem
+		if err := rows.Scan(
+			&item.ID, &item.Name, &item.Description,
+			&item.UnitPriceCents, &item.VolumeLiters,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+func (p *PostgresRepository) CreateCustomerOrder(
+	ctx context.Context, request customerOrderRequest, customerRef, idempotencyKey, fingerprint string,
+) (customerOrderResponse, error) {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return customerOrderResponse{}, err
+	}
+	defer tx.Rollback()
+	itemIDs := make([]string, len(request.Items))
+	quantities := make([]int, len(request.Items))
+	for index, item := range request.Items {
+		itemIDs[index], quantities[index] = item.CatalogItemID, item.Quantity
+	}
+	var orderID string
+	err = tx.QueryRowContext(ctx, `
+		SELECT create_customer_order(
+			$1, $2, $3, $4, $5, $6, $7::uuid[], $8::integer[], $9, $10
+		)`,
+		customerRef, request.StoreLocationID,
+		request.Dropoff.Latitude, request.Dropoff.Longitude,
+		request.DeliveryWindowStart, request.DeliveryWindowEnd,
+		itemIDs, quantities, idempotencyKey, fingerprint,
+	).Scan(&orderID)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) {
+			switch pgErr.Code {
+			case "P0002":
+				return customerOrderResponse{}, ErrNotFound
+			case "P0001":
+				return customerOrderResponse{}, ErrConflict
+			}
+		}
+		return customerOrderResponse{}, err
+	}
+	response := customerOrderResponse{ID: orderID}
+	if err := tx.QueryRowContext(ctx, `
+		SELECT state, item_subtotal_cents FROM orders WHERE id = $1`,
+		orderID,
+	).Scan(&response.Status, &response.ItemSubtotalCents); err != nil {
+		return customerOrderResponse{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return customerOrderResponse{}, err
+	}
+	return response, nil
 }
 
 func (p *PostgresRepository) CreateBundle(

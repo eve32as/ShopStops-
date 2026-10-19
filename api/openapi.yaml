@@ -50,6 +50,71 @@ paths:
                   $ref: '#/components/schemas/NearbyMerchant'
         '404':
           description: Anchor store not found
+  /stores/{storeLocationId}/catalog:
+    get:
+      operationId: getStoreCatalog
+      summary: List available catalog items for a visible subscribed storefront
+      parameters:
+        - in: path
+          name: storeLocationId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Available catalog items with current prices and delivery-volume estimates
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CatalogItem'
+        '404':
+          description: Storefront is unavailable
+  /orders:
+    post:
+      operationId: createCustomerOrder
+      summary: Create an authenticated customer's order from one store catalog
+      description: Prices, volume, customer identity, and delivery-zone membership are resolved server-side. The request is idempotent.
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCustomerOrder'
+      responses:
+        '201':
+          description: Order created or returned for an idempotent retry
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, status, itemSubtotalCents]
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                  status:
+                    type: string
+                    enum: [placed]
+                  itemSubtotalCents:
+                    type: integer
+                    minimum: 1
+        '400':
+          description: Invalid order details or authenticated customer identity is missing
+        '404':
+          description: Storefront, catalog item, or delivery zone unavailable
+        '409':
+          description: Idempotency key conflicts or item is no longer available
   /checkouts:
     post:
       operationId: createUnifiedCheckout
@@ -439,6 +504,55 @@ components:
         distanceMeters:
           type: number
           maximum: 500
+    CatalogItem:
+      type: object
+      required: [id, name, description, unitPriceCents, volumeLiters]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+        unitPriceCents:
+          type: integer
+          minimum: 1
+        volumeLiters:
+          type: string
+          pattern: '^[0-9]+(\.[0-9]{1,2})?$'
+    CreateCustomerOrder:
+      type: object
+      additionalProperties: false
+      required: [storeLocationId, dropoff, deliveryWindowStart, deliveryWindowEnd, items]
+      properties:
+        storeLocationId:
+          type: string
+          format: uuid
+        dropoff:
+          $ref: '#/components/schemas/GeoPoint'
+        deliveryWindowStart:
+          type: string
+          format: date-time
+        deliveryWindowEnd:
+          type: string
+          format: date-time
+        items:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items:
+            type: object
+            additionalProperties: false
+            required: [catalogItemId, quantity]
+            properties:
+              catalogItemId:
+                type: string
+                format: uuid
+              quantity:
+                type: integer
+                minimum: 1
+                maximum: 99
     CreateCheckoutRequest:
       type: object
       additionalProperties: false

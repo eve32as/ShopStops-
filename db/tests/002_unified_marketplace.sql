@@ -310,6 +310,71 @@ BEGIN
     END IF;
 END;
 $$;
+
+INSERT INTO catalog_items (
+    id, store_location_id, name, description, unit_price_cents, volume_liters
+)
+VALUES (
+    '00000000-0000-0000-0000-000000000901',
+    :'partner_store_id', 'Test loaf', 'Catalog snapshot fixture', 250, 0.25
+);
+SELECT (now() + interval '1 hour') AS catalog_window_start,
+       (now() + interval '3 hours') AS catalog_window_end \gset
+SELECT set_config('shopstops.test_catalog_window_start', :'catalog_window_start', true);
+SELECT set_config('shopstops.test_catalog_window_end', :'catalog_window_end', true);
+SELECT create_customer_order(
+    'catalog-customer', :'partner_store_id',
+    -76.98, 38.91, :'catalog_window_start', :'catalog_window_end',
+    ARRAY['00000000-0000-0000-0000-000000000901']::uuid[],
+    ARRAY[2]::integer[], 'catalog-order-test-key', 'catalog-order-fingerprint'
+) AS catalog_order_id \gset
+SELECT set_config('shopstops.test_catalog_order_id', :'catalog_order_id', true);
+SELECT create_customer_order(
+    'catalog-customer', :'partner_store_id',
+    -76.98, 38.91, :'catalog_window_start', :'catalog_window_end',
+    ARRAY['00000000-0000-0000-0000-000000000901']::uuid[],
+    ARRAY[2]::integer[], 'catalog-order-test-key', 'catalog-order-fingerprint'
+) AS catalog_order_replay_id \gset
+SELECT set_config('shopstops.test_catalog_order_replay_id', :'catalog_order_replay_id', true);
+DO $$
+DECLARE
+    v_order_id uuid := current_setting('shopstops.test_catalog_order_id')::uuid;
+    v_message text;
+BEGIN
+    IF v_order_id <> current_setting('shopstops.test_catalog_order_replay_id')::uuid
+       OR (SELECT item_subtotal_cents FROM orders WHERE id = v_order_id) <> 500
+       OR (SELECT sum(quantity) FROM order_line_items WHERE order_id = v_order_id) <> 2
+       OR (SELECT volume_liters FROM orders WHERE id = v_order_id) <> 0.50 THEN
+        RAISE EXCEPTION 'catalog order price, quantity, volume, or retry was incorrect';
+    END IF;
+    BEGIN
+        PERFORM create_customer_order(
+            'catalog-customer', current_setting('shopstops.test_partner_store_id')::uuid,
+            -76.98, 38.91, current_setting('shopstops.test_catalog_window_start')::timestamptz,
+            current_setting('shopstops.test_catalog_window_end')::timestamptz,
+            ARRAY['00000000-0000-0000-0000-000000000901']::uuid[],
+            ARRAY[3]::integer[], 'catalog-order-test-key', 'different-fingerprint'
+        );
+        RAISE EXCEPTION 'idempotency key payload mismatch unexpectedly succeeded';
+    EXCEPTION WHEN OTHERS THEN
+        GET STACKED DIAGNOSTICS v_message = MESSAGE_TEXT;
+        IF v_message NOT LIKE '%idempotency key conflicts%' THEN
+            RAISE;
+        END IF;
+    END;
+    UPDATE catalog_items SET unit_price_cents = 300
+    WHERE id = '00000000-0000-0000-0000-000000000901';
+    IF (SELECT unit_price_cents FROM order_line_items WHERE order_id = v_order_id) <> 250 THEN
+        RAISE EXCEPTION 'order line did not preserve price at order creation';
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM outbox_events
+        WHERE aggregate_id = v_order_id AND event_type = 'order.created'
+    ) THEN
+        RAISE EXCEPTION 'customer order should create an outbox event';
+    END IF;
+END;
+$$;
 UPDATE connect_transfers
 SET stripe_transfer_id = 'tr_test_' || merchant_id::text, status = 'transferred'
 WHERE checkout_id = :'checkout_id';

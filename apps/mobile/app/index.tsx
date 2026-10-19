@@ -22,6 +22,20 @@ type NearbyMerchant = {
   storeLocationId: string;
   distanceMeters: number;
 };
+type CatalogItem = {
+  id: string;
+  name: string;
+  description: string;
+  unitPriceCents: number;
+  volumeLiters: string;
+};
+type CreateOrderBody = {
+  storeLocationId: string;
+  dropoff: { latitude: number; longitude: number };
+  deliveryWindowStart: string;
+  deliveryWindowEnd: string;
+  items: { catalogItemId: string; quantity: number }[];
+};
 type Checkout = {
   id: string;
   status: string;
@@ -69,6 +83,9 @@ export default function HomeScreen() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [nearby, setNearby] = useState<NearbyMerchant[]>([]);
+  const [catalog, setCatalog] = useState<CatalogItem[]>([]);
+  const [catalogStoreID, setCatalogStoreID] = useState("");
+  const [quantities, setQuantities] = useState<Record<string, number>>({});
   const [checkout, setCheckout] = useState<Checkout | null>(null);
   const [route, setRoute] = useState<Route | null>(null);
   const [subscription, setSubscription] = useState<Subscription | null>(null);
@@ -78,6 +95,14 @@ export default function HomeScreen() {
   const [longitude, setLongitude] = useState("");
   const [routeId, setRouteId] = useState("");
   const [tracking, setTracking] = useState(false);
+  const [deliveryWindow] = useState(() => {
+    const start = new Date(Date.now() + 15 * 60 * 1000);
+    return {
+      start: start.toISOString(),
+      end: new Date(start.getTime() + 2 * 60 * 60 * 1000).toISOString(),
+    };
+  });
+  const orderAttempt = useRef<{ key: string; fingerprint: string; body: CreateOrderBody } | null>(null);
   const checkoutAttempt = useRef<{
     key: string;
     body: {
@@ -122,7 +147,12 @@ export default function HomeScreen() {
       previousConnection.current = { gatewayUrl, sessionToken };
       endTracking();
       checkoutAttempt.current = null;
+      orderAttempt.current = null;
       setNearby([]);
+      setCatalog([]);
+      setCatalogStoreID("");
+      setQuantities({});
+      setOrderIds("");
       setCheckout(null);
       setRoute(null);
       setSubscription(null);
@@ -166,6 +196,77 @@ export default function HomeScreen() {
     if (results) setNearby(results);
   }
 
+  async function loadCatalog(storeID = catalogStoreID) {
+    const normalizedID = storeID.trim();
+    if (!normalizedID) {
+      setMessage("Enter a store location ID to browse its catalog.");
+      return;
+    }
+    const results = await run(() =>
+      apiRequest<CatalogItem[]>(
+        settings,
+        `stores/${encodeURIComponent(normalizedID)}/catalog`,
+      ),
+    );
+    if (results) {
+      setCatalogStoreID(normalizedID);
+      setCatalog(results);
+      setQuantities({});
+    }
+  }
+
+  async function createCustomerOrder() {
+    if (checkout) {
+      setMessage("Start a new basket before creating another order.");
+      return;
+    }
+    const lat = Number(latitude);
+    const lon = Number(longitude);
+    const items = catalog
+      .filter((item) => (quantities[item.id] ?? 0) > 0)
+      .map((item) => ({ catalogItemId: item.id, quantity: quantities[item.id] }));
+    if (
+      !catalogStoreID.trim() || !Number.isFinite(lat) || lat < -90 || lat > 90 ||
+      !Number.isFinite(lon) || lon < -180 || lon > 180 || items.length === 0
+    ) {
+      setMessage("Choose catalog items and enter valid delivery coordinates.");
+      return;
+    }
+    const body: CreateOrderBody = {
+      storeLocationId: catalogStoreID.trim(),
+      dropoff: { latitude: lat, longitude: lon },
+      deliveryWindowStart: deliveryWindow.start,
+      deliveryWindowEnd: deliveryWindow.end,
+      items,
+    };
+    const fingerprint = JSON.stringify(body);
+    if (orderAttempt.current?.fingerprint !== fingerprint) {
+      orderAttempt.current = { key: idempotencyKey(), fingerprint, body };
+    }
+    const attempt = orderAttempt.current;
+    const result = await run(() =>
+      apiRequest<{ id: string; status: string; itemSubtotalCents: number }>(
+        settings,
+        "orders",
+        {
+          method: "POST",
+          headers: { "Idempotency-Key": attempt.key },
+          body: JSON.stringify(attempt.body),
+        },
+      ),
+    );
+    if (result) {
+      orderAttempt.current = null;
+      checkoutAttempt.current = null;
+      const currentIDs = orderIds.split(/[\s,]+/).map((id) => id.trim()).filter(Boolean);
+      if (!currentIDs.includes(result.id)) {
+        setOrderIds([...currentIDs, result.id].join(", "));
+      }
+      setQuantities({});
+      setMessage(`Order created · $${(result.itemSubtotalCents / 100).toFixed(2)} items.`);
+    }
+  }
+
   async function createCheckout() {
     const ids = orderIds
       .split(/[\s,]+/)
@@ -178,15 +279,14 @@ export default function HomeScreen() {
       return;
     }
     if (!checkoutAttempt.current) {
-      const now = new Date();
       checkoutAttempt.current = {
         key: idempotencyKey(),
         body: {
           anchorStoreLocationId: anchorStore.trim(),
           orderIds: ids,
           dropoff: { latitude: lat, longitude: lon },
-          deliveryWindowStart: now.toISOString(),
-          deliveryWindowEnd: new Date(now.getTime() + 2 * 60 * 60 * 1000).toISOString(),
+          deliveryWindowStart: deliveryWindow.start,
+          deliveryWindowEnd: deliveryWindow.end,
         },
       };
     }
@@ -461,27 +561,105 @@ export default function HomeScreen() {
                 onChangeText={(value) => {
                   checkoutAttempt.current = null;
                   setAnchorStore(value);
+                  setCatalogStoreID(value);
                 }}
                 value={anchorStore}
               />
-              <ActionButton disabled={busy} label="Find nearby shops" onPress={() => void findNearby()} />
+              <View style={styles.actionRow}>
+                <ActionButton disabled={busy} label="Find nearby shops" onPress={() => void findNearby()} />
+                <ActionButton
+                  disabled={busy}
+                  label="Browse anchor catalog"
+                  onPress={() => void loadCatalog(anchorStore)}
+                  secondary
+                />
+              </View>
               {nearby.map((merchant) => (
-                <View key={merchant.merchantId} style={styles.resultRow}>
-                  <View style={styles.resultIcon}><Text style={styles.resultIconText}>+</Text></View>
-                  <View style={styles.resultCopy}>
-                    <Text style={styles.resultTitle}>{merchant.name}</Text>
-                    <Text style={styles.resultSub}>{merchant.merchantType} · {Math.round(merchant.distanceMeters)} m away</Text>
+                <View key={merchant.merchantId}>
+                  <View style={styles.resultRow}>
+                    <View style={styles.resultIcon}><Text style={styles.resultIconText}>+</Text></View>
+                    <View style={styles.resultCopy}>
+                      <Text style={styles.resultTitle}>{merchant.name}</Text>
+                      <Text style={styles.resultSub}>{merchant.merchantType} · {Math.round(merchant.distanceMeters)} m away</Text>
+                    </View>
                   </View>
+                  <ActionButton
+                    disabled={busy}
+                    label={`Browse ${merchant.name}`}
+                    onPress={() => void loadCatalog(merchant.storeLocationId)}
+                    secondary
+                  />
                 </View>
               ))}
             </View>
 
             <View style={styles.card}>
-              <Text style={styles.sectionEyebrow}>02 / CHECKOUT</Text>
+              <Text style={styles.sectionEyebrow}>02 / BUILD YOUR ORDER</Text>
+              <Text style={styles.sectionTitle}>Choose items from the block.</Text>
+              <Field
+                editable={!checkout}
+                label="Store location ID"
+                onChangeText={(value) => {
+                  setCatalogStoreID(value);
+                  setCatalog([]);
+                  setQuantities({});
+                }}
+                value={catalogStoreID}
+              />
+              <ActionButton disabled={busy || Boolean(checkout)} label="Load store catalog" onPress={() => void loadCatalog()} />
+              {catalog.map((item) => {
+                const quantity = quantities[item.id] ?? 0;
+                return (
+                  <View key={item.id} style={styles.catalogRow}>
+                    <View style={styles.resultCopy}>
+                      <Text style={styles.resultTitle}>{item.name}</Text>
+                      {item.description ? <Text style={styles.resultSub}>{item.description}</Text> : null}
+                      <Text style={styles.resultSub}>
+                        ${(item.unitPriceCents / 100).toFixed(2)}
+                      </Text>
+                    </View>
+                    <View style={styles.quantityControl}>
+                      <Pressable
+                        accessibilityLabel={`Decrease ${item.name} quantity`}
+                        accessibilityRole="button"
+                        disabled={quantity === 0}
+                        onPress={() => setQuantities((current) => ({
+                          ...current,
+                          [item.id]: Math.max(0, (current[item.id] ?? 0) - 1),
+                        }))}
+                        style={styles.quantityButton}
+                      ><Text style={styles.quantityButtonText}>−</Text></Pressable>
+                      <Text style={styles.quantityText}>{quantity}</Text>
+                      <Pressable
+                        accessibilityLabel={`Increase ${item.name} quantity`}
+                        accessibilityRole="button"
+                        disabled={quantity >= 99}
+                        onPress={() => setQuantities((current) => ({
+                          ...current,
+                          [item.id]: (current[item.id] ?? 0) + 1,
+                        }))}
+                        style={styles.quantityButton}
+                      ><Text style={styles.quantityButtonText}>+</Text></Pressable>
+                    </View>
+                  </View>
+                );
+              })}
+              <View style={styles.fieldGrid}>
+                <Field editable={!checkout} label="Drop-off latitude" keyboardType="decimal-pad" onChangeText={setLatitude} value={latitude} />
+                <Field editable={!checkout} label="Drop-off longitude" keyboardType="decimal-pad" onChangeText={setLongitude} value={longitude} />
+              </View>
+              <ActionButton
+                disabled={busy || Boolean(checkout) || catalog.length === 0}
+                label="Create order from selected items"
+                onPress={() => void createCustomerOrder()}
+              />
+            </View>
+
+            <View style={styles.card}>
+              <Text style={styles.sectionEyebrow}>03 / CHECKOUT</Text>
               <Text style={styles.sectionTitle}>Bring the whole block together.</Text>
               <Text style={styles.helpText}>
-                The backend accepts existing order IDs. Catalog browsing and order creation are not
-                available in this API yet.
+                Create one order from each store catalog you want to include, then create one unified checkout.
               </Text>
               <Field
                 editable={!checkout}
@@ -492,28 +670,6 @@ export default function HomeScreen() {
                 }}
                 value={orderIds}
               />
-              <View style={styles.fieldGrid}>
-                <Field
-                  editable={!checkout}
-                  label="Drop-off latitude"
-                  keyboardType="decimal-pad"
-                  onChangeText={(value) => {
-                    checkoutAttempt.current = null;
-                    setLatitude(value);
-                  }}
-                  value={latitude}
-                />
-                <Field
-                  editable={!checkout}
-                  label="Drop-off longitude"
-                  keyboardType="decimal-pad"
-                  onChangeText={(value) => {
-                    checkoutAttempt.current = null;
-                    setLongitude(value);
-                  }}
-                  value={longitude}
-                />
-              </View>
               <ActionButton
                 disabled={busy || Boolean(checkout)}
                 label={checkout ? "Basket created" : "Create basket"}
@@ -758,6 +914,11 @@ const styles = StyleSheet.create({
   resultCopy: { flex: 1 },
   resultTitle: { color: "#213b34", fontWeight: "800", fontSize: 13 },
   resultSub: { color: "#73817b", fontSize: 11, marginTop: 4 },
+  catalogRow: { flexDirection: "row", alignItems: "center", paddingVertical: 12, borderTopWidth: 1, borderTopColor: "#edf0ed", marginTop: 10 },
+  quantityControl: { flexDirection: "row", alignItems: "center", gap: 10, marginLeft: 10 },
+  quantityButton: { width: 30, height: 30, borderRadius: 15, backgroundColor: "#e9f0ec", alignItems: "center", justifyContent: "center" },
+  quantityButtonText: { color: "#24443b", fontSize: 17, fontWeight: "800" },
+  quantityText: { minWidth: 16, color: "#213b34", textAlign: "center", fontWeight: "800" },
   checkoutBox: { backgroundColor: "#f8f9f7", borderRadius: 13, padding: 14, marginTop: 16 },
   routeBox: { backgroundColor: "#f8f9f7", borderRadius: 13, padding: 14, marginTop: 14 },
   stopActions: { marginTop: 3 },

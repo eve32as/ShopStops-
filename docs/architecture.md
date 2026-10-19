@@ -91,10 +91,12 @@ APIs expose only that customer's orders and tracking data.
 
 The initial dispatch and driver HTTP request/response shapes are specified in
 `api/openapi.yaml`; the Go API implements proximity dispatch, assigned route
-reads, and driver GPS ingestion. Initial API-backed iOS/Android shopper, driver,
+reads, driver GPS ingestion, and ordered route stop progression. The API also
+exposes visible storefront catalogs and idempotent customer order creation with
+server-priced item snapshots. Initial API-backed iOS/Android shopper, driver,
 and merchant billing screens are in `apps/mobile`; the current admin refund
-workflow is in `apps/admin`. Catalog/order creation, driver stop-progress, and
-the broader merchant/admin workflows are not implemented.
+workflow is in `apps/admin`. Broader merchant/admin workflows remain
+unimplemented.
 
 The database emits `delivery.bundle.activated` with `bundleId`, `orderIds`, and
 `stopCount` in the outbox. Suggested follow-on events are
@@ -197,8 +199,9 @@ gateway should consume these events and target a <1.5 second propagation SLO;
 the database outbox alone does not deliver real-time client updates.
 
 `cmd/shopstops-api` is the runnable Go service. It implements health, nearby
-subscribed-merchant discovery, proximity dispatch, checkout creation and Stripe
-payment, subscription, refund, dispute, and webhook processing, driver route
+subscribed-merchant discovery, catalog browsing, customer order creation,
+proximity dispatch, checkout creation and Stripe payment, subscription, refund,
+dispute, and webhook processing, driver route
 reads, ordered stop arrival/completion, and GPS ingestion backed by PostgreSQL.
 Driver stop events are idempotent, assignment-checked, and must advance through
 the server-defined pickup/pickup/drop-off sequence; completion publishes route
@@ -217,8 +220,8 @@ driver, and merchant billing API flows; `apps/admin` provides the current
 full-refund operation. Both expect an external trusted identity gateway and
 Stripe publishable key configuration. The clients are API-backed MVP
 foundations, not complete consumer, driver, merchant, or admin products.
-Catalog/order creation, native identity, background location, admin
-search/zone/reporting controls, production routing, and
+Native identity, background location, admin search/zone/reporting controls,
+production routing, and
 real-time integrations remain unimplemented.
 
 For rollout, configure the initial Union Market corridor as the only enabled
