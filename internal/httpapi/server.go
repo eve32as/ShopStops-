@@ -2,11 +2,11 @@ package httpapi
 
 import (
 	"context"
-	"crypto/subtle"
 	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
-	"encoding/json"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -67,11 +67,11 @@ type CatalogItem struct {
 }
 
 type customerOrderRequest struct {
-	StoreLocationID    string           `json:"storeLocationId"`
-	Dropoff            geoPoint         `json:"dropoff"`
-	DeliveryWindowStart time.Time       `json:"deliveryWindowStart"`
-	DeliveryWindowEnd   time.Time       `json:"deliveryWindowEnd"`
-	Items              []customerOrderItem `json:"items"`
+	StoreLocationID     string              `json:"storeLocationId"`
+	Dropoff             geoPoint            `json:"dropoff"`
+	DeliveryWindowStart time.Time           `json:"deliveryWindowStart"`
+	DeliveryWindowEnd   time.Time           `json:"deliveryWindowEnd"`
+	Items               []customerOrderItem `json:"items"`
 }
 
 type customerOrderItem struct {
@@ -80,9 +80,9 @@ type customerOrderItem struct {
 }
 
 type customerOrderResponse struct {
-	ID               string `json:"id"`
-	Status           string `json:"status"`
-	ItemSubtotalCents int   `json:"itemSubtotalCents"`
+	ID                string `json:"id"`
+	Status            string `json:"status"`
+	ItemSubtotalCents int    `json:"itemSubtotalCents"`
 }
 
 type bundleRequest struct {
@@ -320,8 +320,9 @@ func (s *Server) createCustomerOrder(w http.ResponseWriter, r *http.Request) {
 		request.Dropoff.Longitude < -180 || request.Dropoff.Longitude > 180 ||
 		request.DeliveryWindowStart.IsZero() || request.DeliveryWindowEnd.IsZero() ||
 		!request.DeliveryWindowEnd.After(request.DeliveryWindowStart) ||
-		request.DeliveryWindowStart.Before(time.Now().Add(-time.Minute)) ||
 		request.DeliveryWindowStart.After(time.Now().Add(30*24*time.Hour)) ||
+		request.DeliveryWindowEnd.Before(time.Now()) ||
+		request.DeliveryWindowEnd.Sub(request.DeliveryWindowStart) > 24*time.Hour ||
 		len(request.Items) == 0 || len(request.Items) > 50 {
 		writeError(w, http.StatusBadRequest, "invalid order details")
 		return

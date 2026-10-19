@@ -68,6 +68,9 @@ BEGIN
        OR p_dropoff_longitude NOT BETWEEN -180 AND 180
        OR p_window_start IS NULL OR p_window_end IS NULL
        OR p_window_end <= p_window_start
+       OR p_window_end <= now()
+       OR p_window_start > now() + interval '30 days'
+       OR p_window_end - p_window_start > interval '24 hours'
        OR p_item_ids IS NULL OR p_quantities IS NULL
        OR cardinality(p_item_ids) < 1 OR cardinality(p_item_ids) > 50
        OR cardinality(p_item_ids) <> cardinality(p_quantities)

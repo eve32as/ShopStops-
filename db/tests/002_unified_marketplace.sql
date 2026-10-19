@@ -52,6 +52,7 @@ SELECT id AS anchor_store_id FROM store_locations
 WHERE name = 'Anchor location' \gset
 SELECT id AS partner_store_id FROM store_locations
 WHERE name = 'Market location' \gset
+SELECT set_config('shopstops.test_partner_store_id', :'partner_store_id', true);
 SELECT id AS third_store_id FROM store_locations
 WHERE name = 'Third location' \gset
 SELECT id AS cap_store_id FROM store_locations
@@ -324,14 +325,14 @@ SELECT set_config('shopstops.test_catalog_window_start', :'catalog_window_start'
 SELECT set_config('shopstops.test_catalog_window_end', :'catalog_window_end', true);
 SELECT create_customer_order(
     'catalog-customer', :'partner_store_id',
-    -76.98, 38.91, :'catalog_window_start', :'catalog_window_end',
+    38.91, -76.98, :'catalog_window_start', :'catalog_window_end',
     ARRAY['00000000-0000-0000-0000-000000000901']::uuid[],
     ARRAY[2]::integer[], 'catalog-order-test-key', 'catalog-order-fingerprint'
 ) AS catalog_order_id \gset
 SELECT set_config('shopstops.test_catalog_order_id', :'catalog_order_id', true);
 SELECT create_customer_order(
     'catalog-customer', :'partner_store_id',
-    -76.98, 38.91, :'catalog_window_start', :'catalog_window_end',
+    38.91, -76.98, :'catalog_window_start', :'catalog_window_end',
     ARRAY['00000000-0000-0000-0000-000000000901']::uuid[],
     ARRAY[2]::integer[], 'catalog-order-test-key', 'catalog-order-fingerprint'
 ) AS catalog_order_replay_id \gset
@@ -350,7 +351,7 @@ BEGIN
     BEGIN
         PERFORM create_customer_order(
             'catalog-customer', current_setting('shopstops.test_partner_store_id')::uuid,
-            -76.98, 38.91, current_setting('shopstops.test_catalog_window_start')::timestamptz,
+            38.91, -76.98, current_setting('shopstops.test_catalog_window_start')::timestamptz,
             current_setting('shopstops.test_catalog_window_end')::timestamptz,
             ARRAY['00000000-0000-0000-0000-000000000901']::uuid[],
             ARRAY[3]::integer[], 'catalog-order-test-key', 'different-fingerprint'

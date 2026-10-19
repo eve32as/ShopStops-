@@ -13,40 +13,40 @@ import (
 )
 
 type fakeRepository struct {
-	pingErr       error
-	nearby        []NearbyMerchant
-	nearbyErr     error
-	nearbyStoreID string
-	nearbyRadius  int
-	catalog       []CatalogItem
-	catalogErr    error
-	catalogStoreID string
-	order         customerOrderResponse
-	orderErr      error
-	orderReq      customerOrderRequest
-	orderCustomer string
-	orderKey      string
+	pingErr          error
+	nearby           []NearbyMerchant
+	nearbyErr        error
+	nearbyStoreID    string
+	nearbyRadius     int
+	catalog          []CatalogItem
+	catalogErr       error
+	catalogStoreID   string
+	order            customerOrderResponse
+	orderErr         error
+	orderReq         customerOrderRequest
+	orderCustomer    string
+	orderKey         string
 	orderFingerprint string
-	bundle        bundleResponse
-	bundleErr     error
-	bundleRequest bundleRequest
-	bundleKey     string
-	route         routeResponse
-	routeErr      error
-	routeID       string
-	driverRef     string
-	locationID    int64
-	locationErr   error
-	location      driverLocationRequest
-	stopEvent     driverStopEventResponse
-	stopEventErr  error
-	stopID        string
-	stopEventReq  driverStopEventRequest
-	checkout      checkoutResponse
-	checkoutErr   error
-	checkoutReq   checkoutRequest
-	customerRef   string
-	checkoutKey   string
+	bundle           bundleResponse
+	bundleErr        error
+	bundleRequest    bundleRequest
+	bundleKey        string
+	route            routeResponse
+	routeErr         error
+	routeID          string
+	driverRef        string
+	locationID       int64
+	locationErr      error
+	location         driverLocationRequest
+	stopEvent        driverStopEventResponse
+	stopEventErr     error
+	stopID           string
+	stopEventReq     driverStopEventRequest
+	checkout         checkoutResponse
+	checkoutErr      error
+	checkoutReq      checkoutRequest
+	customerRef      string
+	checkoutKey      string
 }
 
 func (f *fakeRepository) PingContext(context.Context) error { return f.pingErr }

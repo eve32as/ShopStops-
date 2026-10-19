@@ -556,7 +556,7 @@ export default function HomeScreen() {
                 restaurant.
               </Text>
               <Field
-                editable={!checkout}
+                editable={!checkout && !orderIds.trim()}
                 label="Anchor restaurant store ID"
                 onChangeText={(value) => {
                   checkoutAttempt.current = null;
@@ -645,8 +645,8 @@ export default function HomeScreen() {
                 );
               })}
               <View style={styles.fieldGrid}>
-                <Field editable={!checkout} label="Drop-off latitude" keyboardType="decimal-pad" onChangeText={setLatitude} value={latitude} />
-                <Field editable={!checkout} label="Drop-off longitude" keyboardType="decimal-pad" onChangeText={setLongitude} value={longitude} />
+                <Field editable={!checkout && !orderIds.trim()} label="Drop-off latitude" keyboardType="decimal-pad" onChangeText={setLatitude} value={latitude} />
+                <Field editable={!checkout && !orderIds.trim()} label="Drop-off longitude" keyboardType="decimal-pad" onChangeText={setLongitude} value={longitude} />
               </View>
               <ActionButton
                 disabled={busy || Boolean(checkout) || catalog.length === 0}

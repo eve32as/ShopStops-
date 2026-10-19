@@ -11,10 +11,10 @@ Apply `db/migrations/001_delivery_foundation.sql`,
 `db/migrations/003_stripe_checkout_payments.sql`,
 `db/migrations/004_billing_refunds_disputes.sql`, and
 `db/migrations/005_driver_stop_progress.sql`, and
-`db/migrations/006_catalog_orders.sql` to PostgreSQL 14+ with PostGIS 3.x
-installed. The migrations create the dispatch and unified-basket relational
-models, spatial queries, transaction-safe order/merchant limits, immutable
-multi-stop routes, payment/tax ledger records, and outbox events.
+`db/migrations/006_catalog_orders.sql` on PostgreSQL 14+ with PostGIS 3.x
+installed. The migrations create dispatch, unified-basket, catalog, and order
+models; spatial queries; transaction-safe order/merchant limits; immutable
+multi-stop routes; payment/tax ledger records; and outbox events.
 
 See [`docs/architecture.md`](docs/architecture.md) for MVP assumptions, service
 boundaries, workflows, and operational guidance. The initial HTTP interface is
@@ -45,10 +45,11 @@ The service listens on `:8080` by default; set `HTTP_ADDR` to override it. It
 implements health checks, nearby subscribed-merchant discovery, atomic
 dispatch, checkout creation/payment, Stripe webhooks, driver route reads,
 catalog discovery, order creation, ordered stop arrival/completion, and GPS
-ingestion. Protected endpoints use a
-shared internal bearer token and must be placed behind a gateway that
-authenticates users, enforces roles, strips
-client-supplied `X-ShopStops-Actor` headers, and injects the authenticated actor
+ingestion. Catalog items must be provisioned in `catalog_items` by trusted
+merchant operations; self-service catalog management is not yet exposed.
+Protected endpoints use a shared internal bearer token and must be placed
+behind a gateway that authenticates users, enforces roles, strips client-supplied
+`X-ShopStops-Actor` headers, and injects the authenticated actor
 identity. Do not distribute this internal token to client applications.
 Delivery/service fee configuration is in integer cents and defaults to zero if
 unset. The checkout endpoint builds the merchant item lines from each order's
