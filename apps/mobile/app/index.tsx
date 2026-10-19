@@ -33,6 +33,10 @@ type MerchantCatalogItem = CatalogItem & {
   storeLocationId: string;
   available: boolean;
 };
+type MerchantStoreLocation = {
+  id: string;
+  name: string;
+};
 type MerchantCatalogDraft = {
   name: string;
   description: string;
@@ -99,6 +103,7 @@ export default function HomeScreen() {
   const [checkout, setCheckout] = useState<Checkout | null>(null);
   const [route, setRoute] = useState<Route | null>(null);
   const [subscription, setSubscription] = useState<Subscription | null>(null);
+  const [merchantStoreLocations, setMerchantStoreLocations] = useState<MerchantStoreLocation[]>([]);
   const [merchantCatalog, setMerchantCatalog] = useState<MerchantCatalogItem[]>([]);
   const [merchantCatalogDrafts, setMerchantCatalogDrafts] = useState<Record<string, MerchantCatalogDraft>>({});
   const [merchantStoreLocation, setMerchantStoreLocation] = useState("");
@@ -186,6 +191,8 @@ export default function HomeScreen() {
       setSubscription(null);
       setMerchantCatalog([]);
       setMerchantCatalogDrafts({});
+      setMerchantStoreLocations([]);
+      setMerchantStoreLocation("");
     }
   }, [gatewayUrl, sessionToken]);
 
@@ -498,6 +505,18 @@ export default function HomeScreen() {
           volumeLiters: item.volumeLiters,
         },
       ])));
+    }
+  }
+
+  async function loadMerchantStoreLocations() {
+    const locations = await run(() =>
+      apiRequest<MerchantStoreLocation[]>(settings, "merchant/store-locations"),
+    );
+    if (locations) {
+      setMerchantStoreLocations(locations);
+      if (!merchantStoreLocation && locations.length > 0) {
+        setMerchantStoreLocation(locations[0].id);
+      }
     }
   }
 
@@ -921,11 +940,30 @@ export default function HomeScreen() {
               <Text style={styles.helpText}>
                 Set prices and delivery volume. Items you mark unavailable disappear from customer catalogs; previous order prices remain unchanged.
               </Text>
-              <Field
-                label="Your store location ID"
-                onChangeText={setMerchantStoreLocation}
-                value={merchantStoreLocation}
+              <ActionButton
+                disabled={busy}
+                label="Load my store locations"
+                onPress={() => void loadMerchantStoreLocations()}
+                secondary
               />
+              {merchantStoreLocations.map((location) => (
+                <Pressable
+                  accessibilityRole="radio"
+                  accessibilityState={{ selected: merchantStoreLocation === location.id }}
+                  key={location.id}
+                  onPress={() => setMerchantStoreLocation(location.id)}
+                  style={[
+                    styles.locationChoice,
+                    merchantStoreLocation === location.id && styles.locationChoiceActive,
+                  ]}
+                >
+                  <Text style={styles.resultTitle}>{location.name}</Text>
+                  <Text style={styles.resultSub}>{location.id}</Text>
+                </Pressable>
+              ))}
+              {merchantStoreLocations.length === 0 ? (
+                <Text style={styles.tinyNote}>Load store locations before creating catalog items.</Text>
+              ) : null}
               <Field label="Item name" onChangeText={setNewItemName} value={newItemName} />
               <Field label="Description" onChangeText={setNewItemDescription} value={newItemDescription} />
               <View style={styles.fieldGrid}>
@@ -1147,6 +1185,8 @@ const styles = StyleSheet.create({
   resultSub: { color: "#73817b", fontSize: 11, marginTop: 4 },
   catalogRow: { flexDirection: "row", alignItems: "center", paddingVertical: 12, borderTopWidth: 1, borderTopColor: "#edf0ed", marginTop: 10 },
   merchantItem: { backgroundColor: "#f8f9f7", borderRadius: 13, padding: 14, marginTop: 14 },
+  locationChoice: { borderWidth: 1, borderColor: "#e4e9e5", borderRadius: 10, padding: 11, marginTop: 8 },
+  locationChoiceActive: { borderColor: "#397457", backgroundColor: "#e7f1eb" },
   quantityControl: { flexDirection: "row", alignItems: "center", gap: 10, marginLeft: 10 },
   quantityButton: { width: 30, height: 30, borderRadius: 15, backgroundColor: "#e9f0ec", alignItems: "center", justifyContent: "center" },
   quantityButtonText: { color: "#24443b", fontSize: 17, fontWeight: "800" },

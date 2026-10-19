@@ -29,6 +29,7 @@ BEGIN
        OR p_description IS NULL OR length(p_description) > 1000
        OR p_unit_price_cents IS NULL OR p_unit_price_cents NOT BETWEEN 1 AND 10000000
        OR p_volume_liters IS NULL OR p_volume_liters <= 0 OR p_volume_liters > 100000
+       OR p_volume_liters <> round(p_volume_liters, 2)
        OR p_idempotency_key IS NULL OR btrim(p_idempotency_key) = ''
        OR length(p_idempotency_key) > 200
        OR p_request_fingerprint IS NULL OR btrim(p_request_fingerprint) = '' THEN
@@ -101,6 +102,7 @@ BEGIN
        OR p_description IS NULL OR length(p_description) > 1000
        OR p_unit_price_cents IS NULL OR p_unit_price_cents NOT BETWEEN 1 AND 10000000
        OR p_volume_liters IS NULL OR p_volume_liters <= 0 OR p_volume_liters > 100000
+       OR p_volume_liters <> round(p_volume_liters, 2)
        OR p_available IS NULL THEN
         RAISE EXCEPTION 'catalog item fields are invalid';
     END IF;

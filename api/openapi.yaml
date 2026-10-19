@@ -164,6 +164,31 @@ paths:
           description: Merchant role required
         '404':
           description: Merchant or owned store location not found
+  /merchant/store-locations:
+    get:
+      operationId: getMerchantStoreLocations
+      summary: List store locations owned by the authenticated merchant
+      description: Requires the trusted gateway to inject the authenticated merchant UUID and merchant role.
+      responses:
+        '200':
+          description: Merchant's store locations available for catalog management
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  required: [id, name]
+                  properties:
+                    id:
+                      type: string
+                      format: uuid
+                    name:
+                      type: string
+        '403':
+          description: Merchant role required
+        '404':
+          description: Merchant not found
         '409':
           description: Idempotency key conflicts with a different create request
   /merchant/catalog/{itemId}:
@@ -637,6 +662,7 @@ components:
           type: number
           exclusiveMinimum: 0
           maximum: 100000
+          multipleOf: 0.01
     UpdateMerchantCatalogItem:
       type: object
       additionalProperties: false
@@ -657,6 +683,7 @@ components:
           type: number
           exclusiveMinimum: 0
           maximum: 100000
+          multipleOf: 0.01
         available:
           type: boolean
     CreateCustomerOrder:

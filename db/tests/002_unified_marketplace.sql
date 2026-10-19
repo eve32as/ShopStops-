@@ -512,11 +512,16 @@ BEGIN
             RAISE;
         END IF;
     END;
-    IF NOT update_merchant_catalog_item(
+    PERFORM update_merchant_catalog_item(
         current_setting('shopstops.test_partner_merchant_id')::uuid,
         v_item_id, 'Updated item', 'Updated description', 400, 0.80, false
-    ) OR (SELECT available FROM catalog_items WHERE id = v_item_id) THEN
+    );
+    IF (SELECT available FROM catalog_items WHERE id = v_item_id) IS DISTINCT FROM false THEN
         RAISE EXCEPTION 'merchant catalog update did not persist availability';
+    END IF;
+    IF (SELECT unit_price_cents FROM order_line_items
+        WHERE order_id = current_setting('shopstops.test_catalog_order_id')::uuid) <> 250 THEN
+        RAISE EXCEPTION 'merchant price changes must not rewrite existing order snapshots';
     END IF;
     BEGIN
         PERFORM update_merchant_catalog_item(

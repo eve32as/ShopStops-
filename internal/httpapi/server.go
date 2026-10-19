@@ -39,6 +39,7 @@ type Repository interface {
 	PingContext(context.Context) error
 	NearbyMerchants(context.Context, string, int) ([]NearbyMerchant, error)
 	CatalogItems(context.Context, string) ([]CatalogItem, error)
+	MerchantStoreLocations(context.Context, string) ([]MerchantStoreLocation, error)
 	MerchantCatalog(context.Context, string) ([]MerchantCatalogItem, error)
 	CreateMerchantCatalogItem(
 		context.Context, string, merchantCatalogItemRequest, string, string,
@@ -82,6 +83,11 @@ type MerchantCatalogItem struct {
 	UnitPriceCents  int    `json:"unitPriceCents"`
 	VolumeLiters    string `json:"volumeLiters"`
 	Available       bool   `json:"available"`
+}
+
+type MerchantStoreLocation struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 type merchantCatalogItemRequest struct {
@@ -241,6 +247,7 @@ func (s *Server) handler() http.Handler {
 	mux.Handle("GET /stores/{storeLocationId}/nearby-merchants", s.authorized(http.HandlerFunc(s.nearbyMerchants)))
 	mux.Handle("GET /stores/{storeLocationId}/catalog", s.authorized(http.HandlerFunc(s.catalogItems)))
 	mux.Handle("POST /orders", s.authorized(http.HandlerFunc(s.createCustomerOrder)))
+	mux.Handle("GET /merchant/store-locations", s.authorized(http.HandlerFunc(s.merchantStoreLocations)))
 	mux.Handle("GET /merchant/catalog", s.authorized(http.HandlerFunc(s.merchantCatalog)))
 	mux.Handle("POST /merchant/catalog", s.authorized(http.HandlerFunc(s.createMerchantCatalogItem)))
 	mux.Handle("PATCH /merchant/catalog/{itemId}", s.authorized(http.HandlerFunc(s.updateMerchantCatalogItem)))
@@ -353,6 +360,25 @@ func (s *Server) merchantCatalog(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, items)
 }
 
+func (s *Server) merchantStoreLocations(w http.ResponseWriter, r *http.Request) {
+	merchantID, ok := s.authorizedActorRole(w, r, "merchant")
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	locations, err := s.repo.MerchantStoreLocations(ctx, merchantID)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "merchant not found")
+		return
+	}
+	if err != nil {
+		s.databaseError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, locations)
+}
+
 func (s *Server) createMerchantCatalogItem(w http.ResponseWriter, r *http.Request) {
 	merchantID, ok := s.authorizedActorRole(w, r, "merchant")
 	if !ok {
@@ -450,7 +476,8 @@ func (s *Server) updateMerchantCatalogItem(w http.ResponseWriter, r *http.Reques
 func validCatalogItemFields(name, description string, price int, volume float64) bool {
 	return strings.TrimSpace(name) != "" && len(strings.TrimSpace(name)) <= 200 &&
 		len(description) <= 1000 && price >= 1 && price <= 10_000_000 &&
-		volume > 0 && volume <= 100_000 && !math.IsInf(volume, 0) && !math.IsNaN(volume)
+		volume > 0 && volume <= 100_000 && !math.IsInf(volume, 0) && !math.IsNaN(volume) &&
+		math.Abs(volume*100-math.Round(volume*100)) < 1e-8
 }
 
 func (s *Server) createCustomerOrder(w http.ResponseWriter, r *http.Request) {
@@ -883,6 +910,41 @@ func (p *PostgresRepository) MerchantCatalog(
 		return nil, err
 	}
 	return items, nil
+}
+
+func (p *PostgresRepository) MerchantStoreLocations(
+	ctx context.Context, merchantID string,
+) ([]MerchantStoreLocation, error) {
+	var exists bool
+	if err := p.db.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM merchants WHERE id = $1 AND active)`,
+		merchantID,
+	).Scan(&exists); err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, ErrNotFound
+	}
+	rows, err := p.db.QueryContext(ctx, `
+		SELECT id, name FROM store_locations
+		WHERE merchant_id = $1
+		ORDER BY name, id`, merchantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	locations := make([]MerchantStoreLocation, 0)
+	for rows.Next() {
+		var location MerchantStoreLocation
+		if err := rows.Scan(&location.ID, &location.Name); err != nil {
+			return nil, err
+		}
+		locations = append(locations, location)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return locations, nil
 }
 
 func (p *PostgresRepository) CreateMerchantCatalogItem(

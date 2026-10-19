@@ -21,6 +21,8 @@ type fakeRepository struct {
 	catalog             []CatalogItem
 	catalogErr          error
 	catalogStoreID      string
+	merchantLocations  []MerchantStoreLocation
+	merchantLocationsErr error
 	merchantCatalog     []MerchantCatalogItem
 	merchantCatalogErr  error
 	merchantCatalogID   string
@@ -70,6 +72,12 @@ func (f *fakeRepository) CatalogItems(
 ) ([]CatalogItem, error) {
 	f.catalogStoreID = storeID
 	return f.catalog, f.catalogErr
+}
+func (f *fakeRepository) MerchantStoreLocations(
+	_ context.Context, merchantID string,
+) ([]MerchantStoreLocation, error) {
+	f.merchantCatalogID = merchantID
+	return f.merchantLocations, f.merchantLocationsErr
 }
 func (f *fakeRepository) MerchantCatalog(
 	_ context.Context, merchantID string,
@@ -208,6 +216,25 @@ func TestMerchantCatalogRequiresMerchantRole(t *testing.T) {
 		ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusForbidden || repo.merchantCatalogID != "" {
 		t.Fatalf("status=%d merchant=%s", recorder.Code, repo.merchantCatalogID)
+	}
+}
+
+func TestMerchantCanListOwnedStoreLocations(t *testing.T) {
+	merchantID := "00000000-0000-0000-0000-000000000001"
+	repo := &fakeRepository{merchantLocations: []MerchantStoreLocation{
+		{ID: "store-1", Name: "Main Street"},
+	}}
+	request := httptest.NewRequest(http.MethodGet, "/merchant/store-locations", nil)
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", merchantID)
+	request.Header.Set("X-ShopStops-Actor-Role", "merchant")
+	recorder := httptest.NewRecorder()
+	New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
+		ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || repo.merchantCatalogID != merchantID ||
+		!strings.Contains(recorder.Body.String(), `"name":"Main Street"`) {
+		t.Fatalf("status=%d merchant=%s body=%s",
+			recorder.Code, repo.merchantCatalogID, recorder.Body.String())
 	}
 }
 
