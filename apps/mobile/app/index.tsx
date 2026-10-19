@@ -8,6 +8,7 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  Image,
   Text,
   TextInput,
   View,
@@ -88,6 +89,7 @@ const stripeKeyConfigured = Boolean(process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_K
 
 export default function HomeScreen() {
   const [role, setRole] = useState<Role>("Shopper");
+  const [connectionOpen, setConnectionOpen] = useState(true);
   const [gatewayUrl, setGatewayUrl] = useState("");
   const [sessionToken, setSessionToken] = useState("");
   const settings = useMemo<ApiSettings>(
@@ -661,9 +663,12 @@ export default function HomeScreen() {
     >
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <View style={styles.header}>
-          <View>
-            <Text style={styles.brand}>shopstops</Text>
-            <Text style={styles.tagline}>Neighborhood delivery, connected.</Text>
+          <View style={styles.brandLockup}>
+            <Image accessibilityLabel="ShopStops logo" source={require("../assets/icon.png")} style={styles.brandIcon} />
+            <View>
+              <Text style={styles.brand}>ShopStops</Text>
+              <Text style={styles.tagline}>Neighborhood delivery, connected.</Text>
+            </View>
           </View>
           <View style={styles.livePill}>
             <View style={styles.liveDot} />
@@ -701,7 +706,25 @@ export default function HomeScreen() {
           ))}
         </View>
 
-        {sharedForm}
+        <View style={styles.connectionCard}>
+          <View style={styles.connectionHeader}>
+            <View style={styles.connectionCopy}>
+              <Text style={styles.sectionEyebrow}>SECURE CONNECTION</Text>
+              <Text style={styles.connectionStatus}>
+                {gatewayUrl && sessionToken ? "Gateway details ready" : "Connect to your gateway"}
+              </Text>
+            </View>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ expanded: connectionOpen }}
+              onPress={() => setConnectionOpen((open) => !open)}
+              style={styles.connectionToggle}
+            >
+              <Text style={styles.connectionToggleText}>{connectionOpen ? "Hide" : "Edit"}</Text>
+            </Pressable>
+          </View>
+          {connectionOpen ? sharedForm : null}
+        </View>
 
         {message ? (
           <View style={styles.messageBox} accessibilityLiveRegion="polite">
@@ -1142,7 +1165,9 @@ const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: "#f6f5f1" },
   content: { width: "100%", maxWidth: 760, alignSelf: "center", padding: 20, paddingBottom: 64 },
   header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingVertical: 12, marginBottom: 18 },
-  brand: { color: "#19352f", fontSize: 23, fontWeight: "900", letterSpacing: -1.2 },
+  brandLockup: { flexDirection: "row", alignItems: "center", gap: 10 },
+  brandIcon: { width: 42, height: 42, borderRadius: 12, backgroundColor: "#19352f" },
+  brand: { color: "#19352f", fontSize: 21, fontWeight: "900", letterSpacing: -0.8 },
   tagline: { color: "#64756e", fontSize: 12, marginTop: 2 },
   livePill: { flexDirection: "row", alignItems: "center", borderRadius: 24, paddingHorizontal: 11, paddingVertical: 7, backgroundColor: "#e4efe8" },
   liveDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: "#398260", marginRight: 6 },
@@ -1159,14 +1184,20 @@ const styles = StyleSheet.create({
   roleButtonActive: { backgroundColor: "#fff", elevation: 1 },
   roleText: { color: "#64756e", fontSize: 12, fontWeight: "700" },
   roleTextActive: { color: "#19352f" },
-  configCard: { backgroundColor: "#fff", borderRadius: 18, padding: 18, marginTop: 14, borderWidth: 1, borderColor: "#ecece7" },
-  card: { backgroundColor: "#fff", borderRadius: 18, padding: 20, marginTop: 14, borderWidth: 1, borderColor: "#ecece7" },
+  connectionCard: { backgroundColor: "#fff", borderRadius: 16, padding: 15, marginTop: 14, borderWidth: 1, borderColor: "#ecece7" },
+  connectionHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  connectionCopy: { flex: 1 },
+  connectionStatus: { color: "#19352f", fontSize: 14, fontWeight: "800", marginTop: 5 },
+  connectionToggle: { paddingVertical: 9, paddingHorizontal: 13, backgroundColor: "#e9f0ec", borderRadius: 9 },
+  connectionToggleText: { color: "#24443b", fontSize: 12, fontWeight: "800" },
+  configCard: { backgroundColor: "#fff", borderRadius: 18, padding: 0, marginTop: 13 },
+  card: { backgroundColor: "#fff", borderRadius: 18, padding: 20, marginTop: 14, borderWidth: 1, borderColor: "#ecece7", shadowColor: "#19352f", shadowOpacity: 0.04, shadowRadius: 12, shadowOffset: { width: 0, height: 4 }, elevation: 1 },
   sectionEyebrow: { color: "#e5653d", fontSize: 10, fontWeight: "800", letterSpacing: 1.4 },
   sectionTitle: { color: "#19352f", fontSize: 20, fontWeight: "800", marginTop: 7 },
   helpText: { color: "#65756f", fontSize: 13, lineHeight: 19, marginTop: 6, marginBottom: 11 },
-  field: { flex: 1, marginTop: 6 },
+  field: { flex: 1, minWidth: 140, marginTop: 6 },
   fieldLabel: { color: "#52645e", fontSize: 11, fontWeight: "700", marginBottom: 6 },
-  fieldGrid: { flexDirection: "row", gap: 10 },
+  fieldGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
   input: { backgroundColor: "#f8f9f7", borderColor: "#e4e9e5", borderWidth: 1, borderRadius: 10, color: "#203b34", fontSize: 13, paddingHorizontal: 12, paddingVertical: 11, marginTop: 8 },
   actionButton: { backgroundColor: "#e5653d", minHeight: 45, justifyContent: "center", alignItems: "center", borderRadius: 11, paddingHorizontal: 15, marginTop: 13 },
   actionButtonSecondary: { backgroundColor: "#e9f0ec" },

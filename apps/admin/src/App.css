@@ -2,7 +2,7 @@
 .shell { min-height: 100vh; display: flex; }
 .rail { width: 238px; flex: 0 0 238px; background: #19352f; color: #d6e1da; padding: 26px 15px 20px; display: flex; flex-direction: column; }
 .brand { display: flex; align-items: center; gap: 10px; color: #fff; text-decoration: none; font-family: system-ui, sans-serif; font-size: 16px; font-weight: 800; letter-spacing: -.6px; padding: 0 8px; }
-.brand-mark { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 11px; background: #ed704b; color: white; font-size: 18px; }
+.brand-mark { display: block; width: 34px; height: 34px; border-radius: 11px; object-fit: cover; }
 .brand-sub { display: block; color: #91a99d; font-family: 'DM Sans', sans-serif; font-size: 8px; font-weight: 700; letter-spacing: 1.4px; margin-top: 1px; }
 .rail-label { color: #80998d; font-size: 9px; font-weight: 700; letter-spacing: 1.5px; padding: 48px 11px 13px; }
 .nav-item { display: flex; gap: 12px; align-items: center; border-radius: 9px; font-size: 12px; padding: 11px; margin: 2px 0; }
@@ -48,6 +48,7 @@ form { display: grid; gap: 13px; }
 label { display: grid; gap: 6px; color: #445a50; font-size: 10px; font-weight: 700; }
 input, select { width: 100%; border: 1px solid #dfe6e1; border-radius: 8px; background: #fbfcfb; color: #203b34; padding: 11px 12px; font-size: 12px; outline: none; }
 input:focus, select:focus { border-color: #77a18a; box-shadow: 0 0 0 3px #77a18a20; }
+button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid #77a18a; outline-offset: 3px; }
 input::placeholder { color: #a9b2ad; }
 label small { color: #9aa59f; font-size: 9px; font-weight: 400; }
 .refund-summary { display: flex; align-items: center; gap: 10px; border: 1px solid #e8ece8; border-radius: 9px; padding: 12px; margin: 1px 0; }

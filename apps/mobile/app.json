@@ -21,10 +21,16 @@
         "ACCESS_FINE_LOCATION"
       ],
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#19352f",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "splash": {
+        "image": "./assets/splash-icon.png",
+        "imageWidth": 180,
+        "resizeMode": "contain",
+        "backgroundColor": "#19352f"
       },
       "predictiveBackGestureEnabled": false
     },
