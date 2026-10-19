@@ -406,6 +406,15 @@ SET driver_ref = 'driver-test', status = 'in_progress'
 WHERE id = :'route_id';
 SELECT set_config('shopstops.test_route_id', :'route_id', true);
 SELECT set_config('shopstops.test_partner_store_id', :'partner_store_id', true);
+SELECT id AS route_stop_1 FROM unified_route_stops
+WHERE route_id = :'route_id' AND sequence = 1 \gset
+SELECT id AS route_stop_2 FROM unified_route_stops
+WHERE route_id = :'route_id' AND sequence = 2 \gset
+SELECT id AS route_stop_3 FROM unified_route_stops
+WHERE route_id = :'route_id' AND sequence = 3 \gset
+SELECT set_config('shopstops.test_route_stop_1', :'route_stop_1', true);
+SELECT set_config('shopstops.test_route_stop_2', :'route_stop_2', true);
+SELECT set_config('shopstops.test_route_stop_3', :'route_stop_3', true);
 SELECT record_driver_location(
     :'route_id', 'driver-test',
     ST_SetSRID(ST_MakePoint(-76.99, 38.91), 4326)::geography,
@@ -416,6 +425,76 @@ SELECT record_driver_location(
     ST_SetSRID(ST_MakePoint(-76.989, 38.91), 4326)::geography,
     now() + interval '5 seconds', 'gps-event-2'
 );
+
+DO $$
+DECLARE
+    v_route_id uuid := current_setting('shopstops.test_route_id')::uuid;
+    v_stop_1 uuid := current_setting('shopstops.test_route_stop_1')::uuid;
+    v_stop_2 uuid := current_setting('shopstops.test_route_stop_2')::uuid;
+    v_stop_3 uuid := current_setting('shopstops.test_route_stop_3')::uuid;
+    v_message text;
+    v_status text;
+BEGIN
+    BEGIN
+        PERFORM record_unified_route_stop_event(
+            v_route_id, v_stop_2, 'driver-test', 'stop-out-of-order',
+            'arrive', now()
+        );
+        RAISE EXCEPTION 'out-of-order stop event unexpectedly accepted';
+    EXCEPTION WHEN OTHERS THEN
+        GET STACKED DIAGNOSTICS v_message = MESSAGE_TEXT;
+        IF v_message NOT LIKE '%in sequence%' THEN
+            RAISE;
+        END IF;
+    END;
+
+    SELECT stop_status INTO v_status FROM record_unified_route_stop_event(
+        v_route_id, v_stop_1, 'driver-test', 'stop-arrive-1', 'arrive', now()
+    );
+    IF v_status <> 'arrived' THEN
+        RAISE EXCEPTION 'driver arrival did not update stop status';
+    END IF;
+    SELECT stop_status INTO v_status FROM record_unified_route_stop_event(
+        v_route_id, v_stop_1, 'driver-test', 'stop-arrive-1', 'arrive', now()
+    );
+    IF v_status <> 'arrived' THEN
+        RAISE EXCEPTION 'identical stop event retry was not idempotent';
+    END IF;
+    BEGIN
+        PERFORM record_unified_route_stop_event(
+            v_route_id, v_stop_1, 'driver-test', 'stop-arrive-1', 'complete', now()
+        );
+        RAISE EXCEPTION 'event ID reuse with a different payload unexpectedly succeeded';
+    EXCEPTION WHEN OTHERS THEN
+        GET STACKED DIAGNOSTICS v_message = MESSAGE_TEXT;
+        IF v_message NOT LIKE '%already used%' THEN
+            RAISE;
+        END IF;
+    END;
+    PERFORM record_unified_route_stop_event(
+        v_route_id, v_stop_1, 'driver-test', 'stop-complete-1', 'complete', now()
+    );
+    PERFORM record_unified_route_stop_event(
+        v_route_id, v_stop_2, 'driver-test', 'stop-arrive-2', 'arrive', now()
+    );
+    PERFORM record_unified_route_stop_event(
+        v_route_id, v_stop_2, 'driver-test', 'stop-complete-2', 'complete', now()
+    );
+    PERFORM record_unified_route_stop_event(
+        v_route_id, v_stop_3, 'driver-test', 'stop-arrive-3', 'arrive', now()
+    );
+    PERFORM record_unified_route_stop_event(
+        v_route_id, v_stop_3, 'driver-test', 'stop-complete-3', 'complete', now()
+    );
+    IF (SELECT status FROM unified_delivery_routes WHERE id = v_route_id) <> 'completed'
+       OR (SELECT status FROM unified_checkouts
+           WHERE id = (SELECT checkout_id FROM unified_delivery_routes WHERE id = v_route_id))
+          <> 'completed'
+       OR (SELECT count(*) FROM unified_route_stop_events WHERE route_id = v_route_id) <> 6 THEN
+        RAISE EXCEPTION 'complete stop sequence should finish route and checkout exactly once';
+    END IF;
+END;
+$$;
 
 DO $$
 DECLARE

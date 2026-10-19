@@ -199,7 +199,10 @@ the database outbox alone does not deliver real-time client updates.
 `cmd/shopstops-api` is the runnable Go service. It implements health, nearby
 subscribed-merchant discovery, proximity dispatch, checkout creation and Stripe
 payment, subscription, refund, dispute, and webhook processing, driver route
-reads, and GPS ingestion backed by PostgreSQL. Billing requires `STRIPE_MERCHANT_MONTHLY_PRICE_ID` set to a $199 USD monthly
+reads, ordered stop arrival/completion, and GPS ingestion backed by PostgreSQL.
+Driver stop events are idempotent, assignment-checked, and must advance through
+the server-defined pickup/pickup/drop-off sequence; completion publishes route
+events to the transactional outbox. Billing requires `STRIPE_MERCHANT_MONTHLY_PRICE_ID` set to a $199 USD monthly
 Stripe Price in addition to the Stripe API and webhook secrets. It requires
 `DATABASE_URL` and a 32-character `SHOPSTOPS_INTERNAL_API_TOKEN`; the shared token is an internal service
 credential, not end-user authentication. Keep the API behind an identity-aware
@@ -214,8 +217,8 @@ driver, and merchant billing API flows; `apps/admin` provides the current
 full-refund operation. Both expect an external trusted identity gateway and
 Stripe publishable key configuration. The clients are API-backed MVP
 foundations, not complete consumer, driver, merchant, or admin products.
-Catalog/order creation, native identity, driver stop-completion APIs, background
-location, admin search/zone/reporting controls, production routing, and
+Catalog/order creation, native identity, background location, admin
+search/zone/reporting controls, production routing, and
 real-time integrations remain unimplemented.
 
 For rollout, configure the initial Union Market corridor as the only enabled

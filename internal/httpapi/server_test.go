@@ -27,6 +27,10 @@ type fakeRepository struct {
 	locationID    int64
 	locationErr   error
 	location      driverLocationRequest
+	stopEvent     driverStopEventResponse
+	stopEventErr  error
+	stopID        string
+	stopEventReq  driverStopEventRequest
 	checkout      checkoutResponse
 	checkoutErr   error
 	checkoutReq   checkoutRequest
@@ -64,6 +68,12 @@ func (f *fakeRepository) RecordDriverLocation(
 ) (int64, error) {
 	f.routeID, f.driverRef, f.location = routeID, driverRef, location
 	return f.locationID, f.locationErr
+}
+func (f *fakeRepository) RecordDriverStopEvent(
+	_ context.Context, routeID, stopID, driverRef string, request driverStopEventRequest,
+) (driverStopEventResponse, error) {
+	f.routeID, f.stopID, f.driverRef, f.stopEventReq = routeID, stopID, driverRef, request
+	return f.stopEvent, f.stopEventErr
 }
 
 func testServer() http.Handler {
@@ -243,6 +253,41 @@ func TestDriverLocationMapsTooFrequentSampleToConflict(t *testing.T) {
 		ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusConflict)
+	}
+}
+
+func TestDriverCanAdvanceAssignedRouteStop(t *testing.T) {
+	repo := &fakeRepository{stopEvent: driverStopEventResponse{
+		StopID:     "00000000-0000-0000-0000-000000000011",
+		StopStatus: "arrived", RouteStatus: "in_progress",
+	}}
+	request := httptest.NewRequest(http.MethodPost,
+		"/driver/routes/00000000-0000-0000-0000-000000000010/stops/00000000-0000-0000-0000-000000000011/events",
+		strings.NewReader(`{"eventId":"stop-event-1","type":"arrive","observedAt":"2026-10-19T08:00:00Z"}`))
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "driver-123")
+	recorder := httptest.NewRecorder()
+	New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
+		ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || repo.routeID != "00000000-0000-0000-0000-000000000010" ||
+		repo.stopID != "00000000-0000-0000-0000-000000000011" ||
+		repo.driverRef != "driver-123" || repo.stopEventReq.EventID != "stop-event-1" ||
+		repo.stopEventReq.Type != "arrive" ||
+		!strings.Contains(recorder.Body.String(), `"stopStatus":"arrived"`) {
+		t.Fatalf("status=%d stopEvent=%+v body=%s", recorder.Code, repo.stopEventReq, recorder.Body.String())
+	}
+}
+
+func TestDriverStopEventRejectsInvalidType(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost,
+		"/driver/routes/00000000-0000-0000-0000-000000000010/stops/00000000-0000-0000-0000-000000000011/events",
+		strings.NewReader(`{"eventId":"stop-event-1","type":"skip","observedAt":"2026-10-19T08:00:00Z"}`))
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "driver-123")
+	recorder := httptest.NewRecorder()
+	testServer().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
 	}
 }
 

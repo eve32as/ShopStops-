@@ -42,6 +42,11 @@ type Route = {
     status: string;
   }[];
 };
+type StopEvent = {
+  stopId: string;
+  stopStatus: string;
+  routeStatus: string;
+};
 type Subscription = {
   status: string;
   monthlyAmountCents: number;
@@ -233,6 +238,37 @@ export default function HomeScreen() {
     if (result) setRoute(result);
   }
 
+  async function updateRouteStop(stopId: string, type: "arrive" | "complete") {
+    const routeKey = routeId.trim();
+    const result = await run(() =>
+      apiRequest<StopEvent>(
+        settings,
+        `driver/routes/${encodeURIComponent(routeKey)}/stops/${encodeURIComponent(stopId)}/events`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            eventId: idempotencyKey(),
+            type,
+            observedAt: new Date().toISOString(),
+          }),
+        },
+      ),
+    );
+    if (result) {
+      setRoute((current) =>
+        current
+          ? {
+              ...current,
+              status: result.routeStatus,
+              stops: current.stops.map((stop) =>
+                stop.id === result.stopId ? { ...stop, status: result.stopStatus } : stop,
+              ),
+            }
+          : current,
+      );
+    }
+  }
+
   async function beginTracking() {
     if (!routeId.trim()) {
       setMessage("Load your assigned route before starting location sharing.");
@@ -349,6 +385,10 @@ export default function HomeScreen() {
       />
     </View>
   );
+  const activeStop = route?.stops
+    .slice()
+    .sort((a, b) => a.sequence - b.sequence)
+    .find((stop) => stop.status !== "completed");
 
   return (
     <KeyboardAvoidingView
@@ -541,6 +581,25 @@ export default function HomeScreen() {
                       </View>
                     </View>
                   ))}
+                {activeStop ? (
+                  <View style={styles.stopActions}>
+                    {activeStop.status === "pending" ? (
+                      <ActionButton
+                        disabled={busy}
+                        label="Confirm arrival"
+                        onPress={() => void updateRouteStop(activeStop.id, "arrive")}
+                      />
+                    ) : (
+                      <ActionButton
+                        disabled={busy}
+                        label={activeStop.type === "dropoff" ? "Confirm delivery" : "Confirm pickup"}
+                        onPress={() => void updateRouteStop(activeStop.id, "complete")}
+                      />
+                    )}
+                  </View>
+                ) : (
+                  <Text style={styles.tinyNote}>All route stops are complete.</Text>
+                )}
                 <Text style={styles.tinyNote}>Routing matrix · {route.routingProvider}</Text>
               </View>
             ) : null}
@@ -701,6 +760,7 @@ const styles = StyleSheet.create({
   resultSub: { color: "#73817b", fontSize: 11, marginTop: 4 },
   checkoutBox: { backgroundColor: "#f8f9f7", borderRadius: 13, padding: 14, marginTop: 16 },
   routeBox: { backgroundColor: "#f8f9f7", borderRadius: 13, padding: 14, marginTop: 14 },
+  stopActions: { marginTop: 3 },
   checkoutLabel: { color: "#77857f", fontSize: 9, fontWeight: "800", letterSpacing: 1.2, marginBottom: 11 },
   invoiceRow: { flexDirection: "row", justifyContent: "space-between", paddingVertical: 7 },
   invoiceLabel: { color: "#5f706a", fontSize: 12, textTransform: "capitalize" },

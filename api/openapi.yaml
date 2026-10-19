@@ -154,6 +154,51 @@ paths:
           description: Invalid or too-frequent location sample
         '403':
           description: Route is not assigned to this driver
+  /driver/routes/{routeId}/stops/{stopId}/events:
+    post:
+      operationId: recordUnifiedRouteStopEvent
+      summary: Confirm arrival or completion of the current assigned route stop
+      description: Stop events are idempotent and the API enforces the server-defined stop sequence. Use arrive before complete for each stop.
+      parameters:
+        - $ref: '#/components/parameters/RouteId'
+        - in: path
+          name: stopId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DriverRouteStopEvent'
+      responses:
+        '200':
+          description: Stop event accepted or returned for an identical retry
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [stopId, stopStatus, routeStatus]
+                properties:
+                  stopId:
+                    type: string
+                    format: uuid
+                  stopStatus:
+                    type: string
+                    enum: [arrived, completed]
+                  routeStatus:
+                    type: string
+                    enum: [in_progress, completed]
+        '400':
+          description: Invalid stop event
+        '403':
+          description: Route is not assigned to this driver
+        '404':
+          description: Route or stop not found
+        '409':
+          description: Event conflicts with stop state or mandatory route order
   /merchant/subscription/setup-intent:
     post:
       operationId: createMerchantBillingSetupIntent
@@ -476,6 +521,21 @@ components:
           format: date-time
         location:
           $ref: '#/components/schemas/GeoPoint'
+    DriverRouteStopEvent:
+      type: object
+      additionalProperties: false
+      required: [eventId, type, observedAt]
+      properties:
+        eventId:
+          type: string
+          minLength: 1
+          maxLength: 200
+        type:
+          type: string
+          enum: [arrive, complete]
+        observedAt:
+          type: string
+          format: date-time
     CreateBundleRequest:
       type: object
       additionalProperties: false

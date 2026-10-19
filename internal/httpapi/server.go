@@ -39,6 +39,9 @@ type Repository interface {
 	CreateCheckout(context.Context, checkoutRequest, string, string) (checkoutResponse, error)
 	DriverRoute(context.Context, string, string) (routeResponse, error)
 	RecordDriverLocation(context.Context, string, string, driverLocationRequest) (int64, error)
+	RecordDriverStopEvent(
+		context.Context, string, string, string, driverStopEventRequest,
+	) (driverStopEventResponse, error)
 }
 
 type NearbyMerchant struct {
@@ -107,6 +110,18 @@ type driverLocationRequest struct {
 	Location   geoPoint  `json:"location"`
 }
 
+type driverStopEventRequest struct {
+	EventID    string    `json:"eventId"`
+	Type       string    `json:"type"`
+	ObservedAt time.Time `json:"observedAt"`
+}
+
+type driverStopEventResponse struct {
+	StopID      string `json:"stopId"`
+	StopStatus  string `json:"stopStatus"`
+	RouteStatus string `json:"routeStatus"`
+}
+
 type geoPoint struct {
 	Latitude  float64 `json:"latitude"`
 	Longitude float64 `json:"longitude"`
@@ -160,6 +175,7 @@ func (s *Server) handler() http.Handler {
 	mux.Handle("POST /dispatch/bundles", s.authorized(http.HandlerFunc(s.createBundle)))
 	mux.Handle("GET /driver/routes/{routeId}", s.authorized(http.HandlerFunc(s.getDriverRoute)))
 	mux.Handle("POST /driver/routes/{routeId}/location", s.authorized(http.HandlerFunc(s.recordDriverLocation)))
+	mux.Handle("POST /driver/routes/{routeId}/stops/{stopId}/events", s.authorized(http.HandlerFunc(s.recordDriverStopEvent)))
 	mux.Handle("POST /checkouts", s.authorized(http.HandlerFunc(s.createCheckout)))
 	mux.Handle("POST /checkouts/{checkoutId}/payment", s.authorized(http.HandlerFunc(s.createCheckoutPayment)))
 	mux.Handle("GET /merchant/subscription", s.authorized(http.HandlerFunc(s.getMerchantSubscription)))
@@ -399,6 +415,49 @@ func (s *Server) recordDriverLocation(w http.ResponseWriter, r *http.Request) {
 		s.databaseError(w, err)
 	default:
 		writeJSON(w, http.StatusAccepted, map[string]int64{"sampleId": sampleID})
+	}
+}
+
+func (s *Server) recordDriverStopEvent(w http.ResponseWriter, r *http.Request) {
+	routeID := r.PathValue("routeId")
+	stopID := r.PathValue("stopId")
+	driverRef := strings.TrimSpace(r.Header.Get("X-ShopStops-Actor"))
+	if !isUUID(routeID) || !isUUID(stopID) || driverRef == "" || len(driverRef) > 200 {
+		writeError(w, http.StatusBadRequest, "valid route, stop, and authenticated driver are required")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 8*1024)
+	var request driverStopEventRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "request body must contain one JSON object")
+		return
+	}
+	if strings.TrimSpace(request.EventID) == "" || len(request.EventID) > 200 ||
+		(request.Type != "arrive" && request.Type != "complete") ||
+		request.ObservedAt.IsZero() || request.ObservedAt.After(time.Now().Add(time.Minute)) {
+		writeError(w, http.StatusBadRequest, "invalid stop event")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	response, err := s.repo.RecordDriverStopEvent(ctx, routeID, stopID, driverRef, request)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		writeError(w, http.StatusNotFound, "route or stop not found")
+	case errors.Is(err, ErrForbidden):
+		writeError(w, http.StatusForbidden, "route is not assigned to this driver")
+	case errors.Is(err, ErrConflict):
+		writeError(w, http.StatusConflict, "stop event conflicts with the route sequence or current state")
+	case err != nil:
+		s.databaseError(w, err)
+	default:
+		writeJSON(w, http.StatusOK, response)
 	}
 }
 
@@ -713,6 +772,33 @@ func (p *PostgresRepository) RecordDriverLocation(
 		return 0, err
 	}
 	return sampleID, nil
+}
+
+func (p *PostgresRepository) RecordDriverStopEvent(
+	ctx context.Context, routeID, stopID, driverRef string, request driverStopEventRequest,
+) (driverStopEventResponse, error) {
+	var response driverStopEventResponse
+	response.StopID = stopID
+	err := p.db.QueryRowContext(ctx, `
+		SELECT stop_status, route_status
+		FROM record_unified_route_stop_event($1, $2, $3, $4, $5, $6)`,
+		routeID, stopID, driverRef, request.EventID, request.Type, request.ObservedAt,
+	).Scan(&response.StopStatus, &response.RouteStatus)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) {
+			switch pgErr.Code {
+			case "P0002":
+				return driverStopEventResponse{}, ErrNotFound
+			case "42501":
+				return driverStopEventResponse{}, ErrForbidden
+			case "P0001":
+				return driverStopEventResponse{}, ErrConflict
+			}
+		}
+		return driverStopEventResponse{}, err
+	}
+	return response, nil
 }
 
 func (s *Server) databaseError(w http.ResponseWriter, err error) {
