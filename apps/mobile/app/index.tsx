@@ -923,7 +923,7 @@ export default function HomeScreen() {
             <Text style={styles.sectionEyebrow}>DRIVER / ACTIVE DELIVERY</Text>
             <Text style={styles.sectionTitle}>Every stop, in the right order.</Text>
             <Text style={styles.helpText}>
-              Load your assigned route and share location every five seconds while this screen is
+              Load your assigned route and share location about every five seconds while this screen is
               open or in the background. Location updates may be delayed by the operating system.
               Your gateway session is stored securely only while sharing is active. Stop sequencing
               is controlled by the server.
