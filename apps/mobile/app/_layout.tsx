@@ -1,6 +1,7 @@
 import { Stack } from "expo-router";
 import { StripeProvider } from "@stripe/stripe-react-native";
 import { StatusBar } from "expo-status-bar";
+import "../src/backgroundLocation";
 
 const publishableKey = process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? "";
 

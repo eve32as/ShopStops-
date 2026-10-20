@@ -157,9 +157,10 @@ order and exactly one partner merchant. It persists the mandatory immutable
 sequence: restaurant pickup, adjacent merchant pickup, customer drop-off.
 `unified_route_legs` stores road-network distance/duration returned by an OSRM
 or Google Maps matrix integration; this repository does not call either vendor
-or provide turn-by-turn navigation. Driver clients should sample GPS every five
-seconds; `record_driver_location` enforces assigned active routes, idempotency,
-and no more than one sample per five seconds. Route/authenticated API processes
+or provide turn-by-turn navigation. Driver clients should sample GPS about every five
+seconds; mobile background location updates are best-effort and subject to OS
+scheduling and permissions. `record_driver_location` enforces assigned active
+routes, idempotency, and no more than one sample per five seconds. Route/authenticated API processes
 must reject client attempts to reorder stops.
 
 Migration `003_stripe_checkout_payments.sql` records verified Stripe checkout
@@ -233,8 +234,7 @@ driver, and merchant billing API flows; `apps/admin` provides the current
 full-refund operation. Both expect an external trusted identity gateway and
 Stripe publishable key configuration. The clients are API-backed MVP
 foundations, not complete consumer, driver, merchant, or admin products.
-Native identity, background location, admin search/zone/reporting controls,
-production routing, and
+Native identity, admin search/zone/reporting controls, production routing, and
 real-time integrations remain unimplemented.
 
 For rollout, configure the initial Union Market corridor as the only enabled

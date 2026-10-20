@@ -2,6 +2,7 @@ import * as Location from "expo-location";
 import { useStripe } from "@stripe/stripe-react-native";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  AppState,
   Image,
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -14,6 +15,11 @@ import {
   View,
 } from "react-native";
 import { ApiError, apiRequest, idempotencyKey, type ApiSettings } from "../src/api";
+import {
+  isDriverLocationUpdatesActive,
+  startDriverLocationUpdates,
+  stopDriverLocationUpdates,
+} from "../src/backgroundLocation";
 
 type Role = "Shopper" | "Driver" | "Merchant";
 type NearbyMerchant = {
@@ -155,9 +161,6 @@ export default function HomeScreen() {
       deliveryWindowEnd: string;
     };
   } | null>(null);
-  const routeLocation = useRef<Location.LocationObject | null>(null);
-  const routeSubscription = useRef<Location.LocationSubscription | null>(null);
-  const lastReportedAt = useRef(0);
   const previousConnection = useRef({ gatewayUrl, sessionToken });
   const { initPaymentSheet, presentPaymentSheet } = useStripe();
 
@@ -175,19 +178,12 @@ export default function HomeScreen() {
   }, []);
 
   useEffect(() => {
-    return () => {
-      routeSubscription.current?.remove();
-      routeSubscription.current = null;
-    };
-  }, []);
-
-  useEffect(() => {
     if (
       previousConnection.current.gatewayUrl !== gatewayUrl ||
       previousConnection.current.sessionToken !== sessionToken
     ) {
       previousConnection.current = { gatewayUrl, sessionToken };
-      endTracking();
+      void endTracking();
       checkoutAttempt.current = null;
       orderAttempt.current = null;
       basketWindow.current = null;
@@ -206,33 +202,6 @@ export default function HomeScreen() {
       setMerchantStoreLocation("");
     }
   }, [gatewayUrl, sessionToken]);
-
-  useEffect(() => {
-    if (!tracking) return;
-    const timer = setInterval(() => {
-      const current = routeLocation.current;
-      if (!current || !routeId || current.timestamp <= lastReportedAt.current) return;
-      lastReportedAt.current = current.timestamp;
-      void apiRequest(
-        settings,
-        `driver/routes/${encodeURIComponent(routeId)}/location`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            eventId: `gps-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-            observedAt: new Date(current.timestamp).toISOString(),
-            location: {
-              latitude: current.coords.latitude,
-              longitude: current.coords.longitude,
-            },
-          }),
-        },
-      ).catch((error: unknown) => {
-        setMessage(error instanceof Error ? error.message : "GPS update failed.");
-      });
-    }, 5000);
-    return () => clearInterval(timer);
-  }, [routeId, settings, tracking]);
 
   async function findNearby() {
     const results = await run(() =>
@@ -435,7 +404,8 @@ export default function HomeScreen() {
   }
 
   async function beginTracking() {
-    if (!routeId.trim()) {
+    const activeRouteID = routeId.trim();
+    if (!activeRouteID || route?.id !== activeRouteID || route.status !== "in_progress") {
       setMessage("Load your assigned route before starting location sharing.");
       return;
     }
@@ -445,38 +415,49 @@ export default function HomeScreen() {
       return;
     }
     try {
-      routeLocation.current = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.Balanced,
-      });
-      routeSubscription.current = await Location.watchPositionAsync(
-        {
-          accuracy: Location.Accuracy.Balanced,
-          timeInterval: 5000,
-          distanceInterval: 0,
-        },
-        (position) => {
-          routeLocation.current = position;
-        },
-      );
+      const backgroundPermission = await Location.requestBackgroundPermissionsAsync();
+      if (backgroundPermission.status !== "granted") {
+        setMessage("Allow background location access in device settings to share your route while the app is backgrounded.");
+        return;
+      }
+      await startDriverLocationUpdates(activeRouteID, settings);
       setTracking(true);
-      setMessage("Location sharing is active while this screen remains open.");
+      setMessage("Background location sharing is active for your assigned route.");
     } catch {
-      setMessage("Could not start location updates. Check device location services.");
+      setMessage("Could not start background location sharing. Check device settings and try again.");
     }
   }
 
-  function endTracking() {
-    routeSubscription.current?.remove();
-    routeSubscription.current = null;
-    routeLocation.current = null;
-    lastReportedAt.current = 0;
+  async function endTracking() {
+    try {
+      await stopDriverLocationUpdates();
+    } catch {
+      setMessage("Could not stop location sharing. Try again from this screen.");
+      return;
+    }
     setTracking(false);
-    setMessage("Location sharing stopped.");
+    setMessage("Location sharing stopped and the saved gateway session was cleared.");
   }
 
   useEffect(() => {
-    if ((role !== "Driver" || !settings.sessionToken.trim()) && tracking) endTracking();
-  }, [role, settings.sessionToken, tracking]);
+    if (role !== "Driver" && tracking) {
+      void endTracking();
+    }
+  }, [role, tracking]);
+
+  useEffect(() => {
+    void isDriverLocationUpdatesActive().then((active) => {
+      setTracking(active);
+      if (active) setRole("Driver");
+    });
+    const syncTracking = () => {
+      void isDriverLocationUpdatesActive().then(setTracking);
+    };
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state === "active") syncTracking();
+    });
+    return () => subscription.remove();
+  }, []);
 
   async function refreshSubscription() {
     const result = await run(() => apiRequest<Subscription>(settings, "merchant/subscription"));
@@ -651,7 +632,8 @@ export default function HomeScreen() {
       <Text style={styles.sectionTitle}>Connect to your ShopStops gateway</Text>
       <Text style={styles.helpText}>
         Use the public HTTPS gateway and a user session from your identity provider. Never enter
-        the backend service token here.
+        the backend service token here. While background location is active, the session is held in
+        OS secure storage and cleared when sharing stops.
       </Text>
       <TextInput
         accessibilityLabel="Gateway URL"
@@ -669,7 +651,7 @@ export default function HomeScreen() {
         autoCapitalize="none"
         autoCorrect={false}
         onChangeText={setSessionToken}
-        placeholder="User session token (held in memory only)"
+        placeholder="User session token"
         placeholderTextColor="#94a3b8"
         secureTextEntry
         style={styles.input}
@@ -942,10 +924,12 @@ export default function HomeScreen() {
             <Text style={styles.sectionTitle}>Every stop, in the right order.</Text>
             <Text style={styles.helpText}>
               Load your assigned route and share location every five seconds while this screen is
-              open. Stop sequencing is controlled by the server.
+              open or in the background. Location updates may be delayed by the operating system.
+              Your gateway session is stored securely only while sharing is active. Stop sequencing
+              is controlled by the server.
             </Text>
-            <Field label="Assigned route ID" onChangeText={setRouteId} value={routeId} />
-            <ActionButton disabled={busy} label="Load route" onPress={() => void loadRoute()} />
+            <Field editable={!tracking} label="Assigned route ID" onChangeText={setRouteId} value={routeId} />
+            <ActionButton disabled={busy || tracking} label="Load route" onPress={() => void loadRoute()} />
             {route ? (
               <View style={styles.routeBox}>
                 <Text style={styles.checkoutLabel}>ROUTE · {route.status.toUpperCase()}</Text>
@@ -986,11 +970,11 @@ export default function HomeScreen() {
               </View>
             ) : null}
             <ActionButton
-              disabled={tracking || !route}
-              label={tracking ? "Location sharing is active" : "Start 5-second location sharing"}
+              disabled={tracking || !route || route.status !== "in_progress"}
+              label={tracking ? "Background location sharing is active" : "Start background location sharing"}
               onPress={() => void beginTracking()}
             />
-            {tracking ? <ActionButton label="End location sharing" onPress={endTracking} secondary /> : null}
+            {tracking ? <ActionButton label="Stop location sharing" onPress={() => void endTracking()} secondary /> : null}
           </View>
         ) : null}
 

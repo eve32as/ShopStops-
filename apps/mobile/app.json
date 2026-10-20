@@ -6,12 +6,16 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
-    "platforms": ["ios", "android"],
+    "platforms": [
+      "ios",
+      "android"
+    ],
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.shopstops.client",
       "infoPlist": {
-        "NSLocationWhenInUseUsageDescription": "ShopStops shares your location with your assigned delivery route while you are on duty."
+        "NSLocationWhenInUseUsageDescription": "ShopStops shares your location with your assigned delivery route while you are on duty.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "ShopStops shares your location with your assigned delivery route while background location sharing is turned on."
       }
     },
     "android": {
@@ -34,7 +38,19 @@
       },
       "predictiveBackGestureEnabled": false
     },
-    "plugins": ["expo-router"],
+    "plugins": [
+      "expo-router",
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "ShopStops shares your location with your assigned delivery route while background location sharing is turned on.",
+          "isIosBackgroundLocationEnabled": true,
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true
+        }
+      ],
+      "expo-secure-store"
+    ],
     "scheme": "shopstops"
   }
 }

@@ -101,8 +101,10 @@ returned to the authenticated customer.
 
 Starter clients are in `apps/mobile` (Expo iOS/Android) and `apps/admin` (Vite
 web). The mobile client provides nearby-store discovery, checkout/payment,
-assigned-route viewing and foreground GPS sharing, and merchant subscription
-setup. The admin client provides the existing full-refund operation. Both
+assigned-route viewing and opt-in foreground/background GPS sharing, and
+merchant subscription setup. Background tracking stores the gateway session in
+OS secure storage only while tracking is active and clears it when tracking
+stops. The admin client provides the existing full-refund operation. Both
 expect an identity-aware public gateway to validate user session tokens and
 inject backend actor/role headers. Neither client may receive the backend
 Stripe secret or internal API token.
@@ -113,5 +115,5 @@ Run the admin client from `apps/admin` with `npm ci` and `npm run dev`. Configur
 `EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY` for mobile PaymentSheet flows. The shopper
 client can browse visible store catalogs and create orders before checkout; it
 still requires an identity-aware gateway and a valid customer delivery
-location. Background GPS, full merchant operations, admin transaction/dispute
-search, and real-time updates also remain follow-on work.
+location. Full merchant operations, admin transaction/dispute search, and
+real-time updates also remain follow-on work.
