@@ -1583,7 +1583,7 @@ func (p *PostgresRepository) CustomerOrderEvents(
 		      )
 		      OR (
 		          e.event_type = 'delivery.bundle.activated'
-		          AND e.payload->'orderIds' ? $2::text
+		          AND e.payload->'orderIds' ? $2::uuid::text
 		      )
 		  )
 		ORDER BY e.id

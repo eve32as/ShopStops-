@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -70,8 +71,8 @@ type fakeRepository struct {
 	orderEventsErr        error
 	eventOrderID          string
 	eventCustomerRef      string
-	eventAfterID           int64
-	eventLimit             int
+	eventAfterID          int64
+	eventLimit            int
 }
 
 func (f *fakeRepository) PingContext(context.Context) error { return f.pingErr }
@@ -589,8 +590,8 @@ func TestCustomerOrderEventsRequireOwnershipAndCustomerRole(t *testing.T) {
 
 func TestCustomerOrderEventsRejectInvalidCursorAndWait(t *testing.T) {
 	for _, testCase := range []struct {
-		name       string
-		wait       string
+		name        string
+		wait        string
 		lastEventID string
 	}{
 		{name: "wait too long", wait: "26"},
