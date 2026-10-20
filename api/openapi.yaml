@@ -669,13 +669,15 @@ paths:
                     type: array
                     items:
                       type: object
-                      required: [id, name, readyOrderCount, oldestReadyAt, oldestReadyOrderId, activeBundleCount, openStopCount]
+                      required: [id, name, enabled, readyOrderCount, oldestReadyAt, oldestReadyOrderId, activeBundleCount, openStopCount]
                       properties:
                         id:
                           type: string
                           format: uuid
                         name:
                           type: string
+                        enabled:
+                          type: boolean
                         readyOrderCount:
                           type: integer
                           format: int64

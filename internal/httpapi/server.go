@@ -1481,7 +1481,7 @@ func (p *PostgresRepository) AdminOperationsSnapshot(
 		      AND s.status IN ('pending', 'arrived')
 		    GROUP BY b.delivery_zone_id
 		)
-		SELECT z.id, z.name,
+		SELECT z.id, z.name, z.enabled,
 		       coalesce(r.ready_order_count, 0), r.oldest_ready_at,
 		       o.order_id,
 		       coalesce(b.active_bundle_count, 0),
@@ -1501,7 +1501,7 @@ func (p *PostgresRepository) AdminOperationsSnapshot(
 		var oldestReadyAt sql.NullTime
 		var oldestReadyOrderID sql.NullString
 		if err := rows.Scan(
-			&zone.ID, &zone.Name, &zone.ReadyOrderCount, &oldestReadyAt,
+			&zone.ID, &zone.Name, &zone.Enabled, &zone.ReadyOrderCount, &oldestReadyAt,
 			&oldestReadyOrderID, &zone.ActiveBundleCount, &zone.OpenStopCount,
 		); err != nil {
 			return AdminOperationsSnapshot{}, err

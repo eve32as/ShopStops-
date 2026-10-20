@@ -88,6 +88,7 @@ type AdminDeliveryRepository interface {
 type DeliveryZoneOperations struct {
 	ID                 string     `json:"id"`
 	Name               string     `json:"name"`
+	Enabled            bool       `json:"enabled"`
 	ReadyOrderCount    int64      `json:"readyOrderCount"`
 	OldestReadyAt      *time.Time `json:"oldestReadyAt"`
 	OldestReadyOrderID *string    `json:"oldestReadyOrderId"`

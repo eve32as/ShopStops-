@@ -578,7 +578,7 @@ func TestAdminOperationsSnapshotRequiresAdmin(t *testing.T) {
 		PendingOutboxEvents: 4,
 		DeliveryZoneOperations: []DeliveryZoneOperations{{
 			ID: "00000000-0000-0000-0000-000000000001", Name: "North",
-			ReadyOrderCount: 2, OldestReadyOrderID: &oldestReadyOrderID,
+			Enabled: true, ReadyOrderCount: 2, OldestReadyOrderID: &oldestReadyOrderID,
 			ActiveBundleCount: 1, OpenStopCount: 3,
 		}},
 	}}
@@ -601,7 +601,7 @@ func TestAdminOperationsSnapshotRequiresAdmin(t *testing.T) {
 	recorder = httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
 	for _, expected := range []string{
-		`"pendingOutboxEvents":4`, `"name":"North"`, `"readyOrderCount":2`,
+		`"pendingOutboxEvents":4`, `"name":"North"`, `"enabled":true`, `"readyOrderCount":2`,
 		`"oldestReadyOrderId":"` + oldestReadyOrderID + `"`,
 		`"activeBundleCount":1`, `"openStopCount":3`,
 	} {

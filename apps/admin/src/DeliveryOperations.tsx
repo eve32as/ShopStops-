@@ -17,6 +17,7 @@ type OperationsSnapshot = {
   deliveryZones: Array<{
     id: string
     name: string
+    enabled: boolean
     readyOrderCount: number
     oldestReadyAt: string | null
     oldestReadyOrderId: string | null
@@ -297,7 +298,7 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
             <div><span>Pending outbox</span><strong>{operations.pendingOutboxEvents}</strong></div>
             {operations.deliveryZones.map((zone) => (
               <div className="operations-zone" key={zone.id}>
-                <span>{zone.name}</span>
+                <span>{zone.name}{zone.enabled ? '' : ' · Disabled'}</span>
                 <strong>{zone.readyOrderCount} ready · {zone.activeBundleCount} active bundles</strong>
                 <small>
                   {zone.oldestReadyAt
@@ -306,7 +307,7 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
                     ))} min · ${zone.openStopCount} open stops`
                     : `No ready orders · ${zone.openStopCount} open stops`}
                 </small>
-                {zone.oldestReadyOrderId ? (
+                {zone.enabled && zone.oldestReadyOrderId ? (
                   <button
                     className="select-checkout operations-seed-button"
                     onClick={() => {
