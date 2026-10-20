@@ -68,6 +68,17 @@ type AdminCheckoutRepository interface {
 	) ([]AdminCheckoutRecord, error)
 }
 
+type DeliveryZone struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Enabled bool   `json:"enabled"`
+}
+
+type AdminDeliveryRepository interface {
+	AdminDeliveryZones(context.Context) ([]DeliveryZone, error)
+	UpdateAdminDeliveryZone(context.Context, string, bool) (DeliveryZone, error)
+}
+
 type LifecycleRepository interface {
 	MerchantBillingProfile(context.Context, string) (MerchantBillingProfile, error)
 	ReserveMerchantBillingAttempt(context.Context, string, string) (MerchantBillingProfile, error)
@@ -477,6 +488,67 @@ func (s *Server) searchAdminCheckouts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"checkouts": checkouts})
+}
+
+func (s *Server) listAdminDeliveryZones(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.authorizedActorRole(w, r, "admin"); !ok {
+		return
+	}
+	repository, ok := s.repo.(AdminDeliveryRepository)
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "delivery-zone management is unavailable")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	zones, err := repository.AdminDeliveryZones(ctx)
+	if err != nil {
+		s.databaseError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deliveryZones": zones})
+}
+
+func (s *Server) updateAdminDeliveryZone(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.authorizedActorRole(w, r, "admin"); !ok {
+		return
+	}
+	zoneID := r.PathValue("zoneId")
+	if !isUUID(zoneID) {
+		writeError(w, http.StatusBadRequest, "invalid delivery zone ID")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 8*1024)
+	var request struct {
+		Enabled *bool `json:"enabled"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil || request.Enabled == nil {
+		writeError(w, http.StatusBadRequest, "enabled must be provided")
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "request body must contain one JSON object")
+		return
+	}
+	repository, ok := s.repo.(AdminDeliveryRepository)
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "delivery-zone management is unavailable")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	zone, err := repository.UpdateAdminDeliveryZone(ctx, zoneID, *request.Enabled)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "delivery zone not found")
+		return
+	}
+	if err != nil {
+		s.databaseError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, zone)
 }
 
 func (s *Server) authorizedActorRole(

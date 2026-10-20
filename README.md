@@ -151,6 +151,14 @@ transfers and capped at the total merchant payouts. Review disputes and refund o
 dispute does not automatically re-transfer reversed merchant proceeds, and tax
 remittance/reporting remains a separate workflow.
 
+The admin control room also lists delivery zones and toggles whether each zone
+accepts new orders and dispatch work through `GET /admin/delivery-zones` and
+`PATCH /admin/delivery-zones/{zoneId}`. The `dispatch/bundles` form accepts the
+per-run capacity, order-count, and pickup/drop-off radius limits and reuses its
+idempotency key if a request needs retrying. Zone boundaries remain database
+managed; disabling a zone does not cancel existing orders or bundles. These
+controls require an admin OIDC role through the trusted gateway.
+
 Retries resume transfers/reversals not recorded after Stripe accepted them. Pin
 the webhook endpoint's Stripe API version to the version supported by the
 installed Stripe Go SDK. If an external operation remains unresolved for 23

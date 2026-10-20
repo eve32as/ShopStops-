@@ -623,6 +623,66 @@ paths:
           description: Payment not refundable or prior Stripe operation requires reconciliation
         '503':
           description: Stripe billing is unavailable
+  /admin/delivery-zones:
+    get:
+      operationId: listAdminDeliveryZones
+      summary: List delivery zones for operations
+      description: Admin-only. Returns each zone's enabled state and name; zone boundaries are not exposed.
+      responses:
+        '200':
+          description: Delivery zones ordered by name
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deliveryZones]
+                properties:
+                  deliveryZones:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/DeliveryZone'
+        '403':
+          description: Admin role required
+        '503':
+          description: Delivery-zone management is unavailable
+  /admin/delivery-zones/{zoneId}:
+    patch:
+      operationId: updateAdminDeliveryZone
+      summary: Enable or disable a delivery zone
+      description: Admin-only. Disabling prevents new customer orders and dispatch in the zone; existing orders and bundles are not changed.
+      parameters:
+        - in: path
+          name: zoneId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [enabled]
+              properties:
+                enabled:
+                  type: boolean
+      responses:
+        '200':
+          description: Updated delivery zone
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryZone'
+        '400':
+          description: Invalid zone ID or request body
+        '403':
+          description: Admin role required
+        '404':
+          description: Delivery zone not found
+        '503':
+          description: Delivery-zone management is unavailable
   /webhooks/stripe:
     post:
       operationId: receiveStripeWebhook
@@ -778,6 +838,17 @@ components:
         distanceMeters:
           type: number
           maximum: 500
+    DeliveryZone:
+      type: object
+      required: [id, name, enabled]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        enabled:
+          type: boolean
     CatalogItem:
       type: object
       required: [id, name, description, unitPriceCents, volumeLiters]

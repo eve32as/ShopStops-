@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from 'react'
+import DeliveryOperations from './DeliveryOperations'
 import './App.css'
 
 type RefundResult = {
@@ -445,6 +446,8 @@ function App() {
               </section>
             </aside>
           </div>
+
+          <DeliveryOperations gatewayUrl={gatewayUrl} sessionToken={sessionToken} />
 
           <footer className="page-footer">
             <span>SHOPSTOPS ADMIN · INTERNAL WORKFLOW</span>

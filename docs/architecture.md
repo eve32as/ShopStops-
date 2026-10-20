@@ -93,8 +93,11 @@ clients fetch `GET /v1/driver/bundles/{bundleId}` and report progress through
 `POST /v1/driver/bundles/{bundleId}/stops/{stopId}/events` with an event ID,
 event type, and observed timestamp. Progress writes must verify driver
 assignment, bundle/stop relationship, legal state transition, and that a
-drop-off's pickup is complete. Admin APIs manage zones and limits; customer
-APIs expose only that customer's orders and tracking data.
+drop-off's pickup is complete. The admin control room lists delivery zones and
+can enable or disable them for new orders and dispatch; existing orders and
+bundles are unchanged. Admins can also initiate a bundle with per-request
+capacity, order-count, and radius limits. Customer APIs expose only that
+customer's orders and tracking data.
 
 The initial dispatch and driver HTTP request/response shapes are specified in
 `api/openapi.yaml`; the Go API implements proximity dispatch, assigned route

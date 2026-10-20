@@ -308,6 +308,8 @@ func (s *Server) handler() http.Handler {
 	mux.Handle("POST /merchant/subscription", s.authorized(http.HandlerFunc(s.createMerchantSubscription)))
 	mux.Handle("GET /admin/checkouts", s.authorized(http.HandlerFunc(s.searchAdminCheckouts)))
 	mux.Handle("POST /admin/checkouts/{checkoutId}/refund", s.authorized(http.HandlerFunc(s.refundCheckout)))
+	mux.Handle("GET /admin/delivery-zones", s.authorized(http.HandlerFunc(s.listAdminDeliveryZones)))
+	mux.Handle("PATCH /admin/delivery-zones/{zoneId}", s.authorized(http.HandlerFunc(s.updateAdminDeliveryZone)))
 	mux.HandleFunc("POST /webhooks/stripe", s.stripeWebhook)
 	return mux
 }
@@ -1381,6 +1383,42 @@ func (p *PostgresRepository) CreateBundle(
 		return bundleResponse{}, err
 	}
 	return response, nil
+}
+
+func (p *PostgresRepository) AdminDeliveryZones(ctx context.Context) ([]DeliveryZone, error) {
+	rows, err := p.db.QueryContext(ctx, `
+		SELECT id, name, enabled
+		FROM delivery_zones
+		ORDER BY name, id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	zones := make([]DeliveryZone, 0)
+	for rows.Next() {
+		var zone DeliveryZone
+		if err := rows.Scan(&zone.ID, &zone.Name, &zone.Enabled); err != nil {
+			return nil, err
+		}
+		zones = append(zones, zone)
+	}
+	return zones, rows.Err()
+}
+
+func (p *PostgresRepository) UpdateAdminDeliveryZone(
+	ctx context.Context, zoneID string, enabled bool,
+) (DeliveryZone, error) {
+	var zone DeliveryZone
+	err := p.db.QueryRowContext(ctx, `
+		UPDATE delivery_zones
+		SET enabled = $2
+		WHERE id = $1
+		RETURNING id, name, enabled`, zoneID, enabled,
+	).Scan(&zone.ID, &zone.Name, &zone.Enabled)
+	if errors.Is(err, sql.ErrNoRows) {
+		return DeliveryZone{}, ErrNotFound
+	}
+	return zone, err
 }
 
 func (p *PostgresRepository) CreateCheckout(

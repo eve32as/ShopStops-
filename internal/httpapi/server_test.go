@@ -73,9 +73,24 @@ type fakeRepository struct {
 	eventCustomerRef      string
 	eventAfterID          int64
 	eventLimit            int
+	deliveryZones         []DeliveryZone
+	deliveryZonesErr      error
+	updatedDeliveryZone   DeliveryZone
+	updateDeliveryZoneErr error
+	updatedDeliveryZoneID string
+	updatedZoneEnabled    bool
 }
 
 func (f *fakeRepository) PingContext(context.Context) error { return f.pingErr }
+func (f *fakeRepository) AdminDeliveryZones(context.Context) ([]DeliveryZone, error) {
+	return f.deliveryZones, f.deliveryZonesErr
+}
+func (f *fakeRepository) UpdateAdminDeliveryZone(
+	_ context.Context, zoneID string, enabled bool,
+) (DeliveryZone, error) {
+	f.updatedDeliveryZoneID, f.updatedZoneEnabled = zoneID, enabled
+	return f.updatedDeliveryZone, f.updateDeliveryZoneErr
+}
 func (f *fakeRepository) CustomerOwnsOrder(
 	_ context.Context, orderID, customerRef string,
 ) (bool, error) {
@@ -509,6 +524,79 @@ func TestCreateBundleMapsIneligibleSeedToConflict(t *testing.T) {
 		ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusConflict)
+	}
+}
+
+func TestAdminDeliveryZonesRequiresAdminAndListsZones(t *testing.T) {
+	repo := &fakeRepository{deliveryZones: []DeliveryZone{{
+		ID: "00000000-0000-0000-0000-000000000001", Name: "North", Enabled: true,
+	}}}
+	handler := New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	request := httptest.NewRequest(http.MethodGet, "/admin/delivery-zones", nil)
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "customer-1")
+	request.Header.Set("X-ShopStops-Actor-Role", "customer")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/admin/delivery-zones", nil)
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "admin-1")
+	request.Header.Set("X-ShopStops-Actor-Role", "admin")
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK ||
+		!strings.Contains(recorder.Body.String(), `"name":"North"`) ||
+		!strings.Contains(recorder.Body.String(), `"enabled":true`) {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestAdminCanUpdateDeliveryZoneEnabledState(t *testing.T) {
+	zoneID := "00000000-0000-0000-0000-000000000001"
+	repo := &fakeRepository{updatedDeliveryZone: DeliveryZone{
+		ID: zoneID, Name: "North", Enabled: false,
+	}}
+	request := httptest.NewRequest(http.MethodPatch, "/admin/delivery-zones/"+zoneID,
+		strings.NewReader(`{"enabled":false}`))
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "admin-1")
+	request.Header.Set("X-ShopStops-Actor-Role", "admin")
+	recorder := httptest.NewRecorder()
+	New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
+		ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || repo.updatedDeliveryZoneID != zoneID ||
+		repo.updatedZoneEnabled || !strings.Contains(recorder.Body.String(), `"enabled":false`) {
+		t.Fatalf("status=%d updatedID=%s enabled=%t body=%s",
+			recorder.Code, repo.updatedDeliveryZoneID, repo.updatedZoneEnabled, recorder.Body.String())
+	}
+}
+
+func TestAdminDeliveryZoneUpdateRejectsInvalidInput(t *testing.T) {
+	for _, test := range []struct {
+		path string
+		body string
+	}{
+		{path: "/admin/delivery-zones/not-a-uuid", body: `{"enabled":false}`},
+		{path: "/admin/delivery-zones/00000000-0000-0000-0000-000000000001", body: `{}`},
+		{path: "/admin/delivery-zones/00000000-0000-0000-0000-000000000001", body: `{"enabled":false,"unexpected":true}`},
+	} {
+		request := httptest.NewRequest(http.MethodPatch, test.path, strings.NewReader(test.body))
+		request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+		request.Header.Set("X-ShopStops-Actor", "admin-1")
+		request.Header.Set("X-ShopStops-Actor-Role", "admin")
+		recorder := httptest.NewRecorder()
+		repo := &fakeRepository{}
+		New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
+			ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusBadRequest || repo.updatedDeliveryZoneID != "" {
+			t.Fatalf("path=%s status=%d updatedID=%s body=%s",
+				test.path, recorder.Code, repo.updatedDeliveryZoneID, recorder.Body.String())
+		}
 	}
 }
 
