@@ -482,6 +482,43 @@ paths:
           description: Payment method missing or existing billing operation requires reconciliation
         '503':
           description: Stripe merchant price or billing credentials are unavailable
+  /admin/checkouts:
+    get:
+      operationId: searchAdminCheckouts
+      summary: Search checkout payment, refund, and dispute records
+      description: Admin-only. Returns the most recent checkout records, excluding customer and payment-instrument identifiers. Results are capped at 100.
+      parameters:
+        - in: query
+          name: checkoutId
+          schema:
+            type: string
+            format: uuid
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [building, quoted, paid, dispatching, in_progress, completed, cancelled]
+        - in: query
+          name: disputeStatus
+          schema:
+            type: string
+            enum: [needs_response, under_review, won, lost, warning_closed]
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        '200':
+          description: Matching checkouts with payment, refund, and dispute summaries
+        '400':
+          description: Invalid search filter
+        '403':
+          description: Admin role required
+        '503':
+          description: Admin checkout search is unavailable
   /admin/checkouts/{checkoutId}/refund:
     post:
       operationId: refundCheckout

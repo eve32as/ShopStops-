@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -47,6 +48,24 @@ type TransferReversal struct {
 	TransferID     string
 	IdempotencyKey string
 	AmountCents    int64
+}
+
+type AdminCheckoutRecord struct {
+	ID                 string          `json:"id"`
+	Status             string          `json:"status"`
+	Currency           string          `json:"currency"`
+	TotalAmountCents   int64           `json:"totalAmountCents"`
+	PaymentStatus      string          `json:"paymentStatus"`
+	PaymentAmountCents int64           `json:"paymentAmountCents"`
+	CreatedAt          time.Time       `json:"createdAt"`
+	Refunds            json.RawMessage `json:"refunds"`
+	Disputes           json.RawMessage `json:"disputes"`
+}
+
+type AdminCheckoutRepository interface {
+	SearchAdminCheckouts(
+		context.Context, string, string, string, int,
+	) ([]AdminCheckoutRecord, error)
 }
 
 type LifecycleRepository interface {
@@ -411,6 +430,55 @@ func (s *Server) refundCheckout(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) searchAdminCheckouts(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.authorizedActorRole(w, r, "admin"); !ok {
+		return
+	}
+	repository, ok := s.repo.(AdminCheckoutRepository)
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "admin checkout search is unavailable")
+		return
+	}
+
+	checkoutID := r.URL.Query().Get("checkoutId")
+	if checkoutID != "" && !isUUID(checkoutID) {
+		writeError(w, http.StatusBadRequest, "invalid checkoutId")
+		return
+	}
+	status := r.URL.Query().Get("status")
+	switch status {
+	case "", "building", "quoted", "paid", "dispatching", "in_progress", "completed", "cancelled":
+	default:
+		writeError(w, http.StatusBadRequest, "invalid checkout status")
+		return
+	}
+	disputeStatus := r.URL.Query().Get("disputeStatus")
+	switch disputeStatus {
+	case "", "needs_response", "under_review", "won", "lost", "warning_closed":
+	default:
+		writeError(w, http.StatusBadRequest, "invalid dispute status")
+		return
+	}
+	limit := 50
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 1 || value > 100 {
+			writeError(w, http.StatusBadRequest, "limit must be between 1 and 100")
+			return
+		}
+		limit = value
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	checkouts, err := repository.SearchAdminCheckouts(ctx, checkoutID, status, disputeStatus, limit)
+	if err != nil {
+		s.databaseError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"checkouts": checkouts})
+}
+
 func (s *Server) authorizedActorRole(
 	w http.ResponseWriter, r *http.Request, requiredRole string,
 ) (string, bool) {
@@ -737,6 +805,77 @@ func (p *PostgresRepository) RecordTransferReversal(
 		reversalID, stripeReversalID,
 	)
 	return err
+}
+
+func (p *PostgresRepository) SearchAdminCheckouts(
+	ctx context.Context, checkoutID, status, disputeStatus string, limit int,
+) ([]AdminCheckoutRecord, error) {
+	rows, err := p.db.QueryContext(ctx, `
+		SELECT c.id, c.status, c.currency,
+		       COALESCE(invoice.total_amount_cents, 0),
+		       COALESCE(payment.status, ''),
+		       COALESCE(payment.gross_amount_cents, 0),
+		       c.created_at,
+		       COALESCE(refunds.records, '[]'::jsonb),
+		       COALESCE(disputes.records, '[]'::jsonb)
+		FROM unified_checkouts c
+		LEFT JOIN checkout_payments payment ON payment.checkout_id = c.id
+		LEFT JOIN LATERAL (
+		    SELECT sum(amount_cents)::bigint AS total_amount_cents
+		    FROM checkout_invoice_lines
+		    WHERE checkout_id = c.id
+		) invoice ON true
+		LEFT JOIN LATERAL (
+		    SELECT jsonb_agg(jsonb_build_object(
+		        'amountCents', amount_cents,
+		        'reason', reason,
+		        'status', status,
+		        'createdAt', created_at
+		    ) ORDER BY created_at DESC) AS records
+		    FROM checkout_refunds
+		    WHERE checkout_id = c.id
+		) refunds ON true
+		LEFT JOIN LATERAL (
+		    SELECT jsonb_agg(jsonb_build_object(
+		        'disputeId', stripe_dispute_id,
+		        'amountCents', amount_cents,
+		        'currency', currency,
+		        'reason', reason,
+		        'status', status,
+		        'evidenceDueBy', evidence_due_by,
+		        'updatedAt', updated_at
+		    ) ORDER BY updated_at DESC) AS records
+		    FROM stripe_disputes
+		    WHERE checkout_id = c.id
+		) disputes ON true
+		WHERE ($1::uuid IS NULL OR c.id = $1::uuid)
+		  AND ($2::text IS NULL OR c.status = $2)
+		  AND ($3::text IS NULL OR EXISTS (
+		      SELECT 1 FROM stripe_disputes d
+		      WHERE d.checkout_id = c.id AND d.status = $3
+		  ))
+		ORDER BY c.created_at DESC, c.id
+		LIMIT $4`,
+		nullableString(checkoutID), nullableString(status), nullableString(disputeStatus), limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	checkouts := make([]AdminCheckoutRecord, 0)
+	for rows.Next() {
+		var checkout AdminCheckoutRecord
+		if err := rows.Scan(
+			&checkout.ID, &checkout.Status, &checkout.Currency,
+			&checkout.TotalAmountCents, &checkout.PaymentStatus,
+			&checkout.PaymentAmountCents, &checkout.CreatedAt,
+			&checkout.Refunds, &checkout.Disputes,
+		); err != nil {
+			return nil, err
+		}
+		checkouts = append(checkouts, checkout)
+	}
+	return checkouts, rows.Err()
 }
 
 func nullableTimestamp(value time.Time) any {
