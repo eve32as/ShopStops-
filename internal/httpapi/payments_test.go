@@ -34,6 +34,14 @@ type fakePaymentRepository struct {
 	refund             RefundRecord
 	refundErr          error
 	refundRecord       RefundRecord
+	adminCheckouts     []AdminCheckoutRecord
+	adminCheckoutErr   error
+	adminSearch        struct {
+		checkoutID   string
+		status       string
+		disputeState string
+		limit        int
+	}
 	billingEvent       StripePaymentEvent
 	billingPayload     json.RawMessage
 	billingEventErr    error
@@ -44,6 +52,14 @@ type fakePaymentRepository struct {
 	reversals          []TransferReversal
 	reversalIDs        []string
 	reversalErr        error
+}
+
+func (f *fakePaymentRepository) SearchAdminCheckouts(
+	_ context.Context, checkoutID, status, disputeStatus string, limit int,
+) ([]AdminCheckoutRecord, error) {
+	f.adminSearch.checkoutID, f.adminSearch.status = checkoutID, status
+	f.adminSearch.disputeState, f.adminSearch.limit = disputeStatus, limit
+	return f.adminCheckouts, f.adminCheckoutErr
 }
 
 func (f *fakePaymentRepository) CheckoutForPayment(
@@ -284,6 +300,73 @@ func paymentTestHandler(repo *fakePaymentRepository, gateway *fakePaymentGateway
 		repo, strings.Repeat("t", 32),
 		slog.New(slog.NewTextHandler(io.Discard, nil)), gateway, "webhook-secret",
 	)
+}
+
+func TestAdminCheckoutSearchRequiresAdminRoleAndUsesBoundedFilters(t *testing.T) {
+	repo := &fakePaymentRepository{adminCheckouts: []AdminCheckoutRecord{{
+		ID: "00000000-0000-0000-0000-000000000001", Status: "paid",
+		PaymentStatus: "succeeded",
+	}}}
+	handler := paymentTestHandler(repo, &fakePaymentGateway{})
+
+	request := httptest.NewRequest(http.MethodGet, "/admin/checkouts", nil)
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "admin-1")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusForbidden)
+	}
+	if repo.adminSearch.limit != 0 {
+		t.Fatal("repository was called without an admin role")
+	}
+
+	request = httptest.NewRequest(http.MethodGet,
+		"/admin/checkouts?checkoutId=00000000-0000-0000-0000-000000000001&status=paid&disputeStatus=needs_response&limit=20",
+		nil)
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "admin-1")
+	request.Header.Set("X-ShopStops-Actor-Role", "admin")
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", recorder.Code, recorder.Body.String())
+	}
+	if repo.adminSearch.checkoutID != "00000000-0000-0000-0000-000000000001" ||
+		repo.adminSearch.status != "paid" ||
+		repo.adminSearch.disputeState != "needs_response" ||
+		repo.adminSearch.limit != 20 {
+		t.Fatalf("repository filters = %+v", repo.adminSearch)
+	}
+	if !strings.Contains(recorder.Body.String(), `"paymentStatus":"succeeded"`) {
+		t.Fatalf("payment status missing from response: %s", recorder.Body.String())
+	}
+}
+
+func TestAdminCheckoutSearchRejectsInvalidFilters(t *testing.T) {
+	for _, path := range []string{
+		"/admin/checkouts?checkoutId=not-a-uuid",
+		"/admin/checkouts?status=unknown",
+		"/admin/checkouts?disputeStatus=unknown",
+		"/admin/checkouts?limit=101",
+	} {
+		t.Run(path, func(t *testing.T) {
+			repo := &fakePaymentRepository{}
+			request := httptest.NewRequest(http.MethodGet, path, nil)
+			request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+			request.Header.Set("X-ShopStops-Actor", "admin-1")
+			request.Header.Set("X-ShopStops-Actor-Role", "admin")
+			recorder := httptest.NewRecorder()
+			paymentTestHandler(repo, &fakePaymentGateway{}).ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d; body=%s",
+					recorder.Code, http.StatusBadRequest, recorder.Body.String())
+			}
+			if repo.adminSearch.limit != 0 {
+				t.Fatal("repository was called with an invalid filter")
+			}
+		})
+	}
 }
 
 func TestCreateCheckoutPaymentUsesPersistedInvoiceAndIdempotency(t *testing.T) {
