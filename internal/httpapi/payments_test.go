@@ -42,16 +42,16 @@ type fakePaymentRepository struct {
 		disputeState string
 		limit        int
 	}
-	billingEvent       StripePaymentEvent
-	billingPayload     json.RawMessage
-	billingEventErr    error
-	refundEvent        StripePaymentEvent
-	refundEventErr     error
-	disputeEvent       StripePaymentEvent
-	disputeEventErr    error
-	reversals          []TransferReversal
-	reversalIDs        []string
-	reversalErr        error
+	billingEvent    StripePaymentEvent
+	billingPayload  json.RawMessage
+	billingEventErr error
+	refundEvent     StripePaymentEvent
+	refundEventErr  error
+	disputeEvent    StripePaymentEvent
+	disputeEventErr error
+	reversals       []TransferReversal
+	reversalIDs     []string
+	reversalErr     error
 }
 
 func (f *fakePaymentRepository) SearchAdminCheckouts(
