@@ -95,8 +95,8 @@ type DeliveryZoneOperations struct {
 }
 
 type AdminOperationsSnapshot struct {
-	GeneratedAt          time.Time              `json:"generatedAt"`
-	PendingOutboxEvents  int64                  `json:"pendingOutboxEvents"`
+	GeneratedAt            time.Time                `json:"generatedAt"`
+	PendingOutboxEvents    int64                    `json:"pendingOutboxEvents"`
 	DeliveryZoneOperations []DeliveryZoneOperations `json:"deliveryZones"`
 }
 

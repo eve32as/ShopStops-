@@ -1437,7 +1437,10 @@ func (p *PostgresRepository) AdminDeliveryZones(ctx context.Context) ([]Delivery
 func (p *PostgresRepository) AdminOperationsSnapshot(
 	ctx context.Context,
 ) (AdminOperationsSnapshot, error) {
-	tx, err := p.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	tx, err := p.db.BeginTx(ctx, &sql.TxOptions{
+		Isolation: sql.LevelRepeatableRead,
+		ReadOnly:  true,
+	})
 	if err != nil {
 		return AdminOperationsSnapshot{}, err
 	}
