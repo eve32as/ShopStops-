@@ -12,7 +12,8 @@ Apply `db/migrations/001_delivery_foundation.sql`,
 `db/migrations/004_billing_refunds_disputes.sql`, and
 `db/migrations/005_driver_stop_progress.sql`, and
 `db/migrations/006_catalog_orders.sql`, and
-`db/migrations/007_merchant_catalog_management.sql` on PostgreSQL 14+ with PostGIS 3.x
+`db/migrations/007_merchant_catalog_management.sql`, and
+`db/migrations/008_merchant_order_fulfillment.sql` on PostgreSQL 14+ with PostGIS 3.x
 installed. The migrations create dispatch, unified-basket, catalog, and order
 models; spatial queries; transaction-safe order/merchant limits; immutable
 multi-stop routes; payment/tax ledger records; and outbox events.
@@ -102,9 +103,10 @@ returned to the authenticated customer.
 Starter clients are in `apps/mobile` (Expo iOS/Android) and `apps/admin` (Vite
 web). The mobile client provides nearby-store discovery, checkout/payment,
 assigned-route viewing and opt-in foreground/background GPS sharing, and
-merchant subscription setup. Background tracking stores the gateway session in
-OS secure storage only while tracking is active and clears it when tracking
-stops. The admin client provides the existing full-refund operation. Both
+merchant order fulfillment and subscription setup. Background tracking stores
+the gateway session in OS secure storage only while tracking is active and
+clears it when tracking stops. The admin client provides the existing
+full-refund operation. Both
 expect an identity-aware public gateway to validate user session tokens and
 inject backend actor/role headers. Neither client may receive the backend
 Stripe secret or internal API token.

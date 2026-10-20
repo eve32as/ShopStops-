@@ -191,6 +191,70 @@ paths:
           description: Merchant not found
         '409':
           description: Idempotency key conflicts with a different create request
+  /merchant/orders:
+    get:
+      operationId: getMerchantOrders
+      summary: List paid orders for the authenticated merchant
+      description: Returns order items and delivery windows for the merchant's own stores; customer identity and drop-off coordinates are not exposed.
+      responses:
+        '200':
+          description: Paid merchant orders awaiting fulfillment or ready for dispatch
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MerchantOrder'
+        '403':
+          description: Merchant role required
+        '404':
+          description: Merchant not found
+  /merchant/orders/{orderId}:
+    patch:
+      operationId: updateMerchantOrderState
+      summary: Accept or mark a paid merchant order ready
+      description: Only the owning merchant may advance an order from placed to preparing and then to ready. Repeating the current state is idempotent.
+      parameters:
+        - in: path
+          name: orderId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [state]
+              properties:
+                state:
+                  type: string
+                  enum: [preparing, ready]
+      responses:
+        '200':
+          description: Order state updated
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, status]
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                  status:
+                    type: string
+                    enum: [preparing, ready]
+        '400':
+          description: Invalid order ID or requested state
+        '403':
+          description: Merchant role required
+        '404':
+          description: Paid order not found for merchant
+        '409':
+          description: Order state transition is not allowed
   /merchant/catalog/{itemId}:
     patch:
       operationId: updateMerchantCatalogItem
@@ -639,6 +703,39 @@ components:
               format: uuid
             available:
               type: boolean
+    MerchantOrder:
+      type: object
+      required: [id, storeLocationId, storeName, status, deliveryWindowStart, deliveryWindowEnd, items]
+      properties:
+        id:
+          type: string
+          format: uuid
+        storeLocationId:
+          type: string
+          format: uuid
+        storeName:
+          type: string
+        status:
+          type: string
+          enum: [placed, preparing, ready]
+        deliveryWindowStart:
+          type: string
+          format: date-time
+        deliveryWindowEnd:
+          type: string
+          format: date-time
+        items:
+          type: array
+          items:
+            type: object
+            required: [name, quantity, unitPriceCents]
+            properties:
+              name:
+                type: string
+              quantity:
+                type: integer
+              unitPriceCents:
+                type: integer
     CreateMerchantCatalogItem:
       type: object
       additionalProperties: false

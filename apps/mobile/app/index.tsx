@@ -44,6 +44,15 @@ type MerchantStoreLocation = {
   id: string;
   name: string;
 };
+type MerchantOrder = {
+  id: string;
+  storeLocationId: string;
+  storeName: string;
+  status: "placed" | "preparing" | "ready";
+  deliveryWindowStart: string;
+  deliveryWindowEnd: string;
+  items: { name: string; quantity: number; unitPriceCents: number }[];
+};
 type MerchantCatalogDraft = {
   name: string;
   description: string;
@@ -124,6 +133,7 @@ export default function HomeScreen() {
   const [route, setRoute] = useState<Route | null>(null);
   const [subscription, setSubscription] = useState<Subscription | null>(null);
   const [merchantStoreLocations, setMerchantStoreLocations] = useState<MerchantStoreLocation[]>([]);
+  const [merchantOrders, setMerchantOrders] = useState<MerchantOrder[]>([]);
   const [merchantCatalog, setMerchantCatalog] = useState<MerchantCatalogItem[]>([]);
   const [merchantCatalogDrafts, setMerchantCatalogDrafts] = useState<Record<string, MerchantCatalogDraft>>({});
   const [merchantStoreLocation, setMerchantStoreLocation] = useState("");
@@ -197,6 +207,7 @@ export default function HomeScreen() {
       setRoute(null);
       setSubscription(null);
       setMerchantCatalog([]);
+      setMerchantOrders([]);
       setMerchantCatalogDrafts({});
       setMerchantStoreLocations([]);
       setMerchantStoreLocation("");
@@ -462,6 +473,28 @@ export default function HomeScreen() {
   async function refreshSubscription() {
     const result = await run(() => apiRequest<Subscription>(settings, "merchant/subscription"));
     if (result) setSubscription(result);
+  }
+
+  async function loadMerchantOrders() {
+    const orders = await run(() =>
+      apiRequest<MerchantOrder[]>(settings, "merchant/orders"),
+    );
+    if (orders) setMerchantOrders(orders);
+  }
+
+  async function updateMerchantOrderState(order: MerchantOrder, state: "preparing" | "ready") {
+    const updated = await run(() =>
+      apiRequest<{ id: string; status: MerchantOrder["status"] }>(
+        settings,
+        `merchant/orders/${encodeURIComponent(order.id)}`,
+        { method: "PATCH", body: JSON.stringify({ state }) },
+      ),
+    );
+    if (updated) {
+      setMerchantOrders((current) =>
+        current.map((item) => item.id === updated.id ? { ...item, status: updated.status } : item),
+      );
+    }
   }
 
   async function setupMerchantPaymentMethod() {
@@ -980,6 +1013,50 @@ export default function HomeScreen() {
 
         {role === "Merchant" ? (
           <>
+            <View style={styles.card}>
+              <Text style={styles.sectionEyebrow}>MERCHANT / FULFILLMENT</Text>
+              <Text style={styles.sectionTitle}>Prepare paid orders.</Text>
+              <Text style={styles.helpText}>
+                Review orders for your stores, accept them for preparation, and mark them ready for dispatch.
+              </Text>
+              <ActionButton
+                disabled={busy}
+                label="Refresh paid orders"
+                onPress={() => void loadMerchantOrders()}
+                secondary
+              />
+              {merchantOrders.length === 0 ? (
+                <Text style={styles.tinyNote}>No paid orders awaiting fulfillment.</Text>
+              ) : null}
+              {merchantOrders.map((order) => (
+                <View key={order.id} style={styles.merchantItem}>
+                  <Text style={styles.resultTitle}>{order.storeName} · {order.status.replaceAll("_", " ")}</Text>
+                  <Text style={styles.resultSub}>Order {order.id}</Text>
+                  <Text style={styles.resultSub}>
+                    Delivery window · {new Date(order.deliveryWindowStart).toLocaleString()} – {new Date(order.deliveryWindowEnd).toLocaleTimeString()}
+                  </Text>
+                  {order.items.map((item, index) => (
+                    <Text key={`${order.id}-${index}`} style={styles.resultSub}>
+                      {item.quantity} × {item.name} · ${(item.unitPriceCents / 100).toFixed(2)}
+                    </Text>
+                  ))}
+                  {order.status === "placed" ? (
+                    <ActionButton
+                      disabled={busy}
+                      label="Accept & start preparing"
+                      onPress={() => void updateMerchantOrderState(order, "preparing")}
+                    />
+                  ) : null}
+                  {order.status === "preparing" ? (
+                    <ActionButton
+                      disabled={busy}
+                      label="Mark ready for dispatch"
+                      onPress={() => void updateMerchantOrderState(order, "ready")}
+                    />
+                  ) : null}
+                </View>
+              ))}
+            </View>
             <View style={styles.card}>
               <Text style={styles.sectionEyebrow}>MERCHANT / CATALOG</Text>
               <Text style={styles.sectionTitle}>Manage your store items.</Text>

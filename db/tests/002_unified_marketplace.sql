@@ -683,3 +683,65 @@ BEGIN
     END IF;
 END;
 $$;
+
+INSERT INTO unified_checkouts (
+    idempotency_key, customer_ref, anchor_store_location_id, delivery_zone_id,
+    dropoff_location, delivery_window_start, delivery_window_end
+)
+VALUES (
+    'merchant-fulfillment-test', 'merchant-fulfillment-customer',
+    :'anchor_store_id', :'zone_id',
+    ST_SetSRID(ST_MakePoint(-76.98, 38.91), 4326)::geography,
+    now(), now() + interval '2 hours'
+)
+RETURNING id AS fulfillment_checkout_id \gset
+
+INSERT INTO orders (
+    customer_ref, store_location_id, delivery_zone_id, dropoff_location,
+    delivery_window_start, delivery_window_end, volume_liters, state
+)
+VALUES (
+    'merchant-fulfillment-customer', :'anchor_store_id', :'zone_id',
+    ST_SetSRID(ST_MakePoint(-76.98, 38.91), 4326)::geography,
+    now(), now() + interval '2 hours', 1, 'placed'
+)
+RETURNING id AS fulfillment_order_id \gset
+
+INSERT INTO checkout_orders (checkout_id, order_id)
+VALUES (:'fulfillment_checkout_id', :'fulfillment_order_id');
+UPDATE unified_checkouts SET status = 'paid'
+WHERE id = :'fulfillment_checkout_id';
+SELECT set_config('shopstops.test_fulfillment_order_id', :'fulfillment_order_id', true);
+SELECT set_config('shopstops.test_fulfillment_merchant_id', :'anchor_merchant_id', true);
+
+DO $$
+DECLARE
+    v_order_id uuid := current_setting('shopstops.test_fulfillment_order_id')::uuid;
+    v_merchant_id uuid := current_setting('shopstops.test_fulfillment_merchant_id')::uuid;
+    v_state text;
+    v_message text;
+BEGIN
+    v_state := set_merchant_order_state(v_merchant_id, v_order_id, 'preparing');
+    IF v_state <> 'preparing'
+       OR (SELECT state FROM orders WHERE id = v_order_id) <> 'preparing' THEN
+        RAISE EXCEPTION 'merchant could not accept paid order for preparation';
+    END IF;
+    v_state := set_merchant_order_state(v_merchant_id, v_order_id, 'ready');
+    IF v_state <> 'ready'
+       OR (SELECT ready_at FROM orders WHERE id = v_order_id) IS NULL THEN
+        RAISE EXCEPTION 'merchant could not mark order ready';
+    END IF;
+    IF set_merchant_order_state(v_merchant_id, v_order_id, 'ready') <> 'ready' THEN
+        RAISE EXCEPTION 'repeating current order state was not idempotent';
+    END IF;
+    BEGIN
+        PERFORM set_merchant_order_state(v_merchant_id, v_order_id, 'preparing');
+        RAISE EXCEPTION 'backwards merchant order transition unexpectedly succeeded';
+    EXCEPTION WHEN OTHERS THEN
+        GET STACKED DIAGNOSTICS v_message = MESSAGE_TEXT;
+        IF v_message NOT LIKE '%invalid merchant order state transition%' THEN
+            RAISE;
+        END IF;
+    END;
+END;
+$$;

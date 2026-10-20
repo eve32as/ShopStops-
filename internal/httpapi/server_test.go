@@ -13,51 +13,57 @@ import (
 )
 
 type fakeRepository struct {
-	pingErr              error
-	nearby               []NearbyMerchant
-	nearbyErr            error
-	nearbyStoreID        string
-	nearbyRadius         int
-	catalog              []CatalogItem
-	catalogErr           error
-	catalogStoreID       string
-	merchantLocations    []MerchantStoreLocation
-	merchantLocationsErr error
-	merchantCatalog      []MerchantCatalogItem
-	merchantCatalogErr   error
-	merchantCatalogID    string
-	merchantItem         MerchantCatalogItem
-	merchantItemErr      error
-	merchantRequest      merchantCatalogItemRequest
-	merchantUpdate       merchantCatalogItemUpdateRequest
-	merchantKey          string
-	merchantFingerprint  string
-	order                customerOrderResponse
-	orderErr             error
-	orderReq             customerOrderRequest
-	orderCustomer        string
-	orderKey             string
-	orderFingerprint     string
-	bundle               bundleResponse
-	bundleErr            error
-	bundleRequest        bundleRequest
-	bundleKey            string
-	route                routeResponse
-	routeErr             error
-	routeID              string
-	driverRef            string
-	locationID           int64
-	locationErr          error
-	location             driverLocationRequest
-	stopEvent            driverStopEventResponse
-	stopEventErr         error
-	stopID               string
-	stopEventReq         driverStopEventRequest
-	checkout             checkoutResponse
-	checkoutErr          error
-	checkoutReq          checkoutRequest
-	customerRef          string
-	checkoutKey          string
+	pingErr               error
+	nearby                []NearbyMerchant
+	nearbyErr             error
+	nearbyStoreID         string
+	nearbyRadius          int
+	catalog               []CatalogItem
+	catalogErr            error
+	catalogStoreID        string
+	merchantLocations     []MerchantStoreLocation
+	merchantLocationsErr  error
+	merchantCatalog       []MerchantCatalogItem
+	merchantCatalogErr    error
+	merchantCatalogID     string
+	merchantItem          MerchantCatalogItem
+	merchantItemErr       error
+	merchantOrders        []MerchantOrder
+	merchantOrdersErr     error
+	merchantOrderState    string
+	merchantOrderErr      error
+	merchantOrderID       string
+	merchantOrderNewState string
+	merchantRequest       merchantCatalogItemRequest
+	merchantUpdate        merchantCatalogItemUpdateRequest
+	merchantKey           string
+	merchantFingerprint   string
+	order                 customerOrderResponse
+	orderErr              error
+	orderReq              customerOrderRequest
+	orderCustomer         string
+	orderKey              string
+	orderFingerprint      string
+	bundle                bundleResponse
+	bundleErr             error
+	bundleRequest         bundleRequest
+	bundleKey             string
+	route                 routeResponse
+	routeErr              error
+	routeID               string
+	driverRef             string
+	locationID            int64
+	locationErr           error
+	location              driverLocationRequest
+	stopEvent             driverStopEventResponse
+	stopEventErr          error
+	stopID                string
+	stopEventReq          driverStopEventRequest
+	checkout              checkoutResponse
+	checkoutErr           error
+	checkoutReq           checkoutRequest
+	customerRef           string
+	checkoutKey           string
 }
 
 func (f *fakeRepository) PingContext(context.Context) error { return f.pingErr }
@@ -84,6 +90,19 @@ func (f *fakeRepository) MerchantCatalog(
 ) ([]MerchantCatalogItem, error) {
 	f.merchantCatalogID = merchantID
 	return f.merchantCatalog, f.merchantCatalogErr
+}
+func (f *fakeRepository) MerchantOrders(
+	_ context.Context, merchantID string,
+) ([]MerchantOrder, error) {
+	f.merchantCatalogID = merchantID
+	return f.merchantOrders, f.merchantOrdersErr
+}
+func (f *fakeRepository) UpdateMerchantOrderState(
+	_ context.Context, merchantID, orderID, state string,
+) (string, error) {
+	f.merchantCatalogID, f.merchantOrderID, f.merchantOrderNewState =
+		merchantID, orderID, state
+	return f.merchantOrderState, f.merchantOrderErr
 }
 func (f *fakeRepository) CreateMerchantCatalogItem(
 	_ context.Context, merchantID string, request merchantCatalogItemRequest,
@@ -235,6 +254,94 @@ func TestMerchantCanListOwnedStoreLocations(t *testing.T) {
 		!strings.Contains(recorder.Body.String(), `"name":"Main Street"`) {
 		t.Fatalf("status=%d merchant=%s body=%s",
 			recorder.Code, repo.merchantCatalogID, recorder.Body.String())
+	}
+}
+
+func TestMerchantCanListPaidOrders(t *testing.T) {
+	merchantID := "00000000-0000-0000-0000-000000000001"
+	repo := &fakeRepository{merchantOrders: []MerchantOrder{{
+		ID:              "00000000-0000-0000-0000-000000000002",
+		StoreLocationID: "00000000-0000-0000-0000-000000000003",
+		StoreName:       "Main Street", Status: "placed",
+		Items: []MerchantOrderItem{{Name: "Soup", Quantity: 2, UnitPriceCents: 650}},
+	}}}
+	request := httptest.NewRequest(http.MethodGet, "/merchant/orders", nil)
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", merchantID)
+	request.Header.Set("X-ShopStops-Actor-Role", "merchant")
+	recorder := httptest.NewRecorder()
+	New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
+		ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || repo.merchantCatalogID != merchantID ||
+		!strings.Contains(recorder.Body.String(), `"name":"Soup"`) {
+		t.Fatalf("status=%d merchant=%s body=%s",
+			recorder.Code, repo.merchantCatalogID, recorder.Body.String())
+	}
+}
+
+func TestMerchantCanAdvancePaidOrderState(t *testing.T) {
+	merchantID := "00000000-0000-0000-0000-000000000001"
+	orderID := "00000000-0000-0000-0000-000000000002"
+	repo := &fakeRepository{merchantOrderState: "preparing"}
+	request := httptest.NewRequest(http.MethodPatch, "/merchant/orders/"+orderID,
+		strings.NewReader(`{"state":"preparing"}`))
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", merchantID)
+	request.Header.Set("X-ShopStops-Actor-Role", "merchant")
+	recorder := httptest.NewRecorder()
+	New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
+		ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || repo.merchantCatalogID != merchantID ||
+		repo.merchantOrderID != orderID || repo.merchantOrderNewState != "preparing" ||
+		!strings.Contains(recorder.Body.String(), `"status":"preparing"`) {
+		t.Fatalf("status=%d merchant=%s order=%s state=%s body=%s",
+			recorder.Code, repo.merchantCatalogID, repo.merchantOrderID,
+			repo.merchantOrderNewState, recorder.Body.String())
+	}
+}
+
+func TestMerchantOrderStateMapsInvalidTransitionToConflict(t *testing.T) {
+	repo := &fakeRepository{merchantOrderErr: ErrConflict}
+	request := httptest.NewRequest(http.MethodPatch,
+		"/merchant/orders/00000000-0000-0000-0000-000000000002",
+		strings.NewReader(`{"state":"ready"}`))
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "00000000-0000-0000-0000-000000000001")
+	request.Header.Set("X-ShopStops-Actor-Role", "merchant")
+	recorder := httptest.NewRecorder()
+	New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
+		ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("status=%d, want %d body=%s", recorder.Code, http.StatusConflict, recorder.Body.String())
+	}
+}
+
+func TestMerchantOrderStateRejectsInvalidState(t *testing.T) {
+	repo := &fakeRepository{}
+	request := httptest.NewRequest(http.MethodPatch,
+		"/merchant/orders/00000000-0000-0000-0000-000000000002",
+		strings.NewReader(`{"state":"delivered"}`))
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "00000000-0000-0000-0000-000000000001")
+	request.Header.Set("X-ShopStops-Actor-Role", "merchant")
+	recorder := httptest.NewRecorder()
+	New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
+		ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest || repo.merchantOrderID != "" {
+		t.Fatalf("status=%d updated order=%s", recorder.Code, repo.merchantOrderID)
+	}
+}
+
+func TestMerchantOrderEndpointsRequireMerchantRole(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/merchant/orders", nil)
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "00000000-0000-0000-0000-000000000001")
+	request.Header.Set("X-ShopStops-Actor-Role", "customer")
+	recorder := httptest.NewRecorder()
+	New(&fakeRepository{}, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
+		ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("status=%d, want %d", recorder.Code, http.StatusForbidden)
 	}
 }
 

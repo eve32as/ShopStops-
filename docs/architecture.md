@@ -125,6 +125,14 @@ creation and ownership-checked item updates. Item availability controls
 customer catalog visibility; changing an item does not rewrite existing order
 snapshots.
 
+Migration `008_merchant_order_fulfillment.sql` lets authenticated merchants
+advance paid orders through `placed` → `preparing` → `ready`. The update function
+locks the order, verifies store ownership and paid checkout status, sets
+`ready_at` when applicable, and treats repeating the current state as
+idempotent. The mobile merchant screen lists only the merchant's paid orders
+and exposes these transitions; customer identity and drop-off coordinates are
+not returned by the order-list endpoint.
+
 `nearby_subscribed_merchants(anchor_store, 500)` uses PostGIS geography distance
 to suggest active grocery/retail storefronts within 500 meters. It excludes
 inactive stores, expired/unpaid subscriptions, and subscriptions with a payment
@@ -229,8 +237,8 @@ the internal token to applications. The gateway must strip any incoming
 route handlers trust this internal header for assignment checks.
 
 The OpenAPI contract describes subscription, refund, and webhook flows. The
-`apps/mobile` Expo client targets iOS and Android and exposes current shopper,
-driver, and merchant billing API flows; `apps/admin` provides the current
+`apps/mobile` Expo client targets iOS and Android and exposes shopper, driver,
+merchant order fulfillment and billing API flows; `apps/admin` provides the current
 full-refund operation. Both expect an external trusted identity gateway and
 Stripe publishable key configuration. The clients are API-backed MVP
 foundations, not complete consumer, driver, merchant, or admin products.

@@ -41,6 +41,8 @@ type Repository interface {
 	CatalogItems(context.Context, string) ([]CatalogItem, error)
 	MerchantStoreLocations(context.Context, string) ([]MerchantStoreLocation, error)
 	MerchantCatalog(context.Context, string) ([]MerchantCatalogItem, error)
+	MerchantOrders(context.Context, string) ([]MerchantOrder, error)
+	UpdateMerchantOrderState(context.Context, string, string, string) (string, error)
 	CreateMerchantCatalogItem(
 		context.Context, string, merchantCatalogItemRequest, string, string,
 	) (MerchantCatalogItem, error)
@@ -88,6 +90,31 @@ type MerchantCatalogItem struct {
 type MerchantStoreLocation struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
+}
+
+type MerchantOrderItem struct {
+	Name           string `json:"name"`
+	Quantity       int    `json:"quantity"`
+	UnitPriceCents int    `json:"unitPriceCents"`
+}
+
+type MerchantOrder struct {
+	ID                  string              `json:"id"`
+	StoreLocationID     string              `json:"storeLocationId"`
+	StoreName           string              `json:"storeName"`
+	Status              string              `json:"status"`
+	DeliveryWindowStart time.Time           `json:"deliveryWindowStart"`
+	DeliveryWindowEnd   time.Time           `json:"deliveryWindowEnd"`
+	Items               []MerchantOrderItem `json:"items"`
+}
+
+type merchantOrderStateRequest struct {
+	State string `json:"state"`
+}
+
+type merchantOrderStateResponse struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
 }
 
 type merchantCatalogItemRequest struct {
@@ -249,6 +276,8 @@ func (s *Server) handler() http.Handler {
 	mux.Handle("POST /orders", s.authorized(http.HandlerFunc(s.createCustomerOrder)))
 	mux.Handle("GET /merchant/store-locations", s.authorized(http.HandlerFunc(s.merchantStoreLocations)))
 	mux.Handle("GET /merchant/catalog", s.authorized(http.HandlerFunc(s.merchantCatalog)))
+	mux.Handle("GET /merchant/orders", s.authorized(http.HandlerFunc(s.merchantOrders)))
+	mux.Handle("PATCH /merchant/orders/{orderId}", s.authorized(http.HandlerFunc(s.updateMerchantOrderState)))
 	mux.Handle("POST /merchant/catalog", s.authorized(http.HandlerFunc(s.createMerchantCatalogItem)))
 	mux.Handle("PATCH /merchant/catalog/{itemId}", s.authorized(http.HandlerFunc(s.updateMerchantCatalogItem)))
 	mux.Handle("POST /dispatch/bundles", s.authorized(http.HandlerFunc(s.createBundle)))
@@ -358,6 +387,65 @@ func (s *Server) merchantCatalog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Server) merchantOrders(w http.ResponseWriter, r *http.Request) {
+	merchantID, ok := s.authorizedActorRole(w, r, "merchant")
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	orders, err := s.repo.MerchantOrders(ctx, merchantID)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		writeError(w, http.StatusNotFound, "merchant not found")
+	case err != nil:
+		s.databaseError(w, err)
+	default:
+		writeJSON(w, http.StatusOK, orders)
+	}
+}
+
+func (s *Server) updateMerchantOrderState(w http.ResponseWriter, r *http.Request) {
+	merchantID, ok := s.authorizedActorRole(w, r, "merchant")
+	if !ok {
+		return
+	}
+	orderID := r.PathValue("orderId")
+	if !isUUID(orderID) {
+		writeError(w, http.StatusBadRequest, "invalid order ID")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 8*1024)
+	var request merchantOrderStateRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "request body must contain one JSON object")
+		return
+	}
+	if request.State != "preparing" && request.State != "ready" {
+		writeError(w, http.StatusBadRequest, "state must be preparing or ready")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	state, err := s.repo.UpdateMerchantOrderState(ctx, merchantID, orderID, request.State)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		writeError(w, http.StatusNotFound, "paid order not found for merchant")
+	case errors.Is(err, ErrConflict):
+		writeError(w, http.StatusConflict, "order state transition is not allowed")
+	case err != nil:
+		s.databaseError(w, err)
+	default:
+		writeJSON(w, http.StatusOK, merchantOrderStateResponse{ID: orderID, Status: state})
+	}
 }
 
 func (s *Server) merchantStoreLocations(w http.ResponseWriter, r *http.Request) {
@@ -910,6 +998,87 @@ func (p *PostgresRepository) MerchantCatalog(
 		return nil, err
 	}
 	return items, nil
+}
+
+func (p *PostgresRepository) MerchantOrders(
+	ctx context.Context, merchantID string,
+) ([]MerchantOrder, error) {
+	var exists bool
+	if err := p.db.QueryRowContext(ctx, `
+		SELECT EXISTS (SELECT 1 FROM merchants WHERE id = $1 AND active)`,
+		merchantID,
+	).Scan(&exists); err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, ErrNotFound
+	}
+	rows, err := p.db.QueryContext(ctx, `
+		SELECT o.id, s.id, s.name, o.state,
+		       o.delivery_window_start, o.delivery_window_end,
+		       COALESCE(
+		           jsonb_agg(jsonb_build_object(
+		               'name', li.item_name,
+		               'quantity', li.quantity,
+		               'unitPriceCents', li.unit_price_cents
+		           ) ORDER BY li.id) FILTER (WHERE li.id IS NOT NULL),
+		           '[]'::jsonb
+		       )
+		FROM orders o
+		JOIN store_locations s ON s.id = o.store_location_id
+		JOIN checkout_orders co ON co.order_id = o.id
+		JOIN unified_checkouts c ON c.id = co.checkout_id AND c.status = 'paid'
+		LEFT JOIN order_line_items li ON li.order_id = o.id
+		WHERE s.merchant_id = $1
+		  AND o.state IN ('placed', 'preparing', 'ready')
+		GROUP BY o.id, s.id, s.name
+		ORDER BY o.created_at, o.id
+		LIMIT 100`, merchantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	orders := make([]MerchantOrder, 0)
+	for rows.Next() {
+		var order MerchantOrder
+		var itemsJSON []byte
+		if err := rows.Scan(
+			&order.ID, &order.StoreLocationID, &order.StoreName, &order.Status,
+			&order.DeliveryWindowStart, &order.DeliveryWindowEnd, &itemsJSON,
+		); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(itemsJSON, &order.Items); err != nil {
+			return nil, err
+		}
+		orders = append(orders, order)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return orders, nil
+}
+
+func (p *PostgresRepository) UpdateMerchantOrderState(
+	ctx context.Context, merchantID, orderID, state string,
+) (string, error) {
+	var updatedState string
+	err := p.db.QueryRowContext(ctx, `
+		SELECT set_merchant_order_state($1, $2, $3)`,
+		merchantID, orderID, state,
+	).Scan(&updatedState)
+	if err != nil {
+		if isCatalogNotFound(err) {
+			return "", ErrNotFound
+		}
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "P0001" {
+			return "", ErrConflict
+		}
+		return "", err
+	}
+	return updatedState, nil
 }
 
 func (p *PostgresRepository) MerchantStoreLocations(
