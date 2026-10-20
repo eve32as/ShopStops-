@@ -289,6 +289,7 @@ func (s *Server) handler() http.Handler {
 	mux.Handle("GET /merchant/subscription", s.authorized(http.HandlerFunc(s.getMerchantSubscription)))
 	mux.Handle("POST /merchant/subscription/setup-intent", s.authorized(http.HandlerFunc(s.createMerchantSetupIntent)))
 	mux.Handle("POST /merchant/subscription", s.authorized(http.HandlerFunc(s.createMerchantSubscription)))
+	mux.Handle("GET /admin/checkouts", s.authorized(http.HandlerFunc(s.searchAdminCheckouts)))
 	mux.Handle("POST /admin/checkouts/{checkoutId}/refund", s.authorized(http.HandlerFunc(s.refundCheckout)))
 	mux.HandleFunc("POST /webhooks/stripe", s.stripeWebhook)
 	return mux
