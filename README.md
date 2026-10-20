@@ -110,8 +110,8 @@ Stripe secret or internal API token.
 Run the mobile client from `apps/mobile` with `npm ci`, then use
 `npx expo run:ios` or `npx expo run:android` to create a development build.
 Run the admin client from `apps/admin` with `npm ci` and `npm run dev`. Configure
-`EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY` for mobile PaymentSheet flows. Checkout
-requires existing order IDs because catalog/order-creation endpoints and an
-identity gateway are not implemented here. Driver progress actions, background
-GPS, full merchant operations, admin transaction/dispute search, and real-time
-updates also remain follow-on work.
+`EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY` for mobile PaymentSheet flows. The shopper
+client can browse visible store catalogs and create orders before checkout; it
+still requires an identity-aware gateway and a valid customer delivery
+location. Background GPS, full merchant operations, admin transaction/dispute
+search, and real-time updates also remain follow-on work.

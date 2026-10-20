@@ -51,6 +51,10 @@ type CreateOrderBody = {
   deliveryWindowEnd: string;
   items: { catalogItemId: string; quantity: number }[];
 };
+type DeliveryWindow = {
+  start: string;
+  end: string;
+};
 type Checkout = {
   id: string;
   status: string;
@@ -87,6 +91,14 @@ type Subscription = {
 
 const stripeKeyConfigured = Boolean(process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY);
 
+function createDeliveryWindow(): DeliveryWindow {
+  const start = new Date(Date.now() + 15 * 60 * 1000);
+  return {
+    start: start.toISOString(),
+    end: new Date(start.getTime() + 2 * 60 * 60 * 1000).toISOString(),
+  };
+}
+
 export default function HomeScreen() {
   const [role, setRole] = useState<Role>("Shopper");
   const [connectionOpen, setConnectionOpen] = useState(true);
@@ -119,13 +131,8 @@ export default function HomeScreen() {
   const [longitude, setLongitude] = useState("");
   const [routeId, setRouteId] = useState("");
   const [tracking, setTracking] = useState(false);
-  const [deliveryWindow] = useState(() => {
-    const start = new Date(Date.now() + 15 * 60 * 1000);
-    return {
-      start: start.toISOString(),
-      end: new Date(start.getTime() + 2 * 60 * 60 * 1000).toISOString(),
-    };
-  });
+  const [deliveryWindow, setDeliveryWindow] = useState<DeliveryWindow>(() => createDeliveryWindow());
+  const basketWindow = useRef<DeliveryWindow | null>(null);
   const orderAttempt = useRef<{ key: string; fingerprint: string; body: CreateOrderBody } | null>(null);
   const merchantCatalogAttempt = useRef<{
     key: string;
@@ -183,6 +190,8 @@ export default function HomeScreen() {
       endTracking();
       checkoutAttempt.current = null;
       orderAttempt.current = null;
+      basketWindow.current = null;
+      setDeliveryWindow(createDeliveryWindow());
       setNearby([]);
       setCatalog([]);
       setCatalogStoreID("");
@@ -271,11 +280,14 @@ export default function HomeScreen() {
       setMessage("Choose catalog items and enter valid delivery coordinates.");
       return;
     }
+    const window = basketWindow.current ?? createDeliveryWindow();
+    basketWindow.current = window;
+    setDeliveryWindow(window);
     const body: CreateOrderBody = {
       storeLocationId: catalogStoreID.trim(),
       dropoff: { latitude: lat, longitude: lon },
-      deliveryWindowStart: deliveryWindow.start,
-      deliveryWindowEnd: deliveryWindow.end,
+      deliveryWindowStart: window.start,
+      deliveryWindowEnd: window.end,
       items,
     };
     const fingerprint = JSON.stringify(body);
@@ -318,14 +330,17 @@ export default function HomeScreen() {
       return;
     }
     if (!checkoutAttempt.current) {
+      const window = basketWindow.current ?? createDeliveryWindow();
+      basketWindow.current = window;
+      setDeliveryWindow(window);
       checkoutAttempt.current = {
         key: idempotencyKey(),
         body: {
           anchorStoreLocationId: anchorStore.trim(),
           orderIds: ids,
           dropoff: { latitude: lat, longitude: lon },
-          deliveryWindowStart: deliveryWindow.start,
-          deliveryWindowEnd: deliveryWindow.end,
+          deliveryWindowStart: window.start,
+          deliveryWindowEnd: window.end,
         },
       };
     }
@@ -341,6 +356,17 @@ export default function HomeScreen() {
       checkoutAttempt.current = null;
       setCheckout(result);
     }
+  }
+
+  function startNewBasket() {
+    orderAttempt.current = null;
+    checkoutAttempt.current = null;
+    basketWindow.current = null;
+    setDeliveryWindow(createDeliveryWindow());
+    setOrderIds("");
+    setCheckout(null);
+    setQuantities({});
+    setMessage("Started a new basket.");
   }
 
   async function payCheckout() {
@@ -848,6 +874,11 @@ export default function HomeScreen() {
               <Text style={styles.helpText}>
                 Create one order from each store catalog you want to include, then create one unified checkout.
               </Text>
+              <Text style={styles.tinyNote}>
+                Delivery window · {new Date(deliveryWindow.start).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
+                {" – "}
+                {new Date(deliveryWindow.end).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
+              </Text>
               <Field
                 editable={!checkout}
                 label="Order IDs (comma separated)"
@@ -892,6 +923,14 @@ export default function HomeScreen() {
                   />
                   <Text style={styles.tinyNote}>Checkout ID · {checkout.id}</Text>
                 </View>
+              ) : null}
+              {basketWindow.current || orderIds.trim() || checkout ? (
+                <ActionButton
+                  disabled={busy}
+                  label="Start a new basket"
+                  onPress={startNewBasket}
+                  secondary
+                />
               ) : null}
             </View>
           </>
