@@ -76,6 +76,49 @@ internal API bearer token. `/v1/healthz` and the Stripe-signature-verified
 termination and firewall the API so only the gateway and trusted operations
 systems can reach it. The gateway validates externally issued JWTs; it does not
 provide a sign-in UI or issue tokens. Never distribute the internal token.
+
+## Local staging stack
+
+The Compose stack builds the API and gateway, starts PostgreSQL/PostGIS, applies
+the numbered SQL migrations when creating a **new** database volume, and keeps
+the API and database off host-published ports. Only the gateway is published,
+bound to `127.0.0.1:8081`; put a TLS-terminating reverse proxy on the same host
+in front of it before allowing remote clients.
+
+```sh
+cp .env.example .env
+chmod 600 .env
+openssl rand -hex 32  # use the output for DB_PASSWORD
+openssl rand -hex 32  # use a different output for SHOPSTOPS_INTERNAL_API_TOKEN
+# Edit .env with both generated values and your HTTPS OIDC issuer/audience.
+docker compose up --build -d
+docker compose ps
+```
+
+The example issuer is a placeholder. The gateway must be able to reach the real
+OIDC discovery/JWKS endpoints at startup. Keep `.env` private; Compose passes
+these settings as container environment variables, so use the deployment
+platform's secret manager for a shared or hosted staging environment. Stripe
+settings are optional, but the secret key and webhook secret must be set
+together. The database volume persists across restarts. Initialization scripts
+run only for a fresh volume; upgrades need an explicitly reviewed migration
+procedure and must not rely on re-running PostgreSQL's one-time init scripts.
+
+Run the smoke checks with an externally issued admin access token:
+
+```sh
+SHOPSTOPS_SMOKE_BASE_URL='https://staging.example.com' \
+SHOPSTOPS_SMOKE_ADMIN_TOKEN='<admin OIDC access token>' \
+bash scripts/staging-smoke.sh
+```
+
+Optionally set `SHOPSTOPS_SMOKE_CUSTOMER_TOKEN` to check role denial on the
+admin endpoint. To exercise the customer-owned event endpoint too, also set
+`SHOPSTOPS_SMOKE_ORDER_ID` to an order owned by that customer and optionally
+`SHOPSTOPS_SMOKE_LAST_EVENT_ID` to its saved cursor. For a local-only smoke test,
+use `http://127.0.0.1:8081` as the base URL. The script does not create data or
+perform writes. Inspect startup with `docker compose logs -f db api gateway`.
+
 Delivery/service fee configuration is in integer cents and defaults to zero if
 unset. The checkout endpoint builds the merchant item lines from each order's
 `item_subtotal_cents` snapshot and applies the D.C. surcharge from the configured

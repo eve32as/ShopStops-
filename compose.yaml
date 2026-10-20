@@ -1,0 +1,80 @@
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_DB: ${DB_NAME:?Set DB_NAME in .env}
+      POSTGRES_USER: ${DB_USER:?Set DB_USER in .env}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+    volumes:
+      - shopstops-data:/var/lib/postgresql/data
+      - ./db/migrations:/docker-entrypoint-initdb.d:ro
+    networks:
+      - data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      args:
+        APP: shopstops-api
+    environment:
+      HTTP_ADDR: ":8080"
+      DATABASE_URL: postgres://${DB_USER:?Set DB_USER in .env}:${DB_PASSWORD:?Set DB_PASSWORD in .env}@db:5432/${DB_NAME:?Set DB_NAME in .env}?sslmode=disable
+      SHOPSTOPS_INTERNAL_API_TOKEN: ${SHOPSTOPS_INTERNAL_API_TOKEN:?Set SHOPSTOPS_INTERNAL_API_TOKEN in .env}
+      SHOPSTOPS_DELIVERY_FEE_CENTS: ${SHOPSTOPS_DELIVERY_FEE_CENTS:-0}
+      SHOPSTOPS_SERVICE_FEE_CENTS: ${SHOPSTOPS_SERVICE_FEE_CENTS:-0}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      STRIPE_MERCHANT_MONTHLY_PRICE_ID: ${STRIPE_MERCHANT_MONTHLY_PRICE_ID:-}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - data
+      - app
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+
+  gateway:
+    build:
+      context: .
+      args:
+        APP: shopstops-gateway
+    environment:
+      HTTP_ADDR: ":8081"
+      SHOPSTOPS_API_URL: http://api:8080
+      SHOPSTOPS_INTERNAL_API_TOKEN: ${SHOPSTOPS_INTERNAL_API_TOKEN:?Set SHOPSTOPS_INTERNAL_API_TOKEN in .env}
+      SHOPSTOPS_OIDC_ISSUER: ${SHOPSTOPS_OIDC_ISSUER:?Set SHOPSTOPS_OIDC_ISSUER in .env}
+      SHOPSTOPS_OIDC_AUDIENCE: ${SHOPSTOPS_OIDC_AUDIENCE:?Set SHOPSTOPS_OIDC_AUDIENCE in .env}
+      SHOPSTOPS_OIDC_ROLE_CLAIM: ${SHOPSTOPS_OIDC_ROLE_CLAIM:-roles}
+      SHOPSTOPS_OIDC_ACTOR_CLAIM: ${SHOPSTOPS_OIDC_ACTOR_CLAIM:-sub}
+      SHOPSTOPS_GATEWAY_ALLOWED_ORIGINS: ${SHOPSTOPS_GATEWAY_ALLOWED_ORIGINS:-}
+    depends_on:
+      - api
+    networks:
+      - app
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    ports:
+      - "127.0.0.1:8081:8081"
+    restart: unless-stopped
+
+networks:
+  data:
+    internal: true
+  app:
+
+volumes:
+  shopstops-data:

@@ -26,8 +26,15 @@ turn-by-turn route optimizer.
 
 The product targets native iOS and Android customer/driver clients and a web
 admin client. Clients should use versioned HTTPS APIs (`/v1`) and never connect
-directly to the database. The repository includes a Go API and API-backed
-mobile/admin MVP clients; an external identity-aware gateway remains required.
+directly to the database. The repository includes a Go API, an OIDC identity
+gateway, and API-backed mobile/admin MVP clients; a real OIDC provider and
+TLS-terminating deployment edge remain required.
+
+The root Compose stack is a local staging scaffold: it publishes only the
+gateway on loopback, keeps PostgreSQL private, and initializes a fresh database
+volume from the ordered SQL files in `db/migrations`. It is not a substitute for
+managed secrets, TLS termination, backups, or a reviewed migration process for
+an existing database.
 
 Backend capabilities can be deployed independently as traffic and ownership
 needs emerge:
