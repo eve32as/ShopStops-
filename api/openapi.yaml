@@ -645,6 +645,54 @@ paths:
           description: Admin role required
         '503':
           description: Delivery-zone management is unavailable
+  /admin/operations:
+    get:
+      operationId: getAdminOperationsSnapshot
+      summary: Read the delivery operations snapshot
+      description: Admin-only, read-only point-in-time counts for ready orders, active bundles, open stops, and unpublished outbox events.
+      responses:
+        '200':
+          description: Current operational summary
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [generatedAt, pendingOutboxEvents, deliveryZones]
+                properties:
+                  generatedAt:
+                    type: string
+                    format: date-time
+                  pendingOutboxEvents:
+                    type: integer
+                    format: int64
+                  deliveryZones:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, name, readyOrderCount, oldestReadyAt, activeBundleCount, openStopCount]
+                      properties:
+                        id:
+                          type: string
+                          format: uuid
+                        name:
+                          type: string
+                        readyOrderCount:
+                          type: integer
+                          format: int64
+                        oldestReadyAt:
+                          type: string
+                          format: date-time
+                          nullable: true
+                        activeBundleCount:
+                          type: integer
+                          format: int64
+                        openStopCount:
+                          type: integer
+                          format: int64
+        '403':
+          description: Admin role required
+        '503':
+          description: Operations monitoring is unavailable
   /admin/delivery-zones/{zoneId}:
     patch:
       operationId: updateAdminDeliveryZone

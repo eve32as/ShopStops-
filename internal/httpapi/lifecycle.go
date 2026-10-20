@@ -85,6 +85,25 @@ type AdminDeliveryRepository interface {
 	UpdateAdminDispatchLimits(context.Context, string, dispatchLimitsRequest, string) (DeliveryZone, error)
 }
 
+type DeliveryZoneOperations struct {
+	ID                string     `json:"id"`
+	Name              string     `json:"name"`
+	ReadyOrderCount   int64      `json:"readyOrderCount"`
+	OldestReadyAt     *time.Time `json:"oldestReadyAt"`
+	ActiveBundleCount int64      `json:"activeBundleCount"`
+	OpenStopCount     int64      `json:"openStopCount"`
+}
+
+type AdminOperationsSnapshot struct {
+	GeneratedAt          time.Time              `json:"generatedAt"`
+	PendingOutboxEvents  int64                  `json:"pendingOutboxEvents"`
+	DeliveryZoneOperations []DeliveryZoneOperations `json:"deliveryZones"`
+}
+
+type AdminOperationsRepository interface {
+	AdminOperationsSnapshot(context.Context) (AdminOperationsSnapshot, error)
+}
+
 type dispatchLimitsRequest struct {
 	MaxOrders           *int `json:"maxOrders"`
 	PickupRadiusMeters  *int `json:"pickupRadiusMeters"`
@@ -519,6 +538,25 @@ func (s *Server) listAdminDeliveryZones(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"deliveryZones": zones})
+}
+
+func (s *Server) getAdminOperationsSnapshot(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.authorizedActorRole(w, r, "admin"); !ok {
+		return
+	}
+	repository, ok := s.repo.(AdminOperationsRepository)
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "operations monitoring is unavailable")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	snapshot, err := repository.AdminOperationsSnapshot(ctx)
+	if err != nil {
+		s.databaseError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, snapshot)
 }
 
 func (s *Server) updateAdminDeliveryZone(w http.ResponseWriter, r *http.Request) {

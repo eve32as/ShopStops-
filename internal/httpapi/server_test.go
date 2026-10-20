@@ -75,6 +75,8 @@ type fakeRepository struct {
 	eventLimit            int
 	deliveryZones         []DeliveryZone
 	deliveryZonesErr      error
+	operationsSnapshot    AdminOperationsSnapshot
+	operationsSnapshotErr error
 	updatedDeliveryZone   DeliveryZone
 	updateDeliveryZoneErr error
 	updatedDeliveryZoneID string
@@ -88,6 +90,9 @@ type fakeRepository struct {
 func (f *fakeRepository) PingContext(context.Context) error { return f.pingErr }
 func (f *fakeRepository) AdminDeliveryZones(context.Context) ([]DeliveryZone, error) {
 	return f.deliveryZones, f.deliveryZonesErr
+}
+func (f *fakeRepository) AdminOperationsSnapshot(context.Context) (AdminOperationsSnapshot, error) {
+	return f.operationsSnapshot, f.operationsSnapshotErr
 }
 func (f *fakeRepository) UpdateAdminDeliveryZone(
 	_ context.Context, zoneID string, enabled bool,
@@ -564,6 +569,42 @@ func TestAdminDeliveryZonesRequiresAdminAndListsZones(t *testing.T) {
 		!strings.Contains(recorder.Body.String(), `"name":"North"`) ||
 		!strings.Contains(recorder.Body.String(), `"enabled":true`) {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestAdminOperationsSnapshotRequiresAdmin(t *testing.T) {
+	repo := &fakeRepository{operationsSnapshot: AdminOperationsSnapshot{
+		PendingOutboxEvents: 4,
+		DeliveryZoneOperations: []DeliveryZoneOperations{{
+			ID: "00000000-0000-0000-0000-000000000001", Name: "North",
+			ReadyOrderCount: 2, ActiveBundleCount: 1, OpenStopCount: 3,
+		}},
+	}}
+	handler := New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	request := httptest.NewRequest(http.MethodGet, "/admin/operations", nil)
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "customer-1")
+	request.Header.Set("X-ShopStops-Actor-Role", "customer")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("non-admin status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/admin/operations", nil)
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "admin-1")
+	request.Header.Set("X-ShopStops-Actor-Role", "admin")
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	for _, expected := range []string{
+		`"pendingOutboxEvents":4`, `"name":"North"`, `"readyOrderCount":2`,
+		`"activeBundleCount":1`, `"openStopCount":3`,
+	} {
+		if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), expected) {
+			t.Fatalf("admin status=%d missing %s body=%s", recorder.Code, expected, recorder.Body.String())
+		}
 	}
 }
 

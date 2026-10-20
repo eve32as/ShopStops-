@@ -13,9 +13,9 @@ The initial workflows are:
 - **Admin:** configure delivery zones and dispatch limits, monitor orders and
   bundles, and recover cancelled or failed deliveries.
 
-Dispatch defaults are configurable per request: at most 3 orders, 2 km from the
-seed order's store, 2 km from its drop-off, and vehicle capacity expressed in
-liters. Eligible orders must be ready, share an enabled delivery zone, have
+Each delivery zone stores defaults of at most 3 orders, 2 km from the seed
+order's store, and 2 km from its drop-off; vehicle capacity is configured per
+dispatch run in liters. Eligible orders must be ready, share an enabled delivery zone, have
 overlapping delivery windows, and have both locations inside that zone.
 Proximity uses straight-line geography distance, not road distance or ETA.
 The initial queue uses nearest-next stop ordering while ensuring an order is
@@ -293,8 +293,10 @@ delivery windows, and all state transitions server-side. Keep payment data out
 of dispatch records. Do not expose exact customer addresses or contact details
 to unauthorized users.
 
-Monitor ready-order age, bundle size, dispatch latency, skipped/locked
-candidates, stop completion delays, outbox backlog, and cancellations. Retain
+The admin-only operations snapshot reports ready-order age, active bundle and
+open-stop counts per zone, and pending outbox backlog. Monitor dispatch latency,
+skipped/locked candidates, stop completion delays, and cancellations through
+additional operational telemetry. Retain
 an audit trail for admin changes and driver progress. Recovery flows should
 release or re-dispatch unpicked orders after cancellation; picked-up orders
 must be handled explicitly rather than silently returned to the ready pool.

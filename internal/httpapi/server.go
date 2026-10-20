@@ -308,6 +308,7 @@ func (s *Server) handler() http.Handler {
 	mux.Handle("POST /merchant/subscription", s.authorized(http.HandlerFunc(s.createMerchantSubscription)))
 	mux.Handle("GET /admin/checkouts", s.authorized(http.HandlerFunc(s.searchAdminCheckouts)))
 	mux.Handle("POST /admin/checkouts/{checkoutId}/refund", s.authorized(http.HandlerFunc(s.refundCheckout)))
+	mux.Handle("GET /admin/operations", s.authorized(http.HandlerFunc(s.getAdminOperationsSnapshot)))
 	mux.Handle("GET /admin/delivery-zones", s.authorized(http.HandlerFunc(s.listAdminDeliveryZones)))
 	mux.Handle("PATCH /admin/delivery-zones/{zoneId}", s.authorized(http.HandlerFunc(s.updateAdminDeliveryZone)))
 	mux.Handle("PATCH /admin/delivery-zones/{zoneId}/dispatch-limits", s.authorized(http.HandlerFunc(s.updateAdminDispatchLimits)))
@@ -1431,6 +1432,80 @@ func (p *PostgresRepository) AdminDeliveryZones(ctx context.Context) ([]Delivery
 		zones = append(zones, zone)
 	}
 	return zones, rows.Err()
+}
+
+func (p *PostgresRepository) AdminOperationsSnapshot(
+	ctx context.Context,
+) (AdminOperationsSnapshot, error) {
+	tx, err := p.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return AdminOperationsSnapshot{}, err
+	}
+	defer tx.Rollback()
+	snapshot := AdminOperationsSnapshot{
+		DeliveryZoneOperations: make([]DeliveryZoneOperations, 0),
+	}
+	if err := tx.QueryRowContext(ctx, `
+		SELECT now(), count(*)
+		FROM outbox_events
+		WHERE published_at IS NULL`,
+	).Scan(&snapshot.GeneratedAt, &snapshot.PendingOutboxEvents); err != nil {
+		return AdminOperationsSnapshot{}, err
+	}
+	rows, err := tx.QueryContext(ctx, `
+		WITH ready_metrics AS (
+		    SELECT delivery_zone_id, count(*) AS ready_order_count,
+		           min(ready_at) AS oldest_ready_at
+		    FROM orders
+		    WHERE state = 'ready'
+		    GROUP BY delivery_zone_id
+		), active_bundles AS (
+		    SELECT delivery_zone_id, count(*) AS active_bundle_count
+		    FROM delivery_bundles
+		    WHERE status IN ('active', 'in_progress')
+		    GROUP BY delivery_zone_id
+		), open_stops AS (
+		    SELECT b.delivery_zone_id, count(*) AS open_stop_count
+		    FROM delivery_stops s
+		    JOIN delivery_bundles b ON b.id = s.bundle_id
+		    WHERE b.status IN ('active', 'in_progress')
+		      AND s.status IN ('pending', 'arrived')
+		    GROUP BY b.delivery_zone_id
+		)
+		SELECT z.id, z.name,
+		       coalesce(r.ready_order_count, 0), r.oldest_ready_at,
+		       coalesce(b.active_bundle_count, 0),
+		       coalesce(s.open_stop_count, 0)
+		FROM delivery_zones z
+		LEFT JOIN ready_metrics r ON r.delivery_zone_id = z.id
+		LEFT JOIN active_bundles b ON b.delivery_zone_id = z.id
+		LEFT JOIN open_stops s ON s.delivery_zone_id = z.id
+		ORDER BY z.name, z.id`)
+	if err != nil {
+		return AdminOperationsSnapshot{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var zone DeliveryZoneOperations
+		var oldestReadyAt sql.NullTime
+		if err := rows.Scan(
+			&zone.ID, &zone.Name, &zone.ReadyOrderCount, &oldestReadyAt,
+			&zone.ActiveBundleCount, &zone.OpenStopCount,
+		); err != nil {
+			return AdminOperationsSnapshot{}, err
+		}
+		if oldestReadyAt.Valid {
+			zone.OldestReadyAt = &oldestReadyAt.Time
+		}
+		snapshot.DeliveryZoneOperations = append(snapshot.DeliveryZoneOperations, zone)
+	}
+	if err := rows.Err(); err != nil {
+		return AdminOperationsSnapshot{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return AdminOperationsSnapshot{}, err
+	}
+	return snapshot, nil
 }
 
 func (p *PostgresRepository) UpdateAdminDeliveryZone(

@@ -212,6 +212,8 @@ func TestRequiredRolesAreScopedByRoute(t *testing.T) {
 		{http.MethodPost, "/dispatch/bundles", "admin", true, true},
 		{http.MethodGet, "/admin/checkouts", "admin", true, true},
 		{http.MethodGet, "/admin/checkouts", "customer", true, false},
+		{http.MethodGet, "/admin/operations", "admin", true, true},
+		{http.MethodGet, "/admin/operations", "dispatch", true, false},
 		{http.MethodGet, "/admin/delivery-zones", "admin", true, true},
 		{http.MethodGet, "/admin/delivery-zones", "dispatch", true, false},
 		{http.MethodPatch, "/admin/delivery-zones/00000000-0000-0000-0000-000000000001", "admin", true, true},

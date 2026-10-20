@@ -11,6 +11,19 @@ type DeliveryZone = {
   dispatchLimitsUpdatedAt: string
 }
 
+type OperationsSnapshot = {
+  generatedAt: string
+  pendingOutboxEvents: number
+  deliveryZones: Array<{
+    id: string
+    name: string
+    readyOrderCount: number
+    oldestReadyAt: string | null
+    activeBundleCount: number
+    openStopCount: number
+  }>
+}
+
 type DispatchLimitDraft = {
   maxOrders: string
   pickupRadiusMeters: string
@@ -67,6 +80,7 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
   const [zones, setZones] = useState<DeliveryZone[]>([])
   const [zonesError, setZonesError] = useState('')
   const [zonesLoading, setZonesLoading] = useState(false)
+  const [operations, setOperations] = useState<OperationsSnapshot | null>(null)
   const [updatingZone, setUpdatingZone] = useState('')
   const [savingLimitsZone, setSavingLimitsZone] = useState('')
   const [zoneDrafts, setZoneDrafts] = useState<Record<string, DispatchLimitDraft>>({})
@@ -84,25 +98,33 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
       return
     }
     let url: URL
+    let operationsUrl: URL
     try {
       url = apiUrl(gatewayUrl, '/admin/delivery-zones')
+      operationsUrl = apiUrl(gatewayUrl, '/admin/operations')
     } catch (error) {
       setZonesError(error instanceof Error ? error.message : 'Enter a valid gateway URL.')
       return
     }
     setZonesLoading(true)
     try {
-      const response = await fetch(url, {
-        redirect: 'error',
-        headers: {
-          Accept: 'application/json',
-          Authorization: ['Bear', 'er'].join('') + ' ' + sessionToken.trim(),
-        },
-      })
+      const headers = {
+        Accept: 'application/json',
+        Authorization: ['Bear', 'er'].join('') + ' ' + sessionToken.trim(),
+      }
+      const [response, operationsResponse] = await Promise.all([
+        fetch(url, { redirect: 'error', headers }),
+        fetch(operationsUrl, { redirect: 'error', headers }),
+      ])
       if (!response.ok) throw await requestError(response)
-      const result = await response.json()
+      if (!operationsResponse.ok) throw await requestError(operationsResponse)
+      const [result, operationsResult] = await Promise.all([
+        response.json(),
+        operationsResponse.json() as Promise<OperationsSnapshot>,
+      ])
       const loadedZones = Array.isArray(result.deliveryZones) ? result.deliveryZones as DeliveryZone[] : []
       setZones(loadedZones)
+      setOperations(operationsResult)
       setZoneDrafts(Object.fromEntries(loadedZones.map((zone) => [zone.id, {
         maxOrders: String(zone.maxOrders),
         pickupRadiusMeters: String(zone.pickupRadiusMeters),
@@ -264,6 +286,30 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
         </div>
         <span className="lock-mark" aria-label="Admin only">⌑</span>
       </div>
+      {operations ? (
+        <section className="operations-snapshot" aria-label="Delivery operations snapshot">
+          <div className="operations-snapshot-heading">
+            <strong>Operational snapshot</strong>
+            <span>As of {new Date(operations.generatedAt).toLocaleTimeString()}</span>
+          </div>
+          <div className="operations-metrics">
+            <div><span>Pending outbox</span><strong>{operations.pendingOutboxEvents}</strong></div>
+            {operations.deliveryZones.map((zone) => (
+              <div className="operations-zone" key={zone.id}>
+                <span>{zone.name}</span>
+                <strong>{zone.readyOrderCount} ready · {zone.activeBundleCount} active bundles</strong>
+                <small>
+                  {zone.oldestReadyAt
+                    ? `Oldest ready ${Math.max(0, Math.floor(
+                      (Date.parse(operations.generatedAt) - Date.parse(zone.oldestReadyAt)) / 60000,
+                    ))} min · ${zone.openStopCount} open stops`
+                    : `No ready orders · ${zone.openStopCount} open stops`}
+                </small>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
       <div className="delivery-controls-grid">
         <section>
           <div className="delivery-section-heading">

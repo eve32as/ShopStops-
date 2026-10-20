@@ -164,6 +164,10 @@ managed; disabling a zone does not cancel existing orders or bundles. These
 controls require an admin OIDC role through the trusted gateway.
 Existing zones receive the former dispatch defaults (3 orders and 2,000 meters)
 when migration 009 is applied.
+The same control room's `GET /admin/operations` snapshot reports each zone's
+ready-order count and oldest-ready age, active bundles, open stops, and the
+pending outbox event count. Refresh it alongside the zone settings during
+operations; it is a point-in-time summary, not a streaming alert system.
 
 Retries resume transfers/reversals not recorded after Stripe accepted them. Pin
 the webhook endpoint's Stripe API version to the version supported by the
