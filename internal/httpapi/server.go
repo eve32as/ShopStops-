@@ -310,6 +310,7 @@ func (s *Server) handler() http.Handler {
 	mux.Handle("POST /admin/checkouts/{checkoutId}/refund", s.authorized(http.HandlerFunc(s.refundCheckout)))
 	mux.Handle("GET /admin/delivery-zones", s.authorized(http.HandlerFunc(s.listAdminDeliveryZones)))
 	mux.Handle("PATCH /admin/delivery-zones/{zoneId}", s.authorized(http.HandlerFunc(s.updateAdminDeliveryZone)))
+	mux.Handle("PATCH /admin/delivery-zones/{zoneId}/dispatch-limits", s.authorized(http.HandlerFunc(s.updateAdminDispatchLimits)))
 	mux.HandleFunc("POST /webhooks/stripe", s.stripeWebhook)
 	return mux
 }
@@ -675,18 +676,15 @@ func (s *Server) createBundle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !isUUID(request.SeedOrderID) || request.CapacityLiters <= 0 ||
-		request.CapacityLiters > 10000 || optionalInt(request.MaxOrders, 3) < 1 ||
-		optionalInt(request.MaxOrders, 3) > 100 ||
-		optionalInt(request.PickupRadiusMeters, 2000) > 100000 ||
-		optionalInt(request.DropoffRadiusMeters, 2000) > 100000 ||
-		optionalInt(request.PickupRadiusMeters, 2000) < 0 ||
-		optionalInt(request.DropoffRadiusMeters, 2000) < 0 {
+		request.CapacityLiters > 10000 ||
+		(request.MaxOrders != nil && (*request.MaxOrders < 1 || *request.MaxOrders > 100)) ||
+		(request.PickupRadiusMeters != nil &&
+			(*request.PickupRadiusMeters < 0 || *request.PickupRadiusMeters > 100000)) ||
+		(request.DropoffRadiusMeters != nil &&
+			(*request.DropoffRadiusMeters < 0 || *request.DropoffRadiusMeters > 100000)) {
 		writeError(w, http.StatusBadRequest, "invalid bundle parameters")
 		return
 	}
-	request.MaxOrders = intPointer(optionalInt(request.MaxOrders, 3))
-	request.PickupRadiusMeters = intPointer(optionalInt(request.PickupRadiusMeters, 2000))
-	request.DropoffRadiusMeters = intPointer(optionalInt(request.DropoffRadiusMeters, 2000))
 	idempotencyKey := r.Header.Get("Idempotency-Key")
 	if len(idempotencyKey) == 0 || len(idempotencyKey) > 200 || strings.TrimSpace(idempotencyKey) != idempotencyKey {
 		writeError(w, http.StatusBadRequest, "valid Idempotency-Key header is required")
@@ -1337,6 +1335,30 @@ func (p *PostgresRepository) CreateBundle(
 		return bundleResponse{}, err
 	}
 	defer tx.Rollback()
+	var zoneMaxOrders, zonePickupRadius, zoneDropoffRadius int
+	err = tx.QueryRowContext(ctx, `
+		SELECT z.dispatch_max_orders, z.dispatch_pickup_radius_m,
+		       z.dispatch_dropoff_radius_m
+		FROM orders o
+		JOIN delivery_zones z ON z.id = o.delivery_zone_id
+		WHERE o.id = $1
+		FOR SHARE OF z`, request.SeedOrderID,
+	).Scan(&zoneMaxOrders, &zonePickupRadius, &zoneDropoffRadius)
+	if errors.Is(err, sql.ErrNoRows) {
+		return bundleResponse{}, ErrIneligible
+	}
+	if err != nil {
+		return bundleResponse{}, err
+	}
+	if request.MaxOrders == nil {
+		request.MaxOrders = intPointer(zoneMaxOrders)
+	}
+	if request.PickupRadiusMeters == nil {
+		request.PickupRadiusMeters = intPointer(zonePickupRadius)
+	}
+	if request.DropoffRadiusMeters == nil {
+		request.DropoffRadiusMeters = intPointer(zoneDropoffRadius)
+	}
 	var bundleID string
 	err = tx.QueryRowContext(ctx, `
 		SELECT create_proximity_bundle($1, $2, $3, $4, $5, $6)`,
@@ -1387,7 +1409,9 @@ func (p *PostgresRepository) CreateBundle(
 
 func (p *PostgresRepository) AdminDeliveryZones(ctx context.Context) ([]DeliveryZone, error) {
 	rows, err := p.db.QueryContext(ctx, `
-		SELECT id, name, enabled
+		SELECT id, name, enabled, dispatch_max_orders,
+		       dispatch_pickup_radius_m, dispatch_dropoff_radius_m,
+		       dispatch_limits_updated_by, dispatch_limits_updated_at
 		FROM delivery_zones
 		ORDER BY name, id`)
 	if err != nil {
@@ -1397,7 +1421,11 @@ func (p *PostgresRepository) AdminDeliveryZones(ctx context.Context) ([]Delivery
 	zones := make([]DeliveryZone, 0)
 	for rows.Next() {
 		var zone DeliveryZone
-		if err := rows.Scan(&zone.ID, &zone.Name, &zone.Enabled); err != nil {
+		if err := rows.Scan(
+			&zone.ID, &zone.Name, &zone.Enabled, &zone.MaxOrders,
+			&zone.PickupRadiusMeters, &zone.DropoffRadiusMeters,
+			&zone.DispatchLimitsUpdatedBy, &zone.DispatchLimitsUpdatedAt,
+		); err != nil {
 			return nil, err
 		}
 		zones = append(zones, zone)
@@ -1412,13 +1440,74 @@ func (p *PostgresRepository) UpdateAdminDeliveryZone(
 	err := p.db.QueryRowContext(ctx, `
 		UPDATE delivery_zones
 		SET enabled = $2
-		WHERE id = $1
-		RETURNING id, name, enabled`, zoneID, enabled,
-	).Scan(&zone.ID, &zone.Name, &zone.Enabled)
+		WHERE id = $1::uuid
+		RETURNING id, name, enabled, dispatch_max_orders,
+		          dispatch_pickup_radius_m, dispatch_dropoff_radius_m,
+		          dispatch_limits_updated_by, dispatch_limits_updated_at`,
+		zoneID, enabled,
+	).Scan(
+		&zone.ID, &zone.Name, &zone.Enabled, &zone.MaxOrders,
+		&zone.PickupRadiusMeters, &zone.DropoffRadiusMeters,
+		&zone.DispatchLimitsUpdatedBy, &zone.DispatchLimitsUpdatedAt,
+	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return DeliveryZone{}, ErrNotFound
 	}
 	return zone, err
+}
+
+func (p *PostgresRepository) UpdateAdminDispatchLimits(
+	ctx context.Context, zoneID string, request dispatchLimitsRequest, adminActor string,
+) (DeliveryZone, error) {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return DeliveryZone{}, err
+	}
+	defer tx.Rollback()
+	var zone DeliveryZone
+	err = tx.QueryRowContext(ctx, `
+		UPDATE delivery_zones
+		SET dispatch_max_orders = $2,
+		    dispatch_pickup_radius_m = $3,
+		    dispatch_dropoff_radius_m = $4,
+		    dispatch_limits_updated_by = $5,
+		    dispatch_limits_updated_at = now()
+		WHERE id = $1::uuid
+		RETURNING id, name, enabled, dispatch_max_orders,
+		          dispatch_pickup_radius_m, dispatch_dropoff_radius_m,
+		          dispatch_limits_updated_by, dispatch_limits_updated_at`,
+		zoneID, *request.MaxOrders, *request.PickupRadiusMeters,
+		*request.DropoffRadiusMeters, adminActor,
+	).Scan(
+		&zone.ID, &zone.Name, &zone.Enabled, &zone.MaxOrders,
+		&zone.PickupRadiusMeters, &zone.DropoffRadiusMeters,
+		&zone.DispatchLimitsUpdatedBy, &zone.DispatchLimitsUpdatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return DeliveryZone{}, ErrNotFound
+	}
+	if err != nil {
+		return DeliveryZone{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload)
+		VALUES ('delivery_zone', $1::uuid, 'delivery.zone.dispatch_limits.updated',
+		        jsonb_build_object(
+		            'deliveryZoneId', $1::text,
+		            'maxOrders', $2::integer,
+		            'pickupRadiusMeters', $3::integer,
+		            'dropoffRadiusMeters', $4::integer,
+		            'updatedBy', $5::text
+		        ))`,
+		zoneID, zone.MaxOrders, zone.PickupRadiusMeters,
+		zone.DropoffRadiusMeters, adminActor,
+	); err != nil {
+		return DeliveryZone{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return DeliveryZone{}, err
+	}
+	return zone, nil
 }
 
 func (p *PostgresRepository) CreateCheckout(

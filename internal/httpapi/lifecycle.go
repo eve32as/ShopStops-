@@ -69,14 +69,26 @@ type AdminCheckoutRepository interface {
 }
 
 type DeliveryZone struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	Enabled bool   `json:"enabled"`
+	ID                      string    `json:"id"`
+	Name                    string    `json:"name"`
+	Enabled                 bool      `json:"enabled"`
+	MaxOrders               int       `json:"maxOrders"`
+	PickupRadiusMeters      int       `json:"pickupRadiusMeters"`
+	DropoffRadiusMeters     int       `json:"dropoffRadiusMeters"`
+	DispatchLimitsUpdatedBy string    `json:"dispatchLimitsUpdatedBy"`
+	DispatchLimitsUpdatedAt time.Time `json:"dispatchLimitsUpdatedAt"`
 }
 
 type AdminDeliveryRepository interface {
 	AdminDeliveryZones(context.Context) ([]DeliveryZone, error)
 	UpdateAdminDeliveryZone(context.Context, string, bool) (DeliveryZone, error)
+	UpdateAdminDispatchLimits(context.Context, string, dispatchLimitsRequest, string) (DeliveryZone, error)
+}
+
+type dispatchLimitsRequest struct {
+	MaxOrders           *int `json:"maxOrders"`
+	PickupRadiusMeters  *int `json:"pickupRadiusMeters"`
+	DropoffRadiusMeters *int `json:"dropoffRadiusMeters"`
 }
 
 type LifecycleRepository interface {
@@ -540,6 +552,55 @@ func (s *Server) updateAdminDeliveryZone(w http.ResponseWriter, r *http.Request)
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	zone, err := repository.UpdateAdminDeliveryZone(ctx, zoneID, *request.Enabled)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "delivery zone not found")
+		return
+	}
+	if err != nil {
+		s.databaseError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, zone)
+}
+
+func (s *Server) updateAdminDispatchLimits(w http.ResponseWriter, r *http.Request) {
+	adminActor, ok := s.authorizedActorRole(w, r, "admin")
+	if !ok {
+		return
+	}
+	zoneID := r.PathValue("zoneId")
+	if !isUUID(zoneID) {
+		writeError(w, http.StatusBadRequest, "invalid delivery zone ID")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 8*1024)
+	var request dispatchLimitsRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid dispatch limits")
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "request body must contain one JSON object")
+		return
+	}
+	if request.MaxOrders == nil || request.PickupRadiusMeters == nil ||
+		request.DropoffRadiusMeters == nil ||
+		*request.MaxOrders < 1 || *request.MaxOrders > 100 ||
+		*request.PickupRadiusMeters < 0 || *request.PickupRadiusMeters > 100000 ||
+		*request.DropoffRadiusMeters < 0 || *request.DropoffRadiusMeters > 100000 {
+		writeError(w, http.StatusBadRequest, "dispatch limits are outside allowed ranges")
+		return
+	}
+	repository, ok := s.repo.(AdminDeliveryRepository)
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "delivery-zone management is unavailable")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	zone, err := repository.UpdateAdminDispatchLimits(ctx, zoneID, request, adminActor)
 	if errors.Is(err, ErrNotFound) {
 		writeError(w, http.StatusNotFound, "delivery zone not found")
 		return

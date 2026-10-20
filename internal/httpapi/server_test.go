@@ -79,6 +79,10 @@ type fakeRepository struct {
 	updateDeliveryZoneErr error
 	updatedDeliveryZoneID string
 	updatedZoneEnabled    bool
+	updatedDispatchLimits dispatchLimitsRequest
+	updatedDispatchActor  string
+	updateLimitsZone      DeliveryZone
+	updateLimitsErr       error
 }
 
 func (f *fakeRepository) PingContext(context.Context) error { return f.pingErr }
@@ -90,6 +94,13 @@ func (f *fakeRepository) UpdateAdminDeliveryZone(
 ) (DeliveryZone, error) {
 	f.updatedDeliveryZoneID, f.updatedZoneEnabled = zoneID, enabled
 	return f.updatedDeliveryZone, f.updateDeliveryZoneErr
+}
+func (f *fakeRepository) UpdateAdminDispatchLimits(
+	_ context.Context, zoneID string, request dispatchLimitsRequest, adminActor string,
+) (DeliveryZone, error) {
+	f.updatedDeliveryZoneID = zoneID
+	f.updatedDispatchLimits, f.updatedDispatchActor = request, adminActor
+	return f.updateLimitsZone, f.updateLimitsErr
 }
 func (f *fakeRepository) CustomerOwnsOrder(
 	_ context.Context, orderID, customerRef string,
@@ -475,7 +486,7 @@ func TestNearbyRejectsInvalidPathBeforeDatabaseAccess(t *testing.T) {
 	}
 }
 
-func TestCreateBundleAppliesDefaultsAndUsesIdempotencyKey(t *testing.T) {
+func TestCreateBundleLeavesUnspecifiedLimitsForZoneDefaults(t *testing.T) {
 	repo := &fakeRepository{bundle: bundleResponse{
 		ID: "bundle-id", Status: "active", Stops: []bundleStop{},
 	}}
@@ -489,9 +500,9 @@ func TestCreateBundleAppliesDefaultsAndUsesIdempotencyKey(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
 	}
-	if repo.bundleKey != "client-request-1" || *repo.bundleRequest.MaxOrders != 3 ||
-		*repo.bundleRequest.PickupRadiusMeters != 2000 ||
-		*repo.bundleRequest.DropoffRadiusMeters != 2000 {
+	if repo.bundleKey != "client-request-1" || repo.bundleRequest.MaxOrders != nil ||
+		repo.bundleRequest.PickupRadiusMeters != nil ||
+		repo.bundleRequest.DropoffRadiusMeters != nil {
 		t.Fatalf("request defaults or idempotency key incorrect: %+v key=%q",
 			repo.bundleRequest, repo.bundleKey)
 	}
@@ -573,6 +584,71 @@ func TestAdminCanUpdateDeliveryZoneEnabledState(t *testing.T) {
 		repo.updatedZoneEnabled || !strings.Contains(recorder.Body.String(), `"enabled":false`) {
 		t.Fatalf("status=%d updatedID=%s enabled=%t body=%s",
 			recorder.Code, repo.updatedDeliveryZoneID, repo.updatedZoneEnabled, recorder.Body.String())
+	}
+}
+
+func TestAdminCanUpdateDeliveryZoneDispatchLimits(t *testing.T) {
+	zoneID := "00000000-0000-0000-0000-000000000001"
+	repo := &fakeRepository{updateLimitsZone: DeliveryZone{
+		ID: zoneID, Name: "North", Enabled: true, MaxOrders: 5,
+		PickupRadiusMeters: 1500, DropoffRadiusMeters: 2500,
+		DispatchLimitsUpdatedBy: "admin-1",
+	}}
+	request := httptest.NewRequest(http.MethodPatch,
+		"/admin/delivery-zones/"+zoneID+"/dispatch-limits",
+		strings.NewReader(`{"maxOrders":5,"pickupRadiusMeters":1500,"dropoffRadiusMeters":2500}`))
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "admin-1")
+	request.Header.Set("X-ShopStops-Actor-Role", "admin")
+	recorder := httptest.NewRecorder()
+	New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
+		ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK ||
+		*repo.updatedDispatchLimits.MaxOrders != 5 ||
+		*repo.updatedDispatchLimits.PickupRadiusMeters != 1500 ||
+		*repo.updatedDispatchLimits.DropoffRadiusMeters != 2500 ||
+		repo.updatedDispatchActor != "admin-1" ||
+		!strings.Contains(recorder.Body.String(), `"maxOrders":5`) {
+		t.Fatalf("status=%d limits=%+v actor=%s body=%s",
+			recorder.Code, repo.updatedDispatchLimits, repo.updatedDispatchActor, recorder.Body.String())
+	}
+}
+
+func TestAdminDispatchLimitUpdateRejectsUnauthorizedAndInvalidValues(t *testing.T) {
+	zoneID := "00000000-0000-0000-0000-000000000001"
+	requestBody := `{"maxOrders":5,"pickupRadiusMeters":1500,"dropoffRadiusMeters":2500}`
+	repo := &fakeRepository{}
+	request := httptest.NewRequest(http.MethodPatch,
+		"/admin/delivery-zones/"+zoneID+"/dispatch-limits", strings.NewReader(requestBody))
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "dispatcher-1")
+	request.Header.Set("X-ShopStops-Actor-Role", "dispatch")
+	recorder := httptest.NewRecorder()
+	New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
+		ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusForbidden || repo.updatedDeliveryZoneID != "" {
+		t.Fatalf("unauthorized update status=%d zoneID=%q", recorder.Code, repo.updatedDeliveryZoneID)
+	}
+
+	for _, body := range []string{
+		`{}`,
+		`{"maxOrders":0,"pickupRadiusMeters":0,"dropoffRadiusMeters":0}`,
+		`{"maxOrders":3,"pickupRadiusMeters":100001,"dropoffRadiusMeters":0}`,
+		`{"maxOrders":3,"pickupRadiusMeters":0,"dropoffRadiusMeters":-1}`,
+		`{"maxOrders":3,"pickupRadiusMeters":0,"dropoffRadiusMeters":0,"unknown":true}`,
+	} {
+		request := httptest.NewRequest(http.MethodPatch,
+			"/admin/delivery-zones/"+zoneID+"/dispatch-limits", strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+		request.Header.Set("X-ShopStops-Actor", "admin-1")
+		request.Header.Set("X-ShopStops-Actor-Role", "admin")
+		recorder := httptest.NewRecorder()
+		repo := &fakeRepository{}
+		New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
+			ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusBadRequest || repo.updatedDeliveryZoneID != "" {
+			t.Fatalf("body=%s status=%d repositoryID=%s", body, recorder.Code, repo.updatedDeliveryZoneID)
+		}
 	}
 }
 

@@ -215,6 +215,8 @@ func TestRequiredRolesAreScopedByRoute(t *testing.T) {
 		{http.MethodGet, "/admin/delivery-zones", "admin", true, true},
 		{http.MethodGet, "/admin/delivery-zones", "dispatch", true, false},
 		{http.MethodPatch, "/admin/delivery-zones/00000000-0000-0000-0000-000000000001", "admin", true, true},
+		{http.MethodPatch, "/admin/delivery-zones/00000000-0000-0000-0000-000000000001/dispatch-limits", "admin", true, true},
+		{http.MethodPatch, "/admin/delivery-zones/00000000-0000-0000-0000-000000000001/dispatch-limits", "dispatch", true, false},
 		{http.MethodDelete, "/merchant/catalog", "merchant", false, false},
 		{http.MethodGet, "/v1/unknown", "admin", false, false},
 	}

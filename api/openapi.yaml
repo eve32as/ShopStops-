@@ -627,7 +627,7 @@ paths:
     get:
       operationId: listAdminDeliveryZones
       summary: List delivery zones for operations
-      description: Admin-only. Returns each zone's enabled state and name; zone boundaries are not exposed.
+      description: Admin-only. Returns each zone's enabled state and saved dispatch defaults; zone boundaries are not exposed.
       responses:
         '200':
           description: Delivery zones ordered by name
@@ -683,6 +683,54 @@ paths:
           description: Delivery zone not found
         '503':
           description: Delivery-zone management is unavailable
+  /admin/delivery-zones/{zoneId}/dispatch-limits:
+    patch:
+      operationId: updateAdminDeliveryZoneDispatchLimits
+      summary: Save dispatch defaults for a delivery zone
+      description: Admin-only. Values are used when a dispatch request omits per-run order and radius limits. Vehicle capacity remains per run.
+      parameters:
+        - in: path
+          name: zoneId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [maxOrders, pickupRadiusMeters, dropoffRadiusMeters]
+              properties:
+                maxOrders:
+                  type: integer
+                  minimum: 1
+                  maximum: 100
+                pickupRadiusMeters:
+                  type: integer
+                  minimum: 0
+                  maximum: 100000
+                dropoffRadiusMeters:
+                  type: integer
+                  minimum: 0
+                  maximum: 100000
+      responses:
+        '200':
+          description: Saved dispatch limits with audit metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryZone'
+        '400':
+          description: Invalid zone ID or dispatch limit
+        '403':
+          description: Admin role required
+        '404':
+          description: Delivery zone not found
+        '503':
+          description: Delivery-zone management is unavailable
   /webhooks/stripe:
     post:
       operationId: receiveStripeWebhook
@@ -706,7 +754,7 @@ paths:
     post:
       operationId: createDeliveryBundle
       summary: Bundle eligible nearby orders and create an ordered stop queue
-      description: Requires a dispatch or admin role. The request is idempotent.
+      description: Requires a dispatch or admin role. Omitted maxOrders and radii use the saved defaults for the seed order's zone; capacity remains per run. The request is idempotent.
       parameters:
         - in: header
           name: Idempotency-Key
@@ -840,7 +888,7 @@ components:
           maximum: 500
     DeliveryZone:
       type: object
-      required: [id, name, enabled]
+      required: [id, name, enabled, maxOrders, pickupRadiusMeters, dropoffRadiusMeters, dispatchLimitsUpdatedBy, dispatchLimitsUpdatedAt]
       properties:
         id:
           type: string
@@ -849,6 +897,23 @@ components:
           type: string
         enabled:
           type: boolean
+        maxOrders:
+          type: integer
+          minimum: 1
+          maximum: 100
+        pickupRadiusMeters:
+          type: integer
+          minimum: 0
+          maximum: 100000
+        dropoffRadiusMeters:
+          type: integer
+          minimum: 0
+          maximum: 100000
+        dispatchLimitsUpdatedBy:
+          type: string
+        dispatchLimitsUpdatedAt:
+          type: string
+          format: date-time
     CatalogItem:
       type: object
       required: [id, name, description, unitPriceCents, volumeLiters]
@@ -1100,15 +1165,18 @@ components:
         maxOrders:
           type: integer
           minimum: 1
-          default: 3
+          maximum: 100
+          description: Omit to use the saved defaults for the seed order's delivery zone.
         pickupRadiusMeters:
           type: integer
           minimum: 0
-          default: 2000
+          maximum: 100000
+          description: Omit to use the saved defaults for the seed order's delivery zone.
         dropoffRadiusMeters:
           type: integer
           minimum: 0
-          default: 2000
+          maximum: 100000
+          description: Omit to use the saved defaults for the seed order's delivery zone.
     Bundle:
       type: object
       required: [id, status, stops]

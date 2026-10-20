@@ -4,6 +4,17 @@ type DeliveryZone = {
   id: string
   name: string
   enabled: boolean
+  maxOrders: number
+  pickupRadiusMeters: number
+  dropoffRadiusMeters: number
+  dispatchLimitsUpdatedBy: string
+  dispatchLimitsUpdatedAt: string
+}
+
+type DispatchLimitDraft = {
+  maxOrders: string
+  pickupRadiusMeters: string
+  dropoffRadiusMeters: string
 }
 
 type Bundle = {
@@ -57,11 +68,10 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
   const [zonesError, setZonesError] = useState('')
   const [zonesLoading, setZonesLoading] = useState(false)
   const [updatingZone, setUpdatingZone] = useState('')
+  const [savingLimitsZone, setSavingLimitsZone] = useState('')
+  const [zoneDrafts, setZoneDrafts] = useState<Record<string, DispatchLimitDraft>>({})
   const [seedOrderId, setSeedOrderId] = useState('')
   const [capacityLiters, setCapacityLiters] = useState('100')
-  const [maxOrders, setMaxOrders] = useState('3')
-  const [pickupRadiusMeters, setPickupRadiusMeters] = useState('2000')
-  const [dropoffRadiusMeters, setDropoffRadiusMeters] = useState('2000')
   const [dispatchKey, setDispatchKey] = useState('')
   const [bundle, setBundle] = useState<Bundle | null>(null)
   const [dispatchError, setDispatchError] = useState('')
@@ -91,7 +101,13 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
       })
       if (!response.ok) throw await requestError(response)
       const result = await response.json()
-      setZones(Array.isArray(result.deliveryZones) ? result.deliveryZones as DeliveryZone[] : [])
+      const loadedZones = Array.isArray(result.deliveryZones) ? result.deliveryZones as DeliveryZone[] : []
+      setZones(loadedZones)
+      setZoneDrafts(Object.fromEntries(loadedZones.map((zone) => [zone.id, {
+        maxOrders: String(zone.maxOrders),
+        pickupRadiusMeters: String(zone.pickupRadiusMeters),
+        dropoffRadiusMeters: String(zone.dropoffRadiusMeters),
+      }])))
     } catch (error) {
       setZonesError(error instanceof Error ? error.message : 'Could not load delivery zones.')
     } finally {
@@ -134,6 +150,59 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
     }
   }
 
+  async function saveDispatchLimits(zone: DeliveryZone) {
+    setZonesError('')
+    const draft = zoneDrafts[zone.id]
+    const max = Number(draft?.maxOrders)
+    const pickup = Number(draft?.pickupRadiusMeters)
+    const dropoff = Number(draft?.dropoffRadiusMeters)
+    if (!draft || !Number.isInteger(max) || max < 1 || max > 100 ||
+      !Number.isInteger(pickup) || pickup < 0 || pickup > 100000 ||
+      !Number.isInteger(dropoff) || dropoff < 0 || dropoff > 100000) {
+      setZonesError('Max orders must be 1–100 and each radius must be 0–100,000 meters.')
+      return
+    }
+    let url: URL
+    try {
+      url = apiUrl(gatewayUrl, `/admin/delivery-zones/${encodeURIComponent(zone.id)}/dispatch-limits`)
+    } catch (error) {
+      setZonesError(error instanceof Error ? error.message : 'Enter a valid gateway URL.')
+      return
+    }
+    setSavingLimitsZone(zone.id)
+    try {
+      const response = await fetch(url, {
+        method: 'PATCH',
+        redirect: 'error',
+        headers: {
+          Accept: 'application/json',
+          Authorization: ['Bear', 'er'].join('') + ' ' + sessionToken.trim(),
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          maxOrders: max,
+          pickupRadiusMeters: pickup,
+          dropoffRadiusMeters: dropoff,
+        }),
+      })
+      if (!response.ok) throw await requestError(response)
+      const updated = await response.json() as DeliveryZone
+      setZones((current) => current.map((item) => item.id === updated.id ? updated : item))
+      setZoneDrafts((current) => ({
+        ...current,
+        [updated.id]: {
+          maxOrders: String(updated.maxOrders),
+          pickupRadiusMeters: String(updated.pickupRadiusMeters),
+          dropoffRadiusMeters: String(updated.dropoffRadiusMeters),
+        },
+      }))
+    } catch (error) {
+      setZonesError(error instanceof Error ? error.message : 'Could not save dispatch limits.')
+    } finally {
+      setSavingLimitsZone('')
+    }
+  }
+
   async function createBundle(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setDispatchError('')
@@ -147,14 +216,8 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
       return
     }
     const capacity = Number(capacityLiters)
-    const orderLimit = Number(maxOrders)
-    const pickupRadius = Number(pickupRadiusMeters)
-    const dropoffRadius = Number(dropoffRadiusMeters)
-    if (!Number.isFinite(capacity) || capacity <= 0 || capacity > 10000 ||
-      !Number.isInteger(orderLimit) || orderLimit < 1 || orderLimit > 100 ||
-      !Number.isInteger(pickupRadius) || pickupRadius < 0 || pickupRadius > 100000 ||
-      !Number.isInteger(dropoffRadius) || dropoffRadius < 0 || dropoffRadius > 100000) {
-      setDispatchError('Capacity must be 0–10,000 L (exclusive of zero); orders 1–100; radii 0–100,000 m.')
+    if (!Number.isFinite(capacity) || capacity <= 0 || capacity > 10000) {
+      setDispatchError('Vehicle capacity must be greater than 0 and no more than 10,000 liters.')
       return
     }
     let url: URL
@@ -180,9 +243,6 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
         body: JSON.stringify({
           seedOrderId: seedOrderId.trim(),
           capacityLiters: capacity,
-          maxOrders: orderLimit,
-          pickupRadiusMeters: pickupRadius,
-          dropoffRadiusMeters: dropoffRadius,
         }),
       })
       if (!response.ok) throw await requestError(response)
@@ -209,7 +269,7 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
           <div className="delivery-section-heading">
             <div>
               <strong>Service zones</strong>
-              <p>Disabling a zone blocks new orders and bundles; existing work remains unchanged.</p>
+              <p>Set saved proximity limits and control whether a zone accepts new orders.</p>
             </div>
             <button className="select-checkout" disabled={zonesLoading} onClick={loadZones} type="button">
               {zonesLoading ? 'Loading…' : 'Load zones'}
@@ -219,20 +279,77 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
           {zones.length ? (
             <div className="zone-list" aria-live="polite">
               {zones.map((zone) => (
-                <div className="zone-row" key={zone.id}>
-                  <div>
-                    <strong>{zone.name}</strong>
-                    <span>{zone.enabled ? 'Enabled' : 'Disabled'}</span>
+                <article className="zone-card" key={zone.id}>
+                  <div className="zone-row">
+                    <div>
+                      <strong>{zone.name}</strong>
+                      <span>{zone.enabled ? 'Enabled' : 'Disabled'}</span>
+                    </div>
+                    <button
+                      className="select-checkout"
+                      disabled={updatingZone === zone.id}
+                      onClick={() => updateZone(zone)}
+                      type="button"
+                    >
+                      {updatingZone === zone.id ? 'Saving…' : zone.enabled ? 'Disable' : 'Enable'}
+                    </button>
                   </div>
-                  <button
-                    className="select-checkout"
-                    disabled={updatingZone === zone.id}
-                    onClick={() => updateZone(zone)}
-                    type="button"
-                  >
-                    {updatingZone === zone.id ? 'Saving…' : zone.enabled ? 'Disable' : 'Enable'}
-                  </button>
-                </div>
+                  <div className="zone-limit-form">
+                    <label>
+                      Max orders
+                      <input disabled={savingLimitsZone === zone.id} type="number" min="1" max="100" step="1"
+                        value={zoneDrafts[zone.id]?.maxOrders ?? ''}
+                        onChange={(event) => setZoneDrafts((current) => ({
+                          ...current,
+                          [zone.id]: {
+                            ...(current[zone.id] ?? {
+                              maxOrders: String(zone.maxOrders),
+                              pickupRadiusMeters: String(zone.pickupRadiusMeters),
+                              dropoffRadiusMeters: String(zone.dropoffRadiusMeters),
+                            }),
+                            maxOrders: event.target.value,
+                          },
+                        }))} />
+                    </label>
+                    <label>
+                      Pickup radius (m)
+                      <input disabled={savingLimitsZone === zone.id} type="number" min="0" max="100000" step="1"
+                        value={zoneDrafts[zone.id]?.pickupRadiusMeters ?? ''}
+                        onChange={(event) => setZoneDrafts((current) => ({
+                          ...current,
+                          [zone.id]: {
+                            ...(current[zone.id] ?? {
+                              maxOrders: String(zone.maxOrders),
+                              pickupRadiusMeters: String(zone.pickupRadiusMeters),
+                              dropoffRadiusMeters: String(zone.dropoffRadiusMeters),
+                            }),
+                            pickupRadiusMeters: event.target.value,
+                          },
+                        }))} />
+                    </label>
+                    <label>
+                      Drop-off radius (m)
+                      <input disabled={savingLimitsZone === zone.id} type="number" min="0" max="100000" step="1"
+                        value={zoneDrafts[zone.id]?.dropoffRadiusMeters ?? ''}
+                        onChange={(event) => setZoneDrafts((current) => ({
+                          ...current,
+                          [zone.id]: {
+                            ...(current[zone.id] ?? {
+                              maxOrders: String(zone.maxOrders),
+                              pickupRadiusMeters: String(zone.pickupRadiusMeters),
+                              dropoffRadiusMeters: String(zone.dropoffRadiusMeters),
+                            }),
+                            dropoffRadiusMeters: event.target.value,
+                          },
+                        }))} />
+                    </label>
+                    <button className="select-checkout" disabled={savingLimitsZone === zone.id}
+                      onClick={() => saveDispatchLimits(zone)} type="button">
+                      {savingLimitsZone === zone.id ? 'Saving…' : 'Save limits'}
+                    </button>
+                  </div>
+                  <small className="zone-audit">Updated {new Date(zone.dispatchLimitsUpdatedAt).toLocaleString()} by {zone.dispatchLimitsUpdatedBy}</small>
+                </article>
               ))}
             </div>
           ) : (
@@ -243,7 +360,7 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
           <div className="delivery-section-heading">
             <div>
               <strong>Create a delivery bundle</strong>
-              <p>Run proximity dispatch for a ready seed order using explicit operating limits.</p>
+              <p>Run proximity dispatch with the saved limits for the seed order’s delivery zone.</p>
             </div>
           </div>
           <form className="dispatch-form" onSubmit={createBundle}>
@@ -255,20 +372,8 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
               }} />
             </label>
             <div className="dispatch-numbers">
-              <label>Capacity (L)<input disabled={dispatching} type="number" min="0.01" max="10000" step="0.01" value={capacityLiters} onChange={(event) => {
+              <label>Vehicle capacity (L)<input disabled={dispatching} type="number" min="0.01" max="10000" step="0.01" value={capacityLiters} onChange={(event) => {
                 setCapacityLiters(event.target.value)
-                setDispatchKey('')
-              }} /></label>
-              <label>Max orders<input disabled={dispatching} type="number" min="1" max="100" step="1" value={maxOrders} onChange={(event) => {
-                setMaxOrders(event.target.value)
-                setDispatchKey('')
-              }} /></label>
-              <label>Pickup radius (m)<input disabled={dispatching} type="number" min="0" max="100000" step="1" value={pickupRadiusMeters} onChange={(event) => {
-                setPickupRadiusMeters(event.target.value)
-                setDispatchKey('')
-              }} /></label>
-              <label>Drop-off radius (m)<input disabled={dispatching} type="number" min="0" max="100000" step="1" value={dropoffRadiusMeters} onChange={(event) => {
-                setDropoffRadiusMeters(event.target.value)
                 setDispatchKey('')
               }} /></label>
             </div>
@@ -276,7 +381,7 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
             <button className="submit-button" disabled={dispatching} type="submit">
               {dispatching ? 'Creating bundle…' : 'Create bundle'}
             </button>
-            <p className="form-footnote">Retries reuse the same idempotency key until the request succeeds or inputs change.</p>
+            <p className="form-footnote">Zone defaults supply max orders and radii. Retries reuse the idempotency key until the request succeeds or inputs change.</p>
           </form>
           {bundle ? (
             <div className="bundle-result" role="status">

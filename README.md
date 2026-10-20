@@ -10,13 +10,14 @@ Apply `db/migrations/001_delivery_foundation.sql`,
 `db/migrations/002_unified_marketplace.sql`,
 `db/migrations/003_stripe_checkout_payments.sql`,
 `db/migrations/004_billing_refunds_disputes.sql`, and
-`db/migrations/005_driver_stop_progress.sql`, and
-`db/migrations/006_catalog_orders.sql`, and
-`db/migrations/007_merchant_catalog_management.sql`, and
-`db/migrations/008_merchant_order_fulfillment.sql` on PostgreSQL 14+ with PostGIS 3.x
-installed. The migrations create dispatch, unified-basket, catalog, and order
-models; spatial queries; transaction-safe order/merchant limits; immutable
-multi-stop routes; payment/tax ledger records; and outbox events.
+`db/migrations/005_driver_stop_progress.sql`,
+`db/migrations/006_catalog_orders.sql`,
+`db/migrations/007_merchant_catalog_management.sql`,
+`db/migrations/008_merchant_order_fulfillment.sql`, and
+`db/migrations/009_delivery_zone_dispatch_defaults.sql` on PostgreSQL 14+ with
+PostGIS 3.x installed. The migrations create dispatch, unified-basket, catalog,
+and order models; spatial queries; transaction-safe order/merchant limits;
+immutable multi-stop routes; payment/tax ledger records; and outbox events.
 
 See [`docs/architecture.md`](docs/architecture.md) for MVP assumptions, service
 boundaries, workflows, and operational guidance. The initial HTTP interface is
@@ -154,10 +155,15 @@ remittance/reporting remains a separate workflow.
 The admin control room also lists delivery zones and toggles whether each zone
 accepts new orders and dispatch work through `GET /admin/delivery-zones` and
 `PATCH /admin/delivery-zones/{zoneId}`. The `dispatch/bundles` form accepts the
-per-run capacity, order-count, and pickup/drop-off radius limits and reuses its
-idempotency key if a request needs retrying. Zone boundaries remain database
+per-run vehicle capacity and reuses its idempotency key if a request needs
+retrying. Admins can persist each zone's maximum order count and pickup/drop-off
+radii through `PATCH /admin/delivery-zones/{zoneId}/dispatch-limits`; dispatch
+uses those saved defaults when per-request limits are omitted. Changes record the
+admin subject and emit an outbox event. Zone boundaries remain database
 managed; disabling a zone does not cancel existing orders or bundles. These
 controls require an admin OIDC role through the trusted gateway.
+Existing zones receive the former dispatch defaults (3 orders and 2,000 meters)
+when migration 009 is applied.
 
 Retries resume transfers/reversals not recorded after Stripe accepted them. Pin
 the webhook endpoint's Stripe API version to the version supported by the

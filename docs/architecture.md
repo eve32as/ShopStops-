@@ -96,8 +96,12 @@ assignment, bundle/stop relationship, legal state transition, and that a
 drop-off's pickup is complete. The admin control room lists delivery zones and
 can enable or disable them for new orders and dispatch; existing orders and
 bundles are unchanged. Admins can also initiate a bundle with per-request
-capacity, order-count, and radius limits. Customer APIs expose only that
-customer's orders and tracking data.
+vehicle capacity. Each zone stores admin-managed maximum order-count and
+pickup/drop-off radius defaults. Bundle creation reads those defaults while
+holding a shared zone lock; explicit dispatch-request overrides remain
+supported. Limit updates record the admin subject and emit
+`delivery.zone.dispatch_limits.updated` to the transactional outbox. Customer
+APIs expose only that customer's orders and tracking data.
 
 The initial dispatch and driver HTTP request/response shapes are specified in
 `api/openapi.yaml`; the Go API implements proximity dispatch, assigned route
