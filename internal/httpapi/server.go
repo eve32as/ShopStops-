@@ -1561,7 +1561,14 @@ func (p *PostgresRepository) CustomerOrderEvents(
 		           WHEN e.event_type = 'delivery.bundle.activated'
 		               THEN e.payload - 'orderIds'
 		           WHEN e.aggregate_type = 'unified_delivery_route'
-		               THEN e.payload - 'driverRef'
+		               THEN jsonb_set(
+		                   e.payload - 'driverRef', '{routeStatus}',
+		                   to_jsonb((
+		                       SELECT route.status
+		                       FROM unified_delivery_routes route
+		                       WHERE route.id = e.aggregate_id
+		                   ))
+		               )
 		           ELSE e.payload
 		       END
 		FROM outbox_events e

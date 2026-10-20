@@ -1,6 +1,8 @@
 import * as Location from "expo-location";
+import * as SecureStore from "expo-secure-store";
 import { useStripe } from "@stripe/stripe-react-native";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useIsFocused } from "expo-router";
 import {
   AppState,
   Image,
@@ -95,6 +97,20 @@ type StopEvent = {
   stopStatus: string;
   routeStatus: string;
 };
+type OrderLifecycleEvent = {
+  id: number;
+  type: string;
+  aggregateType: string;
+  aggregateId: string;
+  createdAt: string;
+  data: Record<string, unknown>;
+};
+type OrderProgress = {
+  events: OrderLifecycleEvent[];
+  status: string;
+  nextAfterId: number;
+  error: string;
+};
 type Subscription = {
   status: string;
   monthlyAmountCents: number;
@@ -114,8 +130,14 @@ function createDeliveryWindow(): DeliveryWindow {
   };
 }
 
+function isUUID(value: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
 export default function HomeScreen() {
+  const isFocused = useIsFocused();
   const [role, setRole] = useState<Role>("Shopper");
+  const [appActive, setAppActive] = useState(AppState.currentState === "active");
   const [connectionOpen, setConnectionOpen] = useState(true);
   const [gatewayUrl, setGatewayUrl] = useState("");
   const [sessionToken, setSessionToken] = useState("");
@@ -143,6 +165,7 @@ export default function HomeScreen() {
   const [newItemVolume, setNewItemVolume] = useState("");
   const [anchorStore, setAnchorStore] = useState("");
   const [orderIds, setOrderIds] = useState("");
+  const [orderProgress, setOrderProgress] = useState<Record<string, OrderProgress>>({});
   const [latitude, setLatitude] = useState("");
   const [longitude, setLongitude] = useState("");
   const [routeId, setRouteId] = useState("");
@@ -172,7 +195,12 @@ export default function HomeScreen() {
     };
   } | null>(null);
   const previousConnection = useRef({ gatewayUrl, sessionToken });
+  const terminalOrders = useRef(new Set<string>());
   const { initPaymentSheet, presentPaymentSheet } = useStripe();
+  const trackedOrderIDs = useMemo(
+    () => [...new Set(orderIds.split(/[\s,]+/).map((id) => id.trim()).filter(isUUID))],
+    [orderIds],
+  );
 
   const run = useCallback(async <T,>(action: () => Promise<T>) => {
     setBusy(true);
@@ -203,6 +231,8 @@ export default function HomeScreen() {
       setCatalogStoreID("");
       setQuantities({});
       setOrderIds("");
+      setOrderProgress({});
+      terminalOrders.current.clear();
       setCheckout(null);
       setRoute(null);
       setSubscription(null);
@@ -344,6 +374,8 @@ export default function HomeScreen() {
     basketWindow.current = null;
     setDeliveryWindow(createDeliveryWindow());
     setOrderIds("");
+    setOrderProgress({});
+    terminalOrders.current.clear();
     setCheckout(null);
     setQuantities({});
     setMessage("Started a new basket.");
@@ -455,6 +487,139 @@ export default function HomeScreen() {
       void endTracking();
     }
   }, [role, tracking]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (state) => {
+      setAppActive(state === "active");
+    });
+    return () => subscription.remove();
+  }, []);
+
+  useEffect(() => {
+    if (
+      role !== "Shopper" || !isFocused || !appActive ||
+      !gatewayUrl.trim() || !sessionToken.trim() || trackedOrderIDs.length === 0
+    ) {
+      return;
+    }
+    let stopped = false;
+    const controllers = new Map<string, AbortController>();
+    const cursorKey = (orderID: string) => `shopstops.order-cursor.${orderID}`;
+
+    async function pollOrder(orderID: string) {
+      let afterID = 0;
+      try {
+        const savedCursor = await SecureStore.getItemAsync(cursorKey(orderID));
+        if (savedCursor && /^\d+$/.test(savedCursor)) afterID = Number(savedCursor);
+      } catch {
+        setOrderProgress((current) => ({
+          ...current,
+          [orderID]: {
+            events: current[orderID]?.events ?? [],
+            status: current[orderID]?.status ?? "Updates unavailable",
+            nextAfterId: current[orderID]?.nextAfterId ?? 0,
+            error: "Could not restore the saved update cursor.",
+          },
+        }));
+      }
+
+      while (!stopped && !terminalOrders.current.has(orderID)) {
+        const controller = new AbortController();
+        controllers.set(orderID, controller);
+        try {
+          const result = await apiRequest<{
+            events: OrderLifecycleEvent[];
+            nextAfterId: number;
+          }>(settings, `orders/${encodeURIComponent(orderID)}/events?waitSeconds=20`, {
+            method: "GET",
+            headers: { "Last-Event-ID": String(afterID) },
+            signal: controller.signal,
+          });
+          if (stopped) return;
+          afterID = result.nextAfterId;
+          try {
+            await SecureStore.setItemAsync(cursorKey(orderID), String(afterID));
+          } catch {
+            setOrderProgress((current) => ({
+              ...current,
+              [orderID]: {
+                events: current[orderID]?.events ?? [],
+                status: current[orderID]?.status ?? "Tracking",
+                nextAfterId: afterID,
+                error: "Updates are live, but the cursor could not be saved on this device.",
+              },
+            }));
+          }
+          if (result.events.length > 0) {
+            let status = "";
+            let terminal = false;
+            for (const event of result.events) {
+              const orderState = event.data.state;
+              if (typeof orderState === "string") {
+                status = orderState.replaceAll("_", " ");
+                if (orderState === "delivered" || orderState === "cancelled") terminal = true;
+              }
+              const routeStatus = event.data.routeStatus;
+              if (typeof routeStatus === "string") {
+                status = routeStatus.replaceAll("_", " ");
+                if (routeStatus === "completed" || routeStatus === "cancelled") terminal = true;
+              }
+              if (event.type === "delivery.bundle.activated") status = "dispatched";
+              if (event.type === "delivery.route.stop.arrived") {
+                status = event.data.stopType === "dropoff" ? "at your delivery" : "at a pickup";
+              }
+              if (event.type === "delivery.route.stop.completed" && !terminal) {
+                status = event.data.stopType === "dropoff" ? "delivery stop complete" : "pickup complete";
+              }
+            }
+            setOrderProgress((current) => {
+              const previous = current[orderID];
+              const knownIDs = new Set((previous?.events ?? []).map((event) => event.id));
+              const combined = [
+                ...(previous?.events ?? []),
+                ...result.events.filter((event) => !knownIDs.has(event.id)),
+              ].slice(-20);
+              return {
+                ...current,
+                [orderID]: {
+                  events: combined,
+                  status: status || previous?.status || "Updates received",
+                  nextAfterId: afterID,
+                  error: "",
+                },
+              };
+            });
+            if (terminal) terminalOrders.current.add(orderID);
+          }
+        } catch (error) {
+          if (stopped || controller.signal.aborted) return;
+          const message = error instanceof ApiError ? error.message : "Connection interrupted; retrying.";
+          setOrderProgress((current) => ({
+            ...current,
+            [orderID]: {
+              events: current[orderID]?.events ?? [],
+              status: current[orderID]?.status ?? "Waiting for updates",
+              nextAfterId: afterID,
+              error: message,
+            },
+          }));
+          if (error instanceof ApiError && [401, 403, 404].includes(error.status ?? 0)) return;
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+        } finally {
+          controllers.delete(orderID);
+        }
+      }
+    }
+
+    void Promise.all(trackedOrderIDs.map((orderID) => pollOrder(orderID)));
+    return () => {
+      stopped = true;
+      for (const controller of controllers.values()) controller.abort();
+      controllers.clear();
+    };
+  }, [
+    role, isFocused, appActive, gatewayUrl, sessionToken, trackedOrderIDs, settings,
+  ]);
 
   useEffect(() => {
     void isDriverLocationUpdatesActive().then((active) => {
@@ -903,6 +1068,31 @@ export default function HomeScreen() {
                 }}
                 value={orderIds}
               />
+              {trackedOrderIDs.map((orderID) => {
+                const progress = orderProgress[orderID];
+                return (
+                  <View key={orderID} style={styles.orderProgressCard} accessibilityLiveRegion="polite">
+                    <View style={styles.orderProgressHeader}>
+                      <Text style={styles.orderProgressStatus}>
+                        {progress?.status ?? "Waiting for order updates"}
+                      </Text>
+                      <Text style={styles.orderProgressLive}>
+                        {terminalOrders.current.has(orderID) ? "COMPLETE" : "LIVE"}
+                      </Text>
+                    </View>
+                    <Text style={styles.tinyNote}>Order · {orderID}</Text>
+                    {progress?.error ? <Text style={styles.orderProgressError}>{progress.error}</Text> : null}
+                    {progress?.events.slice(-3).reverse().map((event) => (
+                      <Text key={event.id} style={styles.orderProgressEvent}>
+                        {event.type.replaceAll(".", " ").replaceAll("_", " ")} ·{" "}
+                        {new Date(event.createdAt).toLocaleTimeString([], {
+                          hour: "numeric", minute: "2-digit",
+                        })}
+                      </Text>
+                    ))}
+                  </View>
+                );
+              })}
               <ActionButton
                 disabled={busy || Boolean(checkout)}
                 label={checkout ? "Basket created" : "Create basket"}
@@ -1323,6 +1513,12 @@ const styles = StyleSheet.create({
   quantityButtonText: { color: "#24443b", fontSize: 17, fontWeight: "800" },
   quantityText: { minWidth: 16, color: "#213b34", textAlign: "center", fontWeight: "800" },
   checkoutBox: { backgroundColor: "#f8f9f7", borderRadius: 13, padding: 14, marginTop: 16 },
+  orderProgressCard: { backgroundColor: "#f5f8f5", borderRadius: 12, padding: 13, marginTop: 12, borderWidth: 1, borderColor: "#e3ebe5" },
+  orderProgressHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  orderProgressStatus: { color: "#24483a", fontSize: 13, fontWeight: "800", textTransform: "capitalize" },
+  orderProgressLive: { color: "#398260", fontSize: 9, fontWeight: "800", letterSpacing: 1 },
+  orderProgressEvent: { color: "#607268", fontSize: 10, marginTop: 6, textTransform: "capitalize" },
+  orderProgressError: { color: "#9a493c", fontSize: 10, marginTop: 6 },
   routeBox: { backgroundColor: "#f8f9f7", borderRadius: 13, padding: 14, marginTop: 14 },
   stopActions: { marginTop: 3 },
   checkoutLabel: { color: "#77857f", fontSize: 9, fontWeight: "800", letterSpacing: 1.2, marginBottom: 11 },
