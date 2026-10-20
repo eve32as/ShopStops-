@@ -117,5 +117,5 @@ Run the admin client from `apps/admin` with `npm ci` and `npm run dev`. Configur
 `EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY` for mobile PaymentSheet flows. The shopper
 client can browse visible store catalogs and create orders before checkout; it
 still requires an identity-aware gateway and a valid customer delivery
-location. Full merchant operations, admin transaction/dispute search, and
-real-time updates also remain follow-on work.
+location. Customer order updates are available through a cursor-based long-poll
+endpoint; push notifications and WebSocket fan-out remain follow-on integrations.

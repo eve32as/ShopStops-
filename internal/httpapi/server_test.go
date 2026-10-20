@@ -64,9 +64,30 @@ type fakeRepository struct {
 	checkoutReq           checkoutRequest
 	customerRef           string
 	checkoutKey           string
+	ownsOrder             bool
+	ownsOrderErr          error
+	orderEvents           []OrderEvent
+	orderEventsErr        error
+	eventOrderID          string
+	eventCustomerRef      string
+	eventAfterID           int64
+	eventLimit             int
 }
 
 func (f *fakeRepository) PingContext(context.Context) error { return f.pingErr }
+func (f *fakeRepository) CustomerOwnsOrder(
+	_ context.Context, orderID, customerRef string,
+) (bool, error) {
+	f.eventOrderID, f.eventCustomerRef = orderID, customerRef
+	return f.ownsOrder, f.ownsOrderErr
+}
+func (f *fakeRepository) CustomerOrderEvents(
+	_ context.Context, orderID, customerRef string, afterID int64, limit int,
+) ([]OrderEvent, error) {
+	f.eventOrderID, f.eventCustomerRef = orderID, customerRef
+	f.eventAfterID, f.eventLimit = afterID, limit
+	return f.orderEvents, f.orderEventsErr
+}
 func (f *fakeRepository) NearbyMerchants(
 	_ context.Context, storeID string, radius int,
 ) ([]NearbyMerchant, error) {
@@ -506,6 +527,99 @@ func TestDriverCanReadAssignedRoute(t *testing.T) {
 	if recorder.Code != http.StatusOK || repo.driverRef != "driver-123" ||
 		!strings.Contains(recorder.Body.String(), `"type":"dropoff"`) {
 		t.Fatalf("status=%d driver=%s body=%s", recorder.Code, repo.driverRef, recorder.Body.String())
+	}
+}
+
+func TestCustomerCanPollOwnedOrderEventsFromCursor(t *testing.T) {
+	const orderID = "00000000-0000-0000-0000-000000000001"
+	repo := &fakeRepository{
+		ownsOrder: true,
+		orderEvents: []OrderEvent{{
+			ID: 42, Type: "order.state.changed", AggregateType: "order",
+			AggregateID: orderID, Data: json.RawMessage(`{"state":"ready"}`),
+		}},
+	}
+	request := httptest.NewRequest(http.MethodGet,
+		"/orders/"+orderID+"/events?waitSeconds=0", nil)
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "customer-123")
+	request.Header.Set("X-ShopStops-Actor-Role", "customer")
+	request.Header.Set("Last-Event-ID", "17")
+	recorder := httptest.NewRecorder()
+	New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
+		ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || repo.eventOrderID != orderID ||
+		repo.eventCustomerRef != "customer-123" || repo.eventAfterID != 17 ||
+		repo.eventLimit != 100 || !strings.Contains(recorder.Body.String(), `"nextAfterId":42`) ||
+		!strings.Contains(recorder.Body.String(), `"state":"ready"`) {
+		t.Fatalf("status=%d repository=%+v body=%s", recorder.Code, repo, recorder.Body.String())
+	}
+	if recorder.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", recorder.Header().Get("Cache-Control"))
+	}
+}
+
+func TestCustomerOrderEventsRequireOwnershipAndCustomerRole(t *testing.T) {
+	const orderID = "00000000-0000-0000-0000-000000000001"
+	repo := &fakeRepository{}
+	handler := New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	request := httptest.NewRequest(http.MethodGet,
+		"/orders/"+orderID+"/events?waitSeconds=0", nil)
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "customer-123")
+	request.Header.Set("X-ShopStops-Actor-Role", "merchant")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusForbidden || repo.eventOrderID != "" {
+		t.Fatalf("status=%d repository=%+v", recorder.Code, repo)
+	}
+
+	request = httptest.NewRequest(http.MethodGet,
+		"/orders/"+orderID+"/events?waitSeconds=0", nil)
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "another-customer")
+	request.Header.Set("X-ShopStops-Actor-Role", "customer")
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusNotFound)
+	}
+}
+
+func TestCustomerOrderEventsRejectInvalidCursorAndWait(t *testing.T) {
+	for _, testCase := range []struct {
+		name       string
+		wait       string
+		lastEventID string
+	}{
+		{name: "wait too long", wait: "26"},
+		{name: "negative wait", wait: "-1"},
+		{name: "invalid cursor", wait: "0", lastEventID: "not-a-number"},
+		{name: "negative cursor", wait: "0", lastEventID: "-1"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			repo := &fakeRepository{ownsOrder: true}
+			request := httptest.NewRequest(http.MethodGet,
+				"/orders/00000000-0000-0000-0000-000000000001/events?waitSeconds="+testCase.wait,
+				nil)
+			request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+			request.Header.Set("X-ShopStops-Actor", "customer-123")
+			request.Header.Set("X-ShopStops-Actor-Role", "customer")
+			if testCase.lastEventID != "" {
+				request.Header.Set("Last-Event-ID", testCase.lastEventID)
+			}
+			recorder := httptest.NewRecorder()
+			New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
+				ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d, want %d; body=%s",
+					recorder.Code, http.StatusBadRequest, recorder.Body.String())
+			}
+			if repo.eventOrderID != "" {
+				t.Fatal("repository was called for invalid cursor or wait time")
+			}
+		})
 	}
 }
 

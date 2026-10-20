@@ -61,6 +61,22 @@ type Repository interface {
 	) (driverStopEventResponse, error)
 }
 
+type OrderEvent struct {
+	ID            int64           `json:"id"`
+	Type          string          `json:"type"`
+	AggregateType string          `json:"aggregateType"`
+	AggregateID   string          `json:"aggregateId"`
+	CreatedAt     time.Time       `json:"createdAt"`
+	Data          json.RawMessage `json:"data"`
+}
+
+type OrderEventRepository interface {
+	CustomerOwnsOrder(context.Context, string, string) (bool, error)
+	CustomerOrderEvents(
+		context.Context, string, string, int64, int,
+	) ([]OrderEvent, error)
+}
+
 type NearbyMerchant struct {
 	MerchantID     string  `json:"merchantId"`
 	Name           string  `json:"name"`
@@ -278,6 +294,7 @@ func (s *Server) handler() http.Handler {
 	mux.Handle("GET /merchant/catalog", s.authorized(http.HandlerFunc(s.merchantCatalog)))
 	mux.Handle("GET /merchant/orders", s.authorized(http.HandlerFunc(s.merchantOrders)))
 	mux.Handle("PATCH /merchant/orders/{orderId}", s.authorized(http.HandlerFunc(s.updateMerchantOrderState)))
+	mux.Handle("GET /orders/{orderId}/events", s.authorized(http.HandlerFunc(s.customerOrderEvents)))
 	mux.Handle("POST /merchant/catalog", s.authorized(http.HandlerFunc(s.createMerchantCatalogItem)))
 	mux.Handle("PATCH /merchant/catalog/{itemId}", s.authorized(http.HandlerFunc(s.updateMerchantCatalogItem)))
 	mux.Handle("POST /dispatch/bundles", s.authorized(http.HandlerFunc(s.createBundle)))
@@ -771,6 +788,85 @@ func (s *Server) getDriverRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, route)
+}
+
+func (s *Server) customerOrderEvents(w http.ResponseWriter, r *http.Request) {
+	customerRef, ok := s.authorizedActorRole(w, r, "customer")
+	if !ok {
+		return
+	}
+	orderID := r.PathValue("orderId")
+	if !isUUID(orderID) {
+		writeError(w, http.StatusBadRequest, "invalid orderId")
+		return
+	}
+	afterID := int64(0)
+	if raw := r.Header.Get("Last-Event-ID"); raw != "" {
+		value, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || value < 0 {
+			writeError(w, http.StatusBadRequest, "Last-Event-ID must be a non-negative integer")
+			return
+		}
+		afterID = value
+	}
+	waitSeconds := 20
+	if raw := r.URL.Query().Get("waitSeconds"); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 0 || value > 25 {
+			writeError(w, http.StatusBadRequest, "waitSeconds must be between 0 and 25")
+			return
+		}
+		waitSeconds = value
+	}
+	repository, ok := s.repo.(OrderEventRepository)
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "order event stream is unavailable")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(waitSeconds+2)*time.Second)
+	defer cancel()
+	owned, err := repository.CustomerOwnsOrder(ctx, orderID, customerRef)
+	if err != nil {
+		s.databaseError(w, err)
+		return
+	}
+	if !owned {
+		writeError(w, http.StatusNotFound, "order not found")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+
+	deadline := time.Now().Add(time.Duration(waitSeconds) * time.Second)
+	for {
+		events, err := repository.CustomerOrderEvents(ctx, orderID, customerRef, afterID, 100)
+		if err != nil {
+			s.databaseError(w, err)
+			return
+		}
+		if len(events) > 0 {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"events": events, "nextAfterId": events[len(events)-1].ID,
+			})
+			return
+		}
+		if waitSeconds == 0 || !time.Now().Before(deadline) {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"events": []OrderEvent{}, "nextAfterId": afterID,
+			})
+			return
+		}
+		timer := time.NewTimer(500 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			writeJSON(w, http.StatusOK, map[string]any{
+				"events": []OrderEvent{}, "nextAfterId": afterID,
+			})
+			return
+		case <-timer.C:
+		}
+	}
 }
 
 func (s *Server) recordDriverLocation(w http.ResponseWriter, r *http.Request) {
@@ -1441,6 +1537,73 @@ func (p *PostgresRepository) DriverRoute(
 		return routeResponse{}, err
 	}
 	return response, nil
+}
+
+func (p *PostgresRepository) CustomerOwnsOrder(
+	ctx context.Context, orderID, customerRef string,
+) (bool, error) {
+	var owns bool
+	err := p.db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM orders WHERE id = $1 AND customer_ref = $2
+		)`, orderID, customerRef,
+	).Scan(&owns)
+	return owns, err
+}
+
+func (p *PostgresRepository) CustomerOrderEvents(
+	ctx context.Context, orderID, customerRef string, afterID int64, limit int,
+) ([]OrderEvent, error) {
+	rows, err := p.db.QueryContext(ctx, `
+		SELECT e.id, e.event_type, e.aggregate_type, e.aggregate_id,
+		       e.created_at,
+		       CASE
+		           WHEN e.event_type = 'delivery.bundle.activated'
+		               THEN e.payload - 'orderIds'
+		           WHEN e.aggregate_type = 'unified_delivery_route'
+		               THEN e.payload - 'driverRef'
+		           ELSE e.payload
+		       END
+		FROM outbox_events e
+		WHERE e.id > $1
+		  AND EXISTS (
+		      SELECT 1 FROM orders owned
+		      WHERE owned.id = $2::uuid AND owned.customer_ref = $3
+		  )
+		  AND (
+		      (e.aggregate_type = 'order' AND e.aggregate_id = $2::uuid)
+		      OR (
+		          e.aggregate_type = 'unified_delivery_route'
+		          AND EXISTS (
+		              SELECT 1
+		              FROM unified_delivery_routes route
+		              JOIN checkout_orders co ON co.checkout_id = route.checkout_id
+		              WHERE route.id = e.aggregate_id AND co.order_id = $2::uuid
+		          )
+		      )
+		      OR (
+		          e.event_type = 'delivery.bundle.activated'
+		          AND e.payload->'orderIds' ? $2::text
+		      )
+		  )
+		ORDER BY e.id
+		LIMIT $4`, afterID, orderID, customerRef, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	events := make([]OrderEvent, 0)
+	for rows.Next() {
+		var event OrderEvent
+		if err := rows.Scan(
+			&event.ID, &event.Type, &event.AggregateType, &event.AggregateID,
+			&event.CreatedAt, &event.Data,
+		); err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	return events, rows.Err()
 }
 
 func (p *PostgresRepository) RecordDriverLocation(
