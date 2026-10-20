@@ -19,6 +19,7 @@ type OperationsSnapshot = {
     name: string
     readyOrderCount: number
     oldestReadyAt: string | null
+    oldestReadyOrderId: string | null
     activeBundleCount: number
     openStopCount: number
   }>
@@ -305,6 +306,18 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
                     ))} min · ${zone.openStopCount} open stops`
                     : `No ready orders · ${zone.openStopCount} open stops`}
                 </small>
+                {zone.oldestReadyOrderId ? (
+                  <button
+                    className="select-checkout operations-seed-button"
+                    onClick={() => {
+                      setSeedOrderId(zone.oldestReadyOrderId!)
+                      setDispatchError('')
+                    }}
+                    type="button"
+                  >
+                    Use oldest ready order
+                  </button>
+                ) : null}
               </div>
             ))}
           </div>

@@ -1462,6 +1462,12 @@ func (p *PostgresRepository) AdminOperationsSnapshot(
 		    FROM orders
 		    WHERE state = 'ready'
 		    GROUP BY delivery_zone_id
+		), oldest_ready AS (
+		    SELECT DISTINCT ON (delivery_zone_id)
+		           delivery_zone_id, id AS order_id
+		    FROM orders
+		    WHERE state = 'ready'
+		    ORDER BY delivery_zone_id, ready_at, id
 		), active_bundles AS (
 		    SELECT delivery_zone_id, count(*) AS active_bundle_count
 		    FROM delivery_bundles
@@ -1477,10 +1483,12 @@ func (p *PostgresRepository) AdminOperationsSnapshot(
 		)
 		SELECT z.id, z.name,
 		       coalesce(r.ready_order_count, 0), r.oldest_ready_at,
+		       o.order_id,
 		       coalesce(b.active_bundle_count, 0),
 		       coalesce(s.open_stop_count, 0)
 		FROM delivery_zones z
 		LEFT JOIN ready_metrics r ON r.delivery_zone_id = z.id
+		LEFT JOIN oldest_ready o ON o.delivery_zone_id = z.id
 		LEFT JOIN active_bundles b ON b.delivery_zone_id = z.id
 		LEFT JOIN open_stops s ON s.delivery_zone_id = z.id
 		ORDER BY z.name, z.id`)
@@ -1491,14 +1499,18 @@ func (p *PostgresRepository) AdminOperationsSnapshot(
 	for rows.Next() {
 		var zone DeliveryZoneOperations
 		var oldestReadyAt sql.NullTime
+		var oldestReadyOrderID sql.NullString
 		if err := rows.Scan(
 			&zone.ID, &zone.Name, &zone.ReadyOrderCount, &oldestReadyAt,
-			&zone.ActiveBundleCount, &zone.OpenStopCount,
+			&oldestReadyOrderID, &zone.ActiveBundleCount, &zone.OpenStopCount,
 		); err != nil {
 			return AdminOperationsSnapshot{}, err
 		}
 		if oldestReadyAt.Valid {
 			zone.OldestReadyAt = &oldestReadyAt.Time
+		}
+		if oldestReadyOrderID.Valid {
+			zone.OldestReadyOrderID = &oldestReadyOrderID.String
 		}
 		snapshot.DeliveryZoneOperations = append(snapshot.DeliveryZoneOperations, zone)
 	}

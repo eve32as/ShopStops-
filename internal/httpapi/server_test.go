@@ -573,11 +573,13 @@ func TestAdminDeliveryZonesRequiresAdminAndListsZones(t *testing.T) {
 }
 
 func TestAdminOperationsSnapshotRequiresAdmin(t *testing.T) {
+	oldestReadyOrderID := "00000000-0000-0000-0000-000000000002"
 	repo := &fakeRepository{operationsSnapshot: AdminOperationsSnapshot{
 		PendingOutboxEvents: 4,
 		DeliveryZoneOperations: []DeliveryZoneOperations{{
 			ID: "00000000-0000-0000-0000-000000000001", Name: "North",
-			ReadyOrderCount: 2, ActiveBundleCount: 1, OpenStopCount: 3,
+			ReadyOrderCount: 2, OldestReadyOrderID: &oldestReadyOrderID,
+			ActiveBundleCount: 1, OpenStopCount: 3,
 		}},
 	}}
 	handler := New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -600,6 +602,7 @@ func TestAdminOperationsSnapshotRequiresAdmin(t *testing.T) {
 	handler.ServeHTTP(recorder, request)
 	for _, expected := range []string{
 		`"pendingOutboxEvents":4`, `"name":"North"`, `"readyOrderCount":2`,
+		`"oldestReadyOrderId":"` + oldestReadyOrderID + `"`,
 		`"activeBundleCount":1`, `"openStopCount":3`,
 	} {
 		if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), expected) {

@@ -669,7 +669,7 @@ paths:
                     type: array
                     items:
                       type: object
-                      required: [id, name, readyOrderCount, oldestReadyAt, activeBundleCount, openStopCount]
+                      required: [id, name, readyOrderCount, oldestReadyAt, oldestReadyOrderId, activeBundleCount, openStopCount]
                       properties:
                         id:
                           type: string
@@ -682,6 +682,10 @@ paths:
                         oldestReadyAt:
                           type: string
                           format: date-time
+                          nullable: true
+                        oldestReadyOrderId:
+                          type: string
+                          format: uuid
                           nullable: true
                         activeBundleCount:
                           type: integer

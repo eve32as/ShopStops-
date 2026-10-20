@@ -86,12 +86,13 @@ type AdminDeliveryRepository interface {
 }
 
 type DeliveryZoneOperations struct {
-	ID                string     `json:"id"`
-	Name              string     `json:"name"`
-	ReadyOrderCount   int64      `json:"readyOrderCount"`
-	OldestReadyAt     *time.Time `json:"oldestReadyAt"`
-	ActiveBundleCount int64      `json:"activeBundleCount"`
-	OpenStopCount     int64      `json:"openStopCount"`
+	ID                 string     `json:"id"`
+	Name               string     `json:"name"`
+	ReadyOrderCount    int64      `json:"readyOrderCount"`
+	OldestReadyAt      *time.Time `json:"oldestReadyAt"`
+	OldestReadyOrderID *string    `json:"oldestReadyOrderId"`
+	ActiveBundleCount  int64      `json:"activeBundleCount"`
+	OpenStopCount      int64      `json:"openStopCount"`
 }
 
 type AdminOperationsSnapshot struct {

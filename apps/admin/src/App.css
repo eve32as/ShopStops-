@@ -106,6 +106,7 @@ label small { color: #9aa59f; font-size: 9px; font-weight: 400; }
 .operations-metrics span { color: #89958e; font-size: 9px; }
 .operations-metrics strong { color: #364e44; font-size: 11px; }
 .operations-metrics small { line-height: 14px; }
+.operations-seed-button { justify-self: start; min-height: 30px; }
 .delivery-controls-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 22px; }
 .delivery-section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
 .delivery-section-heading strong { color: #364e44; font-size: 12px; }
