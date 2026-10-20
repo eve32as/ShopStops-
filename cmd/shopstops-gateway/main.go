@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -39,11 +42,32 @@ func main() {
 
 	discoveryCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	httpClient := &http.Client{Timeout: 5 * time.Second}
+	httpClient := &http.Client{
+		Timeout: 5 * time.Second,
+		CheckRedirect: func(request *http.Request, via []*http.Request) error {
+			if request.URL.Scheme != "https" || len(via) >= 5 {
+				return errors.New("OIDC discovery redirects must remain HTTPS")
+			}
+			return nil
+		},
+	}
 	discoveryCtx = oidc.ClientContext(discoveryCtx, httpClient)
 	provider, err := oidc.NewProvider(discoveryCtx, issuer)
 	if err != nil {
 		logger.Error("discover OIDC issuer", "error", err)
+		os.Exit(1)
+	}
+	var metadata struct {
+		JWKSURI string `json:"jwks_uri"`
+	}
+	if err := provider.Claims(&metadata); err != nil {
+		logger.Error("read OIDC issuer metadata", "error", err)
+		os.Exit(1)
+	}
+	jwksURL, err := url.Parse(metadata.JWKSURI)
+	if err != nil || jwksURL.Scheme != "https" || jwksURL.Host == "" ||
+		jwksURL.User != nil || jwksURL.RawQuery != "" || jwksURL.Fragment != "" {
+		logger.Error("OIDC issuer must provide a valid HTTPS jwks_uri")
 		os.Exit(1)
 	}
 	verifier := provider.VerifierContext(
@@ -69,8 +93,25 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 	}
 	logger.Info("ShopStops identity gateway listening", "address", server.Addr)
-	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	serverErrors := make(chan error, 1)
+	go func() {
+		serverErrors <- server.ListenAndServe()
+	}()
+	shutdownSignals, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	select {
+	case err := <-serverErrors:
+		if err == nil || errors.Is(err, http.ErrServerClosed) {
+			return
+		}
 		logger.Error("identity gateway failed", "error", err)
+		os.Exit(1)
+	case <-shutdownSignals.Done():
+	}
+	shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelShutdown()
+	if err := server.Shutdown(shutdownContext); err != nil {
+		logger.Error("identity gateway shutdown failed", "error", err)
 		os.Exit(1)
 	}
 }

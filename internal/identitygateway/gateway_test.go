@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,8 +21,9 @@ import (
 const (
 	testIssuer   = "https://identity.example.test"
 	testAudience = "shopstops-api"
-	testToken    = "0123456789abcdef0123456789abcdef"
 )
+
+var testToken = strings.Repeat("t", 32)
 
 func TestGatewayVerifiesTokenAndReplacesUntrustedHeaders(t *testing.T) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -46,13 +48,16 @@ func TestGatewayVerifiesTokenAndReplacesUntrustedHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gateway, err := New(verifier, upstreamURL, testToken, "roles")
+	gateway, err := NewWithActorClaim(
+		verifier, upstreamURL, testToken, "roles", "shopstops_actor_id",
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	token := signedToken(t, key, map[string]any{
-		"iss": testIssuer, "sub": "customer-123", "aud": testAudience,
+		"iss": testIssuer, "sub": "oidc-user-123",
+		"shopstops_actor_id": "customer-123", "aud": testAudience,
 		"exp": time.Now().Add(time.Hour).Unix(), "iat": time.Now().Unix(),
 		"roles": []string{"customer", "merchant"},
 	})
@@ -124,8 +129,10 @@ func TestGatewayRejectsInvalidTokensAndMissingRoles(t *testing.T) {
 
 func TestGatewayHealthAndStripeWebhookArePublicButUnknownRoutesAreHidden(t *testing.T) {
 	var paths []string
+	var forwardedActors []string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.URL.Path)
+		forwardedActors = append(forwardedActors, r.Header.Get("X-ShopStops-Actor"))
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer upstream.Close()
@@ -144,15 +151,20 @@ func TestGatewayHealthAndStripeWebhookArePublicButUnknownRoutesAreHidden(t *test
 		{http.MethodPost, "/v1/webhooks/stripe"},
 	} {
 		recorder := httptest.NewRecorder()
-		gateway.ServeHTTP(recorder, httptest.NewRequest(target.method, target.path, nil))
+		request := httptest.NewRequest(target.method, target.path, nil)
+		request.Header.Set("X-ShopStops-Actor", "spoofed")
+		request.Header.Set("X-ShopStops-Actor-Role", "admin")
+		gateway.ServeHTTP(recorder, request)
 		if recorder.Code != http.StatusNoContent {
 			t.Fatalf("%s %s status = %d", target.method, target.path, recorder.Code)
 		}
 	}
 	recorder := httptest.NewRecorder()
 	gateway.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/private", nil))
-	if recorder.Code != http.StatusNotFound || len(paths) != 2 {
-		t.Fatalf("unknown route status=%d upstream paths=%v", recorder.Code, paths)
+	if recorder.Code != http.StatusNotFound || len(paths) != 2 ||
+		forwardedActors[0] != "" || forwardedActors[1] != "" {
+		t.Fatalf("unknown route status=%d upstream paths=%v forwarded actors=%v",
+			recorder.Code, paths, forwardedActors)
 	}
 }
 
@@ -189,10 +201,10 @@ func TestGatewayCORSUsesExactConfiguredOrigins(t *testing.T) {
 
 func TestRequiredRolesAreScopedByRoute(t *testing.T) {
 	cases := []struct {
-		method string
-		path   string
-		role   string
-		ok     bool
+		method  string
+		path    string
+		role    string
+		ok      bool
 		allowed bool
 	}{
 		{http.MethodGet, "/stores/00000000-0000-0000-0000-000000000001/catalog", "customer", true, true},
@@ -209,6 +221,19 @@ func TestRequiredRolesAreScopedByRoute(t *testing.T) {
 			t.Errorf("%s %s roles=%v ok=%v, expected role=%s allowed=%v route=%v",
 				testCase.method, testCase.path, roles, ok,
 				testCase.role, testCase.allowed, testCase.ok)
+		}
+	}
+}
+
+func TestActorClaimMustBeSafeForTrustedHeaders(t *testing.T) {
+	for _, actor := range []string{"", " actor", "actor\nadmin", strings.Repeat("a", 201)} {
+		if validActor(actor) {
+			t.Errorf("actor %q unexpectedly accepted", actor)
+		}
+	}
+	for _, actor := range []string{"customer-123", "user@example.test"} {
+		if !validActor(actor) {
+			t.Errorf("actor %q unexpectedly rejected", actor)
 		}
 	}
 }

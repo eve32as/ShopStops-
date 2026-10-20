@@ -121,6 +121,7 @@ type Subscription = {
 };
 
 const stripeKeyConfigured = Boolean(process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY);
+const shopperOrderIDsKey = "shopstops.shopper-order-ids.v1";
 
 function createDeliveryWindow(): DeliveryWindow {
   const start = new Date(Date.now() + 15 * 60 * 1000);
@@ -195,6 +196,7 @@ export default function HomeScreen() {
     };
   } | null>(null);
   const previousConnection = useRef({ gatewayUrl, sessionToken });
+  const orderIDsEdited = useRef(false);
   const terminalOrders = useRef(new Set<string>());
   const { initPaymentSheet, presentPaymentSheet } = useStripe();
   const trackedOrderIDs = useMemo(
@@ -215,13 +217,50 @@ export default function HomeScreen() {
     }
   }, []);
 
+  function saveOrderIDs(value: string) {
+    orderIDsEdited.current = true;
+    setOrderIds(value);
+    const ids = [...new Set(value.split(/[\s,]+/).map((id) => id.trim()).filter(isUUID))];
+    if (ids.length === 0) {
+      void SecureStore.deleteItemAsync(shopperOrderIDsKey).catch(() => undefined);
+    } else {
+      void SecureStore.setItemAsync(shopperOrderIDsKey, JSON.stringify(ids)).catch(() => undefined);
+    }
+  }
+
   useEffect(() => {
-    if (
+    let active = true;
+    void SecureStore.getItemAsync(shopperOrderIDsKey).then((saved) => {
+      if (!active || orderIDsEdited.current || !saved) return;
+      try {
+        const parsed: unknown = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.every((id) => typeof id === "string" && isUUID(id))) {
+          setOrderIds([...new Set(parsed)].join(", "));
+        }
+      } catch {
+        void SecureStore.deleteItemAsync(shopperOrderIDsKey).catch(() => undefined);
+      }
+    }).catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const changed =
       previousConnection.current.gatewayUrl !== gatewayUrl ||
-      previousConnection.current.sessionToken !== sessionToken
-    ) {
+      previousConnection.current.sessionToken !== sessionToken;
+    if (changed) {
+      const hadConnection = Boolean(previousConnection.current.sessionToken);
       previousConnection.current = { gatewayUrl, sessionToken };
+      if (!hadConnection) return;
       void endTracking();
+      const previousOrderIDs = orderIds.split(/[\s,]+/).map((id) => id.trim()).filter(isUUID);
+      void Promise.all(previousOrderIDs.map((id) =>
+        SecureStore.deleteItemAsync(`shopstops.order-cursor.${id}`).catch(() => undefined),
+      ));
+      orderIDsEdited.current = true;
+      void SecureStore.deleteItemAsync(shopperOrderIDsKey).catch(() => undefined);
       checkoutAttempt.current = null;
       orderAttempt.current = null;
       basketWindow.current = null;
@@ -242,7 +281,7 @@ export default function HomeScreen() {
       setMerchantStoreLocations([]);
       setMerchantStoreLocation("");
     }
-  }, [gatewayUrl, sessionToken]);
+  }, [gatewayUrl, sessionToken, orderIds]);
 
   async function findNearby() {
     const results = await run(() =>
@@ -321,7 +360,7 @@ export default function HomeScreen() {
       checkoutAttempt.current = null;
       const currentIDs = orderIds.split(/[\s,]+/).map((id) => id.trim()).filter(Boolean);
       if (!currentIDs.includes(result.id)) {
-        setOrderIds([...currentIDs, result.id].join(", "));
+        saveOrderIDs([...currentIDs, result.id].join(", "));
       }
       setQuantities({});
       setMessage(`Order created · $${(result.itemSubtotalCents / 100).toFixed(2)} items.`);
@@ -369,6 +408,12 @@ export default function HomeScreen() {
   }
 
   function startNewBasket() {
+    const oldOrderIDs = orderIds.split(/[\s,]+/).map((id) => id.trim()).filter(isUUID);
+    void Promise.all(oldOrderIDs.map((id) =>
+      SecureStore.deleteItemAsync(`shopstops.order-cursor.${id}`).catch(() => undefined),
+    ));
+    orderIDsEdited.current = true;
+    void SecureStore.deleteItemAsync(shopperOrderIDsKey).catch(() => undefined);
     orderAttempt.current = null;
     checkoutAttempt.current = null;
     basketWindow.current = null;
@@ -508,9 +553,37 @@ export default function HomeScreen() {
 
     async function pollOrder(orderID: string) {
       let afterID = 0;
+      let status = "Waiting for updates";
       try {
         const savedCursor = await SecureStore.getItemAsync(cursorKey(orderID));
-        if (savedCursor && /^\d+$/.test(savedCursor)) afterID = Number(savedCursor);
+        if (savedCursor) {
+          try {
+            const saved: unknown = JSON.parse(savedCursor);
+            if (saved && typeof saved === "object") {
+              const cursor = saved as { afterId?: unknown; terminal?: unknown; status?: unknown };
+              if (typeof cursor.afterId === "number" && Number.isSafeInteger(cursor.afterId) && cursor.afterId >= 0) {
+                afterID = cursor.afterId;
+              }
+              if (typeof cursor.terminal === "boolean" && cursor.terminal) {
+                terminalOrders.current.add(orderID);
+              }
+              if (typeof cursor.status === "string") status = cursor.status;
+            } else if (/^\d+$/.test(savedCursor)) {
+              afterID = Number(savedCursor);
+            }
+          } catch {
+            if (/^\d+$/.test(savedCursor)) afterID = Number(savedCursor);
+          }
+        }
+        setOrderProgress((current) => ({
+          ...current,
+          [orderID]: {
+            events: current[orderID]?.events ?? [],
+            status,
+            nextAfterId: afterID,
+            error: "",
+          },
+        }));
       } catch {
         setOrderProgress((current) => ({
           ...current,
@@ -537,21 +610,7 @@ export default function HomeScreen() {
           });
           if (stopped) return;
           afterID = result.nextAfterId;
-          try {
-            await SecureStore.setItemAsync(cursorKey(orderID), String(afterID));
-          } catch {
-            setOrderProgress((current) => ({
-              ...current,
-              [orderID]: {
-                events: current[orderID]?.events ?? [],
-                status: current[orderID]?.status ?? "Tracking",
-                nextAfterId: afterID,
-                error: "Updates are live, but the cursor could not be saved on this device.",
-              },
-            }));
-          }
           if (result.events.length > 0) {
-            let status = "";
             let terminal = false;
             for (const event of result.events) {
               const orderState = event.data.state;
@@ -572,6 +631,7 @@ export default function HomeScreen() {
                 status = event.data.stopType === "dropoff" ? "delivery stop complete" : "pickup complete";
               }
             }
+            if (status === "Waiting for updates") status = "Updates received";
             setOrderProgress((current) => {
               const previous = current[orderID];
               const knownIDs = new Set((previous?.events ?? []).map((event) => event.id));
@@ -590,6 +650,23 @@ export default function HomeScreen() {
               };
             });
             if (terminal) terminalOrders.current.add(orderID);
+          }
+          try {
+            await SecureStore.setItemAsync(cursorKey(orderID), JSON.stringify({
+              afterId: afterID,
+              terminal: terminalOrders.current.has(orderID),
+              status,
+            }));
+          } catch {
+            setOrderProgress((current) => ({
+              ...current,
+              [orderID]: {
+                events: current[orderID]?.events ?? [],
+                status: current[orderID]?.status ?? status,
+                nextAfterId: afterID,
+                error: "Updates are live, but the cursor could not be saved on this device.",
+              },
+            }));
           }
         } catch (error) {
           if (stopped || controller.signal.aborted) return;
@@ -1064,7 +1141,7 @@ export default function HomeScreen() {
                 label="Order IDs (comma separated)"
                 onChangeText={(value) => {
                   checkoutAttempt.current = null;
-                  setOrderIds(value);
+                  saveOrderIDs(value);
                 }}
                 value={orderIds}
               />

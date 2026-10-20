@@ -111,8 +111,11 @@ Customers can long-poll `GET /orders/{orderId}/events` with a `Last-Event-ID`
 cursor for order state, bundle activation, and the checkout route's stop events.
 The API verifies order ownership and omits sibling order IDs and driver identity
 from event payloads. Requests wait up to 25 seconds and return at most 100
-events; clients should continue from `nextAfterId`. Push notifications and
-WebSocket fan-out remain external integrations.
+events; clients should continue from `nextAfterId`. The mobile shopper persists
+the cursor in OS secure storage per order and stops polling when the order or
+route completes, the screen loses focus, the app backgrounds, or connection
+credentials change. Push notifications and WebSocket fan-out remain external
+integrations.
 
 ## D.C. Unified Basket, routing, and payments
 
@@ -244,14 +247,23 @@ the internal token to applications. The gateway must strip any incoming
 route handlers trust this internal header for assignment checks.
 
 The OpenAPI contract describes subscription, refund, webhook, and customer
-order-event flows. The
+order-event flows. `cmd/shopstops-gateway` is an OIDC JWT-verifying reverse
+proxy for this API. Configure its issuer, audience, role/actor claim names, and
+the same internal API token used by `cmd/shopstops-api`; keep the API private
+behind the gateway. The gateway strips untrusted identity/forwarding headers,
+enforces the route role, and injects the verified actor and role. The OIDC
+provider must issue tokens with a stable actor claim and a top-level role string
+or string array. The gateway validates tokens but does not provide native sign-in
+or issue user tokens.
+The
 `apps/mobile` Expo client targets iOS and Android and exposes shopper, driver,
 merchant order fulfillment and billing API flows; `apps/admin` provides the current
-full-refund operation. Both expect an external trusted identity gateway and
-Stripe publishable key configuration. The clients are API-backed MVP
-foundations, not complete consumer, driver, merchant, or admin products.
-Native identity, admin zone/reporting controls, production routing, and push or
-WebSocket integrations remain unimplemented.
+full-refund operation. Both use the trusted gateway and require externally
+issued user tokens; the mobile client also requires Stripe publishable-key
+configuration. The clients are API-backed MVP foundations, not complete
+consumer, driver, merchant, or admin products.
+Native identity-provider sign-in, admin zone/reporting controls, production
+routing, and push or WebSocket integrations remain unimplemented.
 
 For rollout, configure the initial Union Market corridor as the only enabled
 zone and cap onboarding operationally at 15 merchants and 30 screened drivers.

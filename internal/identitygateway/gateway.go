@@ -8,6 +8,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"unicode"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 )
@@ -24,6 +25,13 @@ type Gateway struct {
 	actorClaim     string
 	allowedOrigins map[string]struct{}
 	proxy          *httputil.ReverseProxy
+}
+
+type identityContextKey struct{}
+
+type trustedIdentity struct {
+	actor string
+	role  string
 }
 
 func New(
@@ -104,7 +112,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if actor == "" || len(actor) > 200 {
+	if !validActor(actor) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -117,9 +125,21 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if actorRole == "dispatch" && contains(roles, "admin") {
 		actorRole = "admin"
 	}
-	r.Header.Set("X-ShopStops-Actor", actor)
-	r.Header.Set("X-ShopStops-Actor-Role", actorRole)
+	identity := trustedIdentity{actor: actor, role: actorRole}
+	r = r.WithContext(context.WithValue(r.Context(), identityContextKey{}, identity))
 	g.proxy.ServeHTTP(w, r)
+}
+
+func validActor(actor string) bool {
+	if actor == "" || len(actor) > 200 || strings.TrimSpace(actor) != actor {
+		return false
+	}
+	for _, char := range actor {
+		if unicode.IsControl(char) {
+			return false
+		}
+	}
+	return true
 }
 
 func (g *Gateway) handleCORS(w http.ResponseWriter, r *http.Request) bool {
@@ -167,8 +187,10 @@ func (g *Gateway) rewrite(proxyRequest *httputil.ProxyRequest) {
 	proxyRequest.Out.Header.Del("X-Original-URL")
 	proxyRequest.Out.Header.Del("X-Rewrite-URL")
 	proxyRequest.Out.Header.Set("Authorization", "Bearer "+g.internalToken)
-	proxyRequest.Out.Header.Set("X-ShopStops-Actor", proxyRequest.In.Header.Get("X-ShopStops-Actor"))
-	proxyRequest.Out.Header.Set("X-ShopStops-Actor-Role", proxyRequest.In.Header.Get("X-ShopStops-Actor-Role"))
+	if identity, ok := proxyRequest.In.Context().Value(identityContextKey{}).(trustedIdentity); ok {
+		proxyRequest.Out.Header.Set("X-ShopStops-Actor", identity.actor)
+		proxyRequest.Out.Header.Set("X-ShopStops-Actor-Role", identity.role)
+	}
 }
 
 func tokenRoles(token *oidc.IDToken, claimName string) ([]string, error) {

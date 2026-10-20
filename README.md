@@ -43,16 +43,39 @@ export STRIPE_MERCHANT_MONTHLY_PRICE_ID
 go run ./cmd/shopstops-api
 ```
 
-The service listens on `:8080` by default; set `HTTP_ADDR` to override it. It
+The API listens on `:8080` by default; set `HTTP_ADDR` to override it. It
 implements health checks, nearby subscribed-merchant discovery, atomic
 dispatch, checkout creation/payment, Stripe webhooks, driver route reads,
 catalog discovery, order creation, ordered stop arrival/completion, and GPS
 ingestion. Merchant catalog endpoints let authenticated merchants manage item
 names, descriptions, prices, delivery volumes, and customer-facing availability.
-Protected endpoints use a shared internal bearer token and must be placed
-behind a gateway that authenticates users, enforces roles, strips client-supplied
-`X-ShopStops-Actor` headers, and injects the authenticated actor
-identity. Do not distribute this internal token to client applications.
+Protected endpoints use a shared internal bearer token and must not be exposed
+directly to clients. Run the included OIDC identity gateway as a separate
+process, with both services receiving the same private internal token:
+
+```sh
+export SHOPSTOPS_OIDC_ISSUER='https://identity.example.com/'
+export SHOPSTOPS_OIDC_AUDIENCE='shopstops-api'
+export SHOPSTOPS_OIDC_ROLE_CLAIM='roles'
+export SHOPSTOPS_OIDC_ACTOR_CLAIM='sub'
+export SHOPSTOPS_API_URL='http://127.0.0.1:8080'
+# Comma-separated exact HTTPS origins for browser clients; omit for native-only.
+export SHOPSTOPS_GATEWAY_ALLOWED_ORIGINS='https://admin.shopstops.example'
+export SHOPSTOPS_INTERNAL_API_TOKEN='<same secret used by the API>'
+HTTP_ADDR=':8081' go run ./cmd/shopstops-gateway
+```
+
+The gateway verifies issuer, audience, signature, and expiry using OIDC discovery
+and the issuer's JWKS. Tokens must include a stable `sub` or configured actor
+claim, and the configured role claim must be a role string or string array
+containing `customer`, `merchant`, `driver`, `dispatch`, or `admin`. It maps
+route access to those roles, removes client-supplied actor, role, forwarding,
+cookie, and authorization headers, and injects the verified actor/role plus the
+internal API bearer token. `/v1/healthz` and the Stripe-signature-verified
+`/v1/webhooks/stripe` route remain public. Place the gateway behind TLS
+termination and firewall the API so only the gateway and trusted operations
+systems can reach it. The gateway validates externally issued JWTs; it does not
+provide a sign-in UI or issue tokens. Never distribute the internal token.
 Delivery/service fee configuration is in integer cents and defaults to zero if
 unset. The checkout endpoint builds the merchant item lines from each order's
 `item_subtotal_cents` snapshot and applies the D.C. surcharge from the configured
@@ -102,13 +125,12 @@ returned to the authenticated customer.
 
 Starter clients are in `apps/mobile` (Expo iOS/Android) and `apps/admin` (Vite
 web). The mobile client provides nearby-store discovery, checkout/payment,
-assigned-route viewing and opt-in foreground/background GPS sharing, and
+cursor-resumed shopper order progress, assigned-route viewing and opt-in foreground/background GPS sharing, and
 merchant order fulfillment and subscription setup. Background tracking stores
 the gateway session in OS secure storage only while tracking is active and
 clears it when tracking stops. The admin client provides the existing
-full-refund operation. Both
-expect an identity-aware public gateway to validate user session tokens and
-inject backend actor/role headers. Neither client may receive the backend
+full-refund operation. Both use the identity gateway to validate externally
+issued user tokens and inject backend actor/role headers. Neither client may receive the backend
 Stripe secret or internal API token.
 
 Run the mobile client from `apps/mobile` with `npm ci`, then use
@@ -116,6 +138,8 @@ Run the mobile client from `apps/mobile` with `npm ci`, then use
 Run the admin client from `apps/admin` with `npm ci` and `npm run dev`. Configure
 `EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY` for mobile PaymentSheet flows. The shopper
 client can browse visible store catalogs and create orders before checkout; it
-still requires an identity-aware gateway and a valid customer delivery
-location. Customer order updates are available through a cursor-based long-poll
-endpoint; push notifications and WebSocket fan-out remain follow-on integrations.
+still requires an OIDC provider that issues matching tokens and a valid customer
+delivery location. Shopper progress resumes from a device-secure per-order
+cursor and stops polling on completion, screen blur, app backgrounding, or
+account changes. Native provider sign-in and push/WebSocket delivery remain
+follow-on work.
