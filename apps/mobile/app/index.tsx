@@ -135,6 +135,20 @@ function isUUID(value: string) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
+function merchantCatalogDraft(item: MerchantCatalogItem): MerchantCatalogDraft {
+  return {
+    name: item.name,
+    description: item.description,
+    unitPriceCents: String(item.unitPriceCents),
+    volumeLiters: item.volumeLiters,
+  };
+}
+
+function isValidCatalogVolume(value: number) {
+  return Number.isFinite(value) && value > 0 && value <= 100000 &&
+    Math.abs(value * 100 - Math.round(value * 100)) < 1e-8;
+}
+
 export default function HomeScreen() {
   const isFocused = useIsFocused();
   const [role, setRole] = useState<Role>("Shopper");
@@ -187,6 +201,7 @@ export default function HomeScreen() {
       volumeLiters: number;
     };
   } | null>(null);
+  const routeStopAttempts = useRef(new Map<string, { eventId: string; observedAt: string }>());
   const checkoutAttempt = useRef<{
     key: string;
     body: {
@@ -278,6 +293,7 @@ export default function HomeScreen() {
       terminalOrders.current.clear();
       setCheckout(null);
       setRoute(null);
+      routeStopAttempts.current.clear();
       setSubscription(null);
       setMerchantCatalog([]);
       setMerchantOrders([]);
@@ -470,6 +486,12 @@ export default function HomeScreen() {
 
   async function updateRouteStop(stopId: string, type: "arrive" | "complete") {
     const routeKey = routeId.trim();
+    const attemptKey = `${routeKey}:${stopId}:${type}`;
+    const attempt = routeStopAttempts.current.get(attemptKey) ?? {
+      eventId: idempotencyKey(),
+      observedAt: new Date().toISOString(),
+    };
+    routeStopAttempts.current.set(attemptKey, attempt);
     const result = await run(() =>
       apiRequest<StopEvent>(
         settings,
@@ -477,14 +499,15 @@ export default function HomeScreen() {
         {
           method: "POST",
           body: JSON.stringify({
-            eventId: idempotencyKey(),
+            eventId: attempt.eventId,
             type,
-            observedAt: new Date().toISOString(),
+            observedAt: attempt.observedAt,
           }),
         },
       ),
     );
     if (result) {
+      routeStopAttempts.current.delete(attemptKey);
       setRoute((current) =>
         current
           ? {
@@ -789,13 +812,7 @@ export default function HomeScreen() {
     if (items) {
       setMerchantCatalog(items);
       setMerchantCatalogDrafts(Object.fromEntries(items.map((item) => [
-        item.id,
-        {
-          name: item.name,
-          description: item.description,
-          unitPriceCents: String(item.unitPriceCents),
-          volumeLiters: item.volumeLiters,
-        },
+        item.id, merchantCatalogDraft(item),
       ])));
     }
   }
@@ -815,9 +832,10 @@ export default function HomeScreen() {
   async function createMerchantCatalogItem() {
     const price = Number(newItemPrice);
     const volume = Number(newItemVolume);
-    if (!merchantStoreLocation.trim() || !newItemName.trim() ||
-        !Number.isInteger(price) || price < 1 || !Number.isFinite(volume) || volume <= 0) {
-      setMessage("Enter your store location ID, item name, price in cents, and positive volume.");
+    if (!merchantStoreLocation.trim() || !newItemName.trim() || newItemName.trim().length > 200 ||
+        newItemDescription.length > 1000 || !Number.isInteger(price) || price < 1 ||
+        price > 10000000 || !isValidCatalogVolume(volume)) {
+      setMessage("Enter a store, item name (up to 200 characters), description (up to 1,000 characters), price (1–10,000,000 cents), and volume (over 0, up to 100,000 liters in 0.01-liter increments).");
       return;
     }
     const body = {
@@ -855,9 +873,9 @@ export default function HomeScreen() {
     if (!draft) return;
     const price = Number(draft.unitPriceCents);
     const volume = Number(draft.volumeLiters);
-    if (!draft.name.trim() || !Number.isInteger(price) || price < 1 ||
-        !Number.isFinite(volume) || volume <= 0) {
-      setMessage("Enter a valid item name, price in cents, and positive volume.");
+    if (!draft.name.trim() || draft.name.trim().length > 200 || draft.description.length > 1000 ||
+        !Number.isInteger(price) || price < 1 || price > 10000000 || !isValidCatalogVolume(volume)) {
+      setMessage("Enter an item name (up to 200 characters), description (up to 1,000 characters), price (1–10,000,000 cents), and volume (over 0, up to 100,000 liters in 0.01-liter increments).");
       return;
     }
     const updated = await run(() =>
@@ -880,6 +898,10 @@ export default function HomeScreen() {
       setMerchantCatalog((current) => current.map((entry) =>
         entry.id === updated.id ? updated : entry,
       ));
+      setMerchantCatalogDrafts((current) => ({
+        ...current,
+        [updated.id]: merchantCatalogDraft(updated),
+      }));
       setMessage("Catalog item updated.");
     }
   }
@@ -887,6 +909,13 @@ export default function HomeScreen() {
   async function toggleMerchantCatalogAvailability(item: MerchantCatalogItem) {
     const draft = merchantCatalogDrafts[item.id];
     if (!draft) return;
+    const price = Number(draft.unitPriceCents);
+    const volume = Number(draft.volumeLiters);
+    if (!draft.name.trim() || draft.name.trim().length > 200 || draft.description.length > 1000 ||
+        !Number.isInteger(price) || price < 1 || price > 10000000 || !isValidCatalogVolume(volume)) {
+      setMessage("Save valid item details before changing customer availability.");
+      return;
+    }
     const updated = await run(() =>
       apiRequest<MerchantCatalogItem>(
         settings,
@@ -895,8 +924,8 @@ export default function HomeScreen() {
           method: "PATCH",
           body: JSON.stringify({
             ...draft,
-            unitPriceCents: Number(draft.unitPriceCents),
-            volumeLiters: Number(draft.volumeLiters),
+            unitPriceCents: price,
+            volumeLiters: volume,
             available: !item.available,
           }),
         },
@@ -906,6 +935,10 @@ export default function HomeScreen() {
       setMerchantCatalog((current) => current.map((entry) =>
         entry.id === updated.id ? updated : entry,
       ));
+      setMerchantCatalogDrafts((current) => ({
+        ...current,
+        [updated.id]: merchantCatalogDraft(updated),
+      }));
     }
   }
 
@@ -1273,7 +1306,16 @@ export default function HomeScreen() {
               Your gateway session is stored securely only while sharing is active. Stop sequencing
               is controlled by the server.
             </Text>
-            <Field editable={!tracking} label="Assigned route ID" onChangeText={setRouteId} value={routeId} />
+            <Field
+              editable={!tracking}
+              label="Assigned route ID"
+              onChangeText={(value) => {
+                setRouteId(value);
+                setRoute(null);
+                routeStopAttempts.current.clear();
+              }}
+              value={routeId}
+            />
             <ActionButton disabled={busy || tracking} label="Load route" onPress={() => void loadRoute()} />
             {route ? (
               <View style={styles.routeBox}>
@@ -1420,8 +1462,7 @@ export default function HomeScreen() {
                 <Text style={styles.tinyNote}>No catalog items loaded. Refresh to view items for your merchant account.</Text>
               ) : null}
               {merchantCatalog.map((item) => {
-                const draft = merchantCatalogDrafts[item.id];
-                if (!draft) return null;
+                const draft = merchantCatalogDrafts[item.id] ?? merchantCatalogDraft(item);
                 return (
                   <View key={item.id} style={styles.merchantItem}>
                     <Text style={styles.resultSub}>Store · {item.storeLocationId}</Text>
