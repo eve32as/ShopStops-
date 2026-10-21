@@ -106,6 +106,16 @@ variable "gateway_image" {
   }
 }
 
+variable "migration_image" {
+  description = "Immutable database migration runner image built from Dockerfile.db-migrate."
+  type        = string
+
+  validation {
+    condition     = can(regex("@sha256:[0-9a-f]{64}$", var.migration_image))
+    error_message = "migration_image must use an immutable sha256 digest reference."
+  }
+}
+
 variable "db_engine_version" {
   description = "Supported PostgreSQL 16 minor version available in the selected AWS region."
   type        = string

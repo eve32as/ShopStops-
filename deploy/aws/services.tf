@@ -70,6 +70,43 @@ resource "aws_iam_role_policy" "ecs_secrets" {
   })
 }
 
+resource "aws_iam_role" "migrator_execution" {
+  name = "${local.name}-migrator-execution"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        Service = "ecs-tasks.amazonaws.com"
+      }
+      Action = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "migrator_execution" {
+  role       = aws_iam_role.migrator_execution.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}
+
+resource "aws_iam_role_policy" "migrator_secrets" {
+  name = "${local.name}-read-migration-secrets"
+  role = aws_iam_role.migrator_execution.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = ["secretsmanager:GetSecretValue"]
+      Resource = [
+        aws_db_instance.main.master_user_secret[0].secret_arn,
+        aws_secretsmanager_secret.app_database_password.arn
+      ]
+    }]
+  })
+}
+
 resource "aws_iam_role" "ecs_task" {
   name = "${local.name}-ecs-task"
 
@@ -190,6 +227,50 @@ resource "aws_ecs_task_definition" "gateway" {
         awslogs-group         = aws_cloudwatch_log_group.gateway.name
         awslogs-region        = var.aws_region
         awslogs-stream-prefix = "gateway"
+      }
+    }
+  }])
+}
+
+resource "aws_ecs_task_definition" "migrator" {
+  family                   = "${local.name}-db-migrator"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = "256"
+  memory                   = "512"
+  execution_role_arn       = aws_iam_role.migrator_execution.arn
+  task_role_arn            = aws_iam_role.ecs_task.arn
+
+  container_definitions = jsonencode([{
+    name                   = "db-migrator"
+    image                  = var.migration_image
+    essential              = true
+    readonlyRootFilesystem  = true
+    environment = [
+      { name = "PGHOST", value = aws_db_instance.main.address },
+      { name = "PGPORT", value = "5432" },
+      { name = "PGDATABASE", value = "shopstops" },
+      { name = "PGUSER", value = "shopstops_admin" },
+      { name = "PGSSLMODE", value = "verify-full" },
+      { name = "PGSSLROOTCERT", value = "/etc/ssl/certs/rds-global-bundle.pem" },
+      { name = "SHOPSTOPS_MIGRATIONS_DIR", value = "/opt/shopstops/migrations" }
+    ]
+    secrets = [
+      {
+        name      = "PGPASSWORD"
+        valueFrom = "${aws_db_instance.main.master_user_secret[0].secret_arn}:password::"
+      },
+      {
+        name      = "SHOPSTOPS_DB_APP_PASSWORD"
+        valueFrom = aws_secretsmanager_secret.app_database_password.arn
+      }
+    ]
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        awslogs-group         = aws_cloudwatch_log_group.migrator.name
+        awslogs-region        = var.aws_region
+        awslogs-stream-prefix = "migrator"
       }
     }
   }])

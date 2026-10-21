@@ -126,6 +126,12 @@ resource "aws_security_group" "database" {
   vpc_id      = aws_vpc.main.id
 }
 
+resource "aws_security_group" "migrator" {
+  name        = "${local.name}-migrator"
+  description = "Temporary private migration task egress"
+  vpc_id      = aws_vpc.main.id
+}
+
 resource "aws_vpc_security_group_ingress_rule" "alb_https" {
   security_group_id = aws_security_group.load_balancer.id
   description       = "HTTPS from public clients"
@@ -214,4 +220,31 @@ resource "aws_vpc_security_group_ingress_rule" "database_from_api" {
   from_port                    = 5432
   ip_protocol                  = "tcp"
   to_port                      = 5432
+}
+
+resource "aws_vpc_security_group_ingress_rule" "database_from_migrator" {
+  security_group_id            = aws_security_group.database.id
+  description                  = "PostgreSQL from one-off migration tasks"
+  referenced_security_group_id = aws_security_group.migrator.id
+  from_port                    = 5432
+  ip_protocol                  = "tcp"
+  to_port                      = 5432
+}
+
+resource "aws_vpc_security_group_egress_rule" "migrator_to_database" {
+  security_group_id            = aws_security_group.migrator.id
+  description                  = "PostgreSQL migrations to RDS"
+  referenced_security_group_id = aws_security_group.database.id
+  from_port                    = 5432
+  ip_protocol                  = "tcp"
+  to_port                      = 5432
+}
+
+resource "aws_vpc_security_group_egress_rule" "migrator_https" {
+  security_group_id = aws_security_group.migrator.id
+  description       = "ECR, CloudWatch Logs, and Secrets Manager task startup"
+  cidr_ipv4         = "0.0.0.0/0"
+  from_port         = 443
+  ip_protocol       = "tcp"
+  to_port           = 443
 }

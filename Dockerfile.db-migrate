@@ -1,0 +1,17 @@
+FROM postgres:16-alpine
+
+RUN apk add --no-cache ca-certificates curl \
+    && curl --fail --silent --show-error --location \
+      https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem \
+      --output /etc/ssl/certs/rds-global-bundle.pem \
+    && chmod 0444 /etc/ssl/certs/rds-global-bundle.pem
+
+COPY db/migrations/ /opt/shopstops/migrations/
+COPY scripts/db-migrate.sh /usr/local/bin/shopstops-db-migrate
+
+ENV SHOPSTOPS_MIGRATIONS_DIR=/opt/shopstops/migrations
+ENV PGSSLMODE=verify-full
+ENV PGSSLROOTCERT=/etc/ssl/certs/rds-global-bundle.pem
+
+USER postgres
+ENTRYPOINT ["/usr/local/bin/shopstops-db-migrate"]

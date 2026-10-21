@@ -93,6 +93,12 @@ resource "aws_secretsmanager_secret" "internal_api_token" {
   recovery_window_in_days = 30
 }
 
+resource "aws_secretsmanager_secret" "app_database_password" {
+  name                    = "${local.name}/database/application-password"
+  description             = "Password for the least-privilege ShopStops application database role."
+  recovery_window_in_days = 30
+}
+
 resource "aws_secretsmanager_secret" "stripe_secret_key" {
   count = var.enable_stripe ? 1 : 0
 
