@@ -56,27 +56,28 @@ async function main() {
 
   const auditExitCode = Number(process.env.AUDIT_EXIT_CODE);
   let audit;
+  let reportError = false;
   try {
     audit = JSON.parse(fs.readFileSync(reportPath, "utf8"));
   } catch {
-    appendSummary("### Mobile dependency audit\n\nAudit output was missing or invalid JSON; the check is blocked.\n");
-    throw new Error("npm audit output was missing or invalid JSON.");
+    reportError = true;
   }
 
-  if (audit.error || !audit.vulnerabilities || typeof audit.vulnerabilities !== "object") {
-    appendSummary("### Mobile dependency audit\n\nAudit could not produce a valid vulnerability report; the check is blocked.\n");
-    throw new Error("npm audit returned an infrastructure or report-format error.");
-  }
-
-  const vulnerabilities = Object.entries(audit.vulnerabilities);
+  const validVulnerabilityReport = audit?.vulnerabilities
+    && typeof audit.vulnerabilities === "object"
+    && !Array.isArray(audit.vulnerabilities);
+  reportError ||= !audit || Boolean(audit.error) || !validVulnerabilityReport;
+  const vulnerabilities = validVulnerabilityReport ? Object.entries(audit.vulnerabilities) : [];
   const lines = [
     "### Mobile dependency audit",
     "",
-    `Findings: **${vulnerabilities.length} vulnerable package${vulnerabilities.length === 1 ? "" : "s"}**.`,
+    reportError
+      ? "Audit could not produce a valid report; inspect the job logs."
+      : `Findings: **${vulnerabilities.length} vulnerable package${vulnerabilities.length === 1 ? "" : "s"}**.`,
     "",
   ];
 
-  if (vulnerabilities.length > 0) {
+  if (!reportError && vulnerabilities.length > 0) {
     lines.push("| Package | Severity | Direct |");
     lines.push("| --- | --- | --- |");
     for (const [name, finding] of vulnerabilities.slice(0, 100)) {
@@ -86,11 +87,11 @@ async function main() {
     if (vulnerabilities.length > 100) {
       lines.push("", `Showing the first 100 of ${vulnerabilities.length} affected packages.`);
     }
-  } else {
+  } else if (!reportError) {
     lines.push("No vulnerable packages reported.");
   }
 
-  const failed = !Number.isInteger(auditExitCode) || auditExitCode !== 0 || vulnerabilities.length > 0;
+  const failed = reportError || !Number.isInteger(auditExitCode) || auditExitCode !== 0 || vulnerabilities.length > 0;
   if (failed) {
     lines.push("", "**Result: failed. Dependency audit findings remain blocking.**");
   } else {
@@ -105,14 +106,15 @@ async function main() {
       .map(([name, finding]) => `${name} (${finding.severity || "unknown"})`)
       .join(", ");
     const more = vulnerabilities.length > 30 ? `, and ${vulnerabilities.length - 30} more` : "";
+    const reportStatus = reportError ? " Audit report unavailable; inspect the job logs." : "";
     await notify(
       process.env.WEBHOOK_URL,
-      `Mobile dependency audit failed for ${repository}: ${vulnerabilities.length} vulnerable packages. ${packages}${more} Workflow: ${runUrl}`,
+      `Mobile dependency audit failed for ${repository}: ${vulnerabilities.length} vulnerable packages. ${packages}${more}.${reportStatus} Workflow: ${runUrl}`,
     );
   }
 
   if (failed) {
-    throw new Error(`Mobile dependency audit failed with exit code ${auditExitCode}.`);
+    throw new Error(`Mobile dependency audit failed with exit code ${process.env.AUDIT_EXIT_CODE || "unknown"}.`);
   }
 }
 
