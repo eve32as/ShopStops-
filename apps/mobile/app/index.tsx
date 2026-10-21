@@ -1307,7 +1307,7 @@ export default function HomeScreen() {
               is controlled by the server.
             </Text>
             <Field
-              editable={!tracking}
+              editable={!tracking && !busy}
               label="Assigned route ID"
               onChangeText={(value) => {
                 setRouteId(value);
