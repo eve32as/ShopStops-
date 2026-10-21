@@ -280,6 +280,43 @@ SELECT process_stripe_checkout_event(
     '{"eventId":"evt_test_success","type":"payment_intent.succeeded"}',
     :'checkout_id', 'pi_test_success', 3120, 'usd', 'succeeded', 100, 'ch_test_success'
 );
+SELECT record_checkout_payment(
+    :'api_checkout_id', 'pi_test_session', 2620, 0, 'requires_payment_method'
+);
+SELECT process_stripe_checkout_session_completed(
+    'evt_checkout_session',
+    '{"eventId":"evt_checkout_session","type":"checkout.session.completed"}',
+    :'api_checkout_id', 'pi_test_session', 2620, 'usd', 80, 'ch_test_session'
+) AS checkout_session_route_id \gset
+SELECT process_stripe_checkout_session_completed(
+    'evt_checkout_session',
+    '{"eventId":"evt_checkout_session","type":"checkout.session.completed"}',
+    :'api_checkout_id', 'pi_test_session', 2620, 'usd', 80, 'ch_test_session'
+) AS checkout_session_replay_route_id \gset
+SELECT set_config('shopstops.test_checkout_session_route_id',
+                  :'checkout_session_route_id', true);
+SELECT set_config('shopstops.test_checkout_session_replay_route_id',
+                  :'checkout_session_replay_route_id', true);
+DO $$
+BEGIN
+    IF current_setting('shopstops.test_checkout_session_route_id')::uuid <>
+       current_setting('shopstops.test_checkout_session_replay_route_id')::uuid THEN
+        RAISE EXCEPTION 'checkout session retry created a duplicate route';
+    END IF;
+    IF (SELECT event_type FROM stripe_webhook_events
+        WHERE stripe_event_id = 'evt_checkout_session') <>
+           'checkout.session.completed'
+       OR (SELECT processed_at FROM stripe_webhook_events
+           WHERE stripe_event_id = 'evt_checkout_session') IS NULL
+       OR (SELECT status FROM unified_checkouts
+           WHERE id = current_setting('shopstops.test_api_checkout_id')::uuid) <>
+           'dispatching'
+       OR (SELECT count(*) FROM unified_delivery_routes
+           WHERE idempotency_key = 'stripe-checkout-session-evt_checkout_session') <> 1 THEN
+        RAISE EXCEPTION 'paid checkout session did not reconcile to one active route';
+    END IF;
+END;
+$$;
 SELECT process_stripe_checkout_event(
     'evt_test_success', 'payment_intent.succeeded',
     '{"eventId":"evt_test_success","type":"payment_intent.succeeded"}',

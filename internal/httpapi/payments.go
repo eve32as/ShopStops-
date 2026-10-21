@@ -25,11 +25,13 @@ type CheckoutPayment struct {
 }
 
 type PaymentIntent struct {
-	ID           string
-	ClientSecret string
-	Status       string
-	AmountCents  int64
-	Currency     string
+	ID             string
+	ClientSecret   string
+	Status         string
+	AmountCents    int64
+	AmountReceived int64
+	Currency       string
+	ChargeID       string
 }
 
 type StripePaymentEvent struct {
@@ -69,6 +71,7 @@ type PaymentRepository interface {
 	CheckoutForPayment(context.Context, string, string) (CheckoutPayment, error)
 	RecordPaymentIntent(context.Context, string, string, int64, string) error
 	ApplyStripePaymentEvent(context.Context, StripePaymentEvent, int64, json.RawMessage) error
+	ApplyStripeCheckoutSessionEvent(context.Context, StripePaymentEvent, int64, json.RawMessage) error
 	PendingConnectTransfers(context.Context, string) ([]ConnectTransfer, error)
 	BeginConnectTransferAttempt(context.Context, string, string) error
 	RecordConnectTransfer(context.Context, string, string, string) error
@@ -130,6 +133,40 @@ func (g *StripeGateway) VerifyWebhook(
 		return StripePaymentEvent{}, nil, err
 	}
 	result := StripePaymentEvent{ID: event.ID, Type: string(event.Type)}
+	if result.Type == "checkout.session.completed" {
+		var session struct {
+			ID                string            `json:"id"`
+			Mode              string            `json:"mode"`
+			Status            string            `json:"status"`
+			PaymentStatus     string            `json:"payment_status"`
+			PaymentIntent     json.RawMessage   `json:"payment_intent"`
+			AmountTotal       int64             `json:"amount_total"`
+			Currency          string            `json:"currency"`
+			ClientReferenceID string            `json:"client_reference_id"`
+			Metadata          map[string]string `json:"metadata"`
+		}
+		if err := json.Unmarshal(event.Data.Raw, &session); err != nil {
+			return StripePaymentEvent{}, nil, err
+		}
+		result.PaymentIntentID = stripeObjectID(session.PaymentIntent)
+		result.CheckoutID = session.Metadata["shopstops_checkout_id"]
+		if result.CheckoutID == "" {
+			result.CheckoutID = session.ClientReferenceID
+		}
+		result.AmountCents = session.AmountTotal
+		result.Currency = strings.ToLower(session.Currency)
+		if session.Mode == "payment" && session.Status == "complete" &&
+			session.PaymentStatus == "paid" {
+			result.PaymentStatus = "succeeded"
+		}
+		summary, err := json.Marshal(map[string]any{
+			"eventId": result.ID, "type": result.Type, "sessionId": session.ID,
+			"checkoutId": result.CheckoutID, "paymentIntentId": result.PaymentIntentID,
+			"amountCents": result.AmountCents, "currency": result.Currency,
+			"status": result.PaymentStatus,
+		})
+		return result, summary, err
+	}
 	if isLifecycleStripeEvent(result.Type) {
 		result, err = parseStripeLifecycleEvent(result, event.Data.Raw)
 		if err != nil {
@@ -368,7 +405,10 @@ func paymentIntentFromStripe(intent *stripe.PaymentIntent) PaymentIntent {
 	result := PaymentIntent{
 		ID: intent.ID, Status: string(intent.Status),
 		AmountCents: intent.Amount, Currency: string(intent.Currency),
-		ClientSecret: intent.ClientSecret,
+		ClientSecret: intent.ClientSecret, AmountReceived: intent.AmountReceived,
+	}
+	if intent.LatestCharge != nil {
+		result.ChargeID = intent.LatestCharge.ID
 	}
 	return result
 }
@@ -473,6 +513,10 @@ func (s *Server) stripeWebhook(w http.ResponseWriter, r *http.Request) {
 		s.handleStripeLifecycleWebhook(w, ctx, event, summary)
 		return
 	}
+	if event.Type == "checkout.session.completed" {
+		s.handleStripeCheckoutSessionWebhook(w, ctx, repository, event, summary)
+		return
+	}
 	var processingFee int64
 	if event.Type == "payment_intent.succeeded" {
 		processingFee, err = s.payments.ProcessingFee(ctx, event.PaymentIntentID)
@@ -487,48 +531,103 @@ func (s *Server) stripeWebhook(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "payment event will be retried")
 		return
 	}
-	transfers, err := repository.PendingConnectTransfers(ctx, event.CheckoutID)
-	if err != nil {
-		s.log.Error("pending Connect transfers could not be loaded")
+	if err := s.completeConnectTransfers(ctx, repository, event.CheckoutID); err != nil {
+		s.log.Error("Stripe Connect transfers could not be completed")
 		writeError(w, http.StatusServiceUnavailable, "payment event will be retried")
 		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "processed"})
+}
+
+func (s *Server) handleStripeCheckoutSessionWebhook(
+	w http.ResponseWriter,
+	ctx context.Context,
+	repository PaymentRepository,
+	event StripePaymentEvent,
+	summary json.RawMessage,
+) {
+	if event.PaymentStatus != "succeeded" {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ignored"})
+		return
+	}
+	if !isUUID(event.CheckoutID) || event.PaymentIntentID == "" ||
+		event.AmountCents <= 0 || event.Currency == "" {
+		writeError(w, http.StatusBadRequest, "paid checkout session is missing payment context")
+		return
+	}
+	intent, err := s.payments.RetrievePaymentIntent(ctx, event.PaymentIntentID)
+	if err != nil {
+		s.log.Error("Stripe checkout session payment intent could not be retrieved")
+		writeError(w, http.StatusServiceUnavailable, "payment event will be retried")
+		return
+	}
+	if intent.ID != event.PaymentIntentID || intent.Status != "succeeded" ||
+		intent.AmountReceived != event.AmountCents ||
+		!strings.EqualFold(intent.Currency, event.Currency) || intent.ChargeID == "" {
+		writeError(w, http.StatusBadRequest, "checkout session payment does not match Stripe")
+		return
+	}
+	event.AmountCents = intent.AmountReceived
+	event.Currency = strings.ToLower(intent.Currency)
+	event.ChargeID = intent.ChargeID
+	processingFee, err := s.payments.ProcessingFee(ctx, event.PaymentIntentID)
+	if err != nil {
+		s.log.Error("Stripe processing fee could not be retrieved")
+		writeError(w, http.StatusServiceUnavailable, "payment event will be retried")
+		return
+	}
+	if err := repository.ApplyStripeCheckoutSessionEvent(
+		ctx, event, processingFee, summary,
+	); err != nil {
+		s.log.Error("Stripe checkout session could not be reconciled")
+		writeError(w, http.StatusServiceUnavailable, "payment event will be retried")
+		return
+	}
+	if err := s.completeConnectTransfers(ctx, repository, event.CheckoutID); err != nil {
+		s.log.Error("Stripe Connect transfers could not be completed")
+		writeError(w, http.StatusServiceUnavailable, "payment event will be retried")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "processed"})
+}
+
+func (s *Server) completeConnectTransfers(
+	ctx context.Context,
+	repository PaymentRepository,
+	checkoutID string,
+) error {
+	transfers, err := repository.PendingConnectTransfers(ctx, checkoutID)
+	if err != nil {
+		return err
 	}
 	for _, transfer := range transfers {
 		if transfer.AmountCents == 0 {
 			if err := repository.RecordConnectTransfer(
 				ctx, transfer.CheckoutID, transfer.MerchantID, "",
 			); err != nil {
-				s.log.Error("zero-value Connect transfer could not be finalized")
-				writeError(w, http.StatusServiceUnavailable, "payment event will be retried")
-				return
+				return err
 			}
 			continue
 		}
 		if err := repository.BeginConnectTransferAttempt(
 			ctx, transfer.CheckoutID, transfer.MerchantID,
 		); err != nil {
-			s.log.Error("Stripe Connect transfer requires reconciliation")
-			writeError(w, http.StatusServiceUnavailable, "payment event will be retried")
-			return
+			return err
 		}
 		transferID, err := s.payments.CreateConnectTransfer(
 			ctx, transfer,
 			"shopstops-transfer-"+transfer.CheckoutID+"-"+transfer.MerchantID,
 		)
 		if err != nil {
-			s.log.Error("Stripe Connect transfer request failed")
-			writeError(w, http.StatusServiceUnavailable, "payment event will be retried")
-			return
+			return err
 		}
 		if err := repository.RecordConnectTransfer(
 			ctx, transfer.CheckoutID, transfer.MerchantID, transferID,
 		); err != nil {
-			s.log.Error("Stripe Connect transfer could not be recorded")
-			writeError(w, http.StatusServiceUnavailable, "payment event will be retried")
-			return
+			return err
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "processed"})
+	return nil
 }
 
 func (s *Server) handleStripeLifecycleWebhook(
@@ -757,6 +856,32 @@ func (p *PostgresRepository) ApplyStripePaymentEvent(
 		nullableString(event.ChargeID),
 	).Scan(&checkoutID)
 	return err
+}
+
+func (p *PostgresRepository) ApplyStripeCheckoutSessionEvent(
+	ctx context.Context, event StripePaymentEvent, processingFee int64, summary json.RawMessage,
+) error {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var checkoutID string
+	err = tx.QueryRowContext(ctx, `
+		SELECT process_stripe_checkout_session_completed(
+			$1, $2::jsonb, $3, $4, $5, $6, $7, $8
+		)::text`,
+		event.ID, string(summary), event.CheckoutID, event.PaymentIntentID,
+		event.AmountCents, event.Currency, processingFee, event.ChargeID,
+	).Scan(&checkoutID)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "P0001" {
+			return ErrConflict
+		}
+		return err
+	}
+	return tx.Commit()
 }
 
 func (p *PostgresRepository) PendingConnectTransfers(

@@ -31,6 +31,7 @@ type Server struct {
 	repo            Repository
 	token           string
 	log             *slog.Logger
+	dispatchStreams *dispatchStreamHub
 	payments        PaymentGateway
 	webhookSecret   string
 	merchantPriceID string
@@ -270,7 +271,10 @@ type checkoutResponse struct {
 }
 
 func New(repo Repository, token string, logger *slog.Logger) http.Handler {
-	s := &Server{repo: repo, token: token, log: logger}
+	s := &Server{
+		repo: repo, token: token, log: logger,
+		dispatchStreams: newDispatchStreamHub(),
+	}
 	return s.handler()
 }
 
@@ -280,6 +284,7 @@ func NewWithPayments(
 ) http.Handler {
 	s := &Server{
 		repo: repo, token: token, log: logger,
+		dispatchStreams: newDispatchStreamHub(),
 		payments: payments, webhookSecret: webhookSecret,
 	}
 	if len(merchantPriceIDs) > 0 {
@@ -317,6 +322,7 @@ func (s *Server) handler() http.Handler {
 	mux.Handle("POST /admin/checkouts/{checkoutId}/refund", s.authorized(http.HandlerFunc(s.refundCheckout)))
 	mux.Handle("GET /admin/operations", s.authorized(http.HandlerFunc(s.getAdminOperationsSnapshot)))
 	mux.Handle("GET /admin/dispatch/routes", s.authorized(http.HandlerFunc(s.listAdminDispatchRoutes)))
+	mux.Handle("GET /admin/dispatch/stream", s.authorized(http.HandlerFunc(s.streamAdminDispatchEvents)))
 	mux.Handle("GET /admin/delivery-zones", s.authorized(http.HandlerFunc(s.listAdminDeliveryZones)))
 	mux.Handle("PATCH /admin/delivery-zones/{zoneId}", s.authorized(http.HandlerFunc(s.updateAdminDeliveryZone)))
 	mux.Handle("PATCH /admin/delivery-zones/{zoneId}/dispatch-limits", s.authorized(http.HandlerFunc(s.updateAdminDispatchLimits)))
@@ -922,6 +928,9 @@ func (s *Server) recordDriverLocation(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		s.databaseError(w, err)
 	default:
+		s.dispatchStreams.publish(DriverLocationUpdate{
+			RouteID: routeID, DriverRef: driverRef, ObservedAt: request.ObservedAt,
+		})
 		writeJSON(w, http.StatusAccepted, map[string]int64{"sampleId": sampleID})
 	}
 }

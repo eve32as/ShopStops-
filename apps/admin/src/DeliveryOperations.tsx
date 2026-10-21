@@ -72,6 +72,7 @@ type Props = {
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const operationsRefreshIntervalMs = 15_000
+const dispatchStreamSubprotocol = 'shopstops-admin-v1'
 
 function apiUrl(gatewayUrl: string, path: string) {
   const url = new URL(gatewayUrl.trim())
@@ -84,6 +85,15 @@ function apiUrl(gatewayUrl: string, path: string) {
   const prefix = url.pathname.replace(/\/+$/, '')
   url.pathname = `${prefix.endsWith('/v1') ? prefix : `${prefix}/v1`}${path}`
   return url
+}
+
+function bearerSubprotocol(token: string) {
+  let binary = ''
+  for (const byte of new TextEncoder().encode(token)) {
+    binary += String.fromCharCode(byte)
+  }
+  const encoded = btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '')
+  return `bearer.${encoded}`
 }
 
 function newKey() {
@@ -207,6 +217,7 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
   const [zonesLoading, setZonesLoading] = useState(false)
   const [operations, setOperations] = useState<OperationsSnapshot | null>(null)
   const [assignedRoutes, setAssignedRoutes] = useState<AdminDispatchRoute[]>([])
+  const [dispatchStreamConnected, setDispatchStreamConnected] = useState(false)
   const [zoneSearch, setZoneSearch] = useState('')
   const [updatingZone, setUpdatingZone] = useState('')
   const [savingLimitsZone, setSavingLimitsZone] = useState('')
@@ -272,6 +283,66 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
       window.clearInterval(timer)
     }
   }, [gatewayUrl, sessionToken, loadOperations])
+
+  useEffect(() => {
+    if (!gatewayUrl.trim() || !sessionToken.trim()) {
+      return
+    }
+    let stopped = false
+    let retryDelay = 1_000
+    let retryTimer = 0
+    let connection: WebSocket | null = null
+    const connect = () => {
+      try {
+        const url = apiUrl(gatewayUrl, '/admin/dispatch/stream')
+        url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+        connection = new WebSocket(url.toString(), [
+          dispatchStreamSubprotocol,
+          bearerSubprotocol(sessionToken.trim()),
+        ])
+      } catch {
+        return
+      }
+      connection.onopen = () => {
+        retryDelay = 1_000
+        setDispatchStreamConnected(true)
+      }
+      connection.onmessage = (message) => {
+        try {
+          const update = JSON.parse(String(message.data)) as {
+            type?: string
+            routeId?: string
+            driverRef?: string
+            observedAt?: string
+          }
+          if (update.type !== 'driver.location.updated' ||
+            !update.routeId || !update.driverRef || !update.observedAt ||
+            !Number.isFinite(Date.parse(update.observedAt))) return
+          setAssignedRoutes((routes) => routes.map((route) => {
+            if (route.id !== update.routeId || route.driverRef !== update.driverRef) return route
+            if (route.lastLocationAt &&
+              Date.parse(route.lastLocationAt) >= Date.parse(update.observedAt!)) return route
+            return { ...route, lastLocationAt: update.observedAt! }
+          }))
+        } catch {
+          return
+        }
+      }
+      connection.onerror = () => connection?.close()
+      connection.onclose = () => {
+        if (stopped) return
+        setDispatchStreamConnected(false)
+        retryTimer = window.setTimeout(connect, retryDelay)
+        retryDelay = Math.min(retryDelay * 2, 30_000)
+      }
+    }
+    connect()
+    return () => {
+      stopped = true
+      window.clearTimeout(retryTimer)
+      connection?.close()
+    }
+  }, [gatewayUrl, sessionToken])
 
   const visibleZones = useMemo(() => {
     const query = zoneSearch.trim().toLocaleLowerCase()
@@ -596,6 +667,11 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
             ))}
           </div>
           <div className="operations-table-wrap">
+            <p className="operations-privacy-note" role="status">
+              {dispatchStreamConnected
+                ? 'Live driver location freshness updates connected.'
+                : 'Live updates reconnecting; periodic refresh remains active.'}
+            </p>
             <table className="operations-table">
               <caption>Delivery sector dispatch status</caption>
               <thead>
@@ -648,7 +724,7 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
                     <td>{route.openStopCount}</td>
                     <td>{route.lastLocationAt
                       ? `${Math.max(0, Math.floor(
-                        (Date.parse(operations.generatedAt) - Date.parse(route.lastLocationAt)) / 60000,
+                        (Date.now() - Date.parse(route.lastLocationAt)) / 60000,
                       ))} min ago`
                       : 'No location report'}</td>
                   </tr>

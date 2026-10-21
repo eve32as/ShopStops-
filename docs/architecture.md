@@ -167,7 +167,14 @@ events; clients should continue from `nextAfterId`. The mobile shopper persists
 the cursor in OS secure storage per order and stops polling when the order or
 route completes, the screen loses focus, the app backgrounds, or connection
 credentials change. Push notifications and WebSocket fan-out remain external
-integrations.
+integrations for customer events. The admin dispatch view also has an
+admin-role-only WebSocket stream at `GET /admin/dispatch/stream`. Successful
+driver location writes fan out route, driver reference, and observation time;
+coordinates are not broadcast. Browser clients send their OIDC token as a
+base64url-encoded WebSocket subprotocol, which the identity gateway verifies and
+strips before proxying. The process-local fan-out is best-effort, bounded, and
+supplemented by the existing 15-second operations refresh; deployments with
+multiple API replicas need a shared event broker for cross-replica delivery.
 
 ## D.C. Unified Basket, routing, and payments
 
@@ -211,6 +218,14 @@ unsubscribed additional merchant. D.C. delivery addresses are identified by
 one $0.20 invoice line. Only after Stripe confirms payment does
 `record_checkout_payment` create the tax-holding ledger record and mark the
 checkout paid.
+
+For Stripe Checkout integrations, the verified
+`checkout.session.completed` webhook reconciles only `payment` sessions marked
+paid. It re-retrieves the PaymentIntent, validates its persisted checkout,
+amount, currency, charge, and fee, then atomically records payment reconciliation
+and creates the idempotent unified delivery route. This uses the current unified
+route model rather than legacy `delivery_bundles`; sessions without a matching
+persisted PaymentIntent are rejected and unpaid sessions are ignored.
 
 The Go `POST /checkouts` handler accepts an authenticated customer's anchor
 store, order IDs, destination coordinates, and delivery window. Delivery and

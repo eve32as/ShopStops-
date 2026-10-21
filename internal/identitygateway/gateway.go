@@ -2,6 +2,7 @@ package identitygateway
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -95,6 +96,25 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	authorization := r.Header.Get("Authorization")
+	if isAdminDispatchStreamUpgrade(r) {
+		protocolToken, protocols, valid := dispatchStreamProtocolToken(
+			r.Header.Get("Sec-WebSocket-Protocol"),
+		)
+		if !valid {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if protocolToken != "" {
+			if authorization != "" {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			authorization = "Bearer " + protocolToken
+		}
+		if len(protocols) > 0 {
+			r.Header.Set("Sec-WebSocket-Protocol", strings.Join(protocols, ", "))
+		}
+	}
 	const prefix = "Bearer "
 	if !strings.HasPrefix(authorization, prefix) || len(authorization) <= len(prefix) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -129,6 +149,43 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	identity := trustedIdentity{actor: actor, role: actorRole}
 	r = r.WithContext(context.WithValue(r.Context(), identityContextKey{}, identity))
 	g.proxy.ServeHTTP(w, r)
+}
+
+func isAdminDispatchStreamUpgrade(r *http.Request) bool {
+	return r.Method == http.MethodGet &&
+		r.URL.Path == "/v1/admin/dispatch/stream" &&
+		strings.EqualFold(r.Header.Get("Upgrade"), "websocket")
+}
+
+func dispatchStreamProtocolToken(header string) (string, []string, bool) {
+	var token string
+	var protocols []string
+	for _, protocol := range strings.Split(header, ",") {
+		protocol = strings.TrimSpace(protocol)
+		if protocol == "" {
+			continue
+		}
+		if strings.HasPrefix(protocol, "bearer.") {
+			if token != "" || len(protocol) == len("bearer.") {
+				return "", nil, false
+			}
+			encoded := strings.TrimPrefix(protocol, "bearer.")
+			decoded, err := base64.RawURLEncoding.DecodeString(encoded)
+			if err != nil || len(decoded) == 0 {
+				return "", nil, false
+			}
+			token = string(decoded)
+			continue
+		}
+		if protocol != "shopstops-admin-v1" {
+			return "", nil, false
+		}
+		protocols = append(protocols, protocol)
+	}
+	if token != "" && len(protocols) != 1 {
+		return "", nil, false
+	}
+	return token, protocols, true
 }
 
 func validActor(actor string) bool {

@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -82,6 +83,55 @@ func TestGatewayVerifiesTokenAndReplacesUntrustedHeaders(t *testing.T) {
 	}
 	if receivedPath != "/orders/00000000-0000-0000-0000-000000000001/events?waitSeconds=0" {
 		t.Fatalf("upstream path = %q", receivedPath)
+	}
+}
+
+func TestAdminDispatchWebSocketProtocolTokenIsVerifiedAndStripped(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier := oidc.NewVerifier(testIssuer, &oidc.StaticKeySet{
+		PublicKeys: []crypto.PublicKey{&key.PublicKey},
+	}, &oidc.Config{
+		ClientID: testAudience, SupportedSigningAlgs: []string{"RS256"},
+	})
+	var received http.Header
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received = r.Header.Clone()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+	upstreamURL, _ := url.Parse(upstream.URL)
+	gateway, err := NewWithActorClaim(
+		verifier, upstreamURL, testToken, "roles", "sub",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := signedToken(t, key, map[string]any{
+		"iss": testIssuer, "sub": "admin-123", "aud": testAudience,
+		"exp": time.Now().Add(time.Hour).Unix(), "iat": time.Now().Unix(),
+		"roles": []string{"admin"},
+	})
+	encodedToken := base64.RawURLEncoding.EncodeToString([]byte(token))
+	request := httptest.NewRequest(http.MethodGet, "/v1/admin/dispatch/stream", nil)
+	request.Header.Set("Upgrade", "websocket")
+	request.Header.Set("Connection", "Upgrade")
+	request.Header.Set("Sec-WebSocket-Protocol", "shopstops-admin-v1, bearer."+encodedToken)
+	recorder := httptest.NewRecorder()
+	gateway.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusNoContent ||
+		received.Get("Authorization") != "Bearer "+testToken ||
+		received.Get("X-ShopStops-Actor") != "admin-123" ||
+		received.Get("X-ShopStops-Actor-Role") != "admin" ||
+		received.Get("Sec-WebSocket-Protocol") != "shopstops-admin-v1" {
+		t.Fatalf("status=%d upstream headers=%+v body=%s",
+			recorder.Code, received, recorder.Body.String())
+	}
+	if strings.Contains(received.Get("Sec-WebSocket-Protocol"), token) {
+		t.Fatal("OIDC token was forwarded to the API")
 	}
 }
 
