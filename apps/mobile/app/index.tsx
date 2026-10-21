@@ -149,6 +149,8 @@ export default function HomeScreen() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [nearby, setNearby] = useState<NearbyMerchant[]>([]);
+  const [nearbySearched, setNearbySearched] = useState(false);
+  const [merchantTypeFilter, setMerchantTypeFilter] = useState("All");
   const [catalog, setCatalog] = useState<CatalogItem[]>([]);
   const [catalogStoreID, setCatalogStoreID] = useState("");
   const [quantities, setQuantities] = useState<Record<string, number>>({});
@@ -266,6 +268,8 @@ export default function HomeScreen() {
       basketWindow.current = null;
       setDeliveryWindow(createDeliveryWindow());
       setNearby([]);
+      setNearbySearched(false);
+      setMerchantTypeFilter("All");
       setCatalog([]);
       setCatalogStoreID("");
       setQuantities({});
@@ -290,7 +294,11 @@ export default function HomeScreen() {
         `stores/${encodeURIComponent(anchorStore)}/nearby-merchants?radiusMeters=500`,
       ),
     );
-    if (results) setNearby(results);
+    if (results) {
+      setNearby(results);
+      setNearbySearched(true);
+      setMerchantTypeFilter("All");
+    }
   }
 
   async function loadCatalog(storeID = catalogStoreID) {
@@ -938,6 +946,11 @@ export default function HomeScreen() {
     .slice()
     .sort((a, b) => a.sequence - b.sequence)
     .find((stop) => stop.status !== "completed");
+  const merchantTypes = [...new Set(nearby.map((merchant) => merchant.merchantType).filter(Boolean))]
+    .sort((left, right) => left.localeCompare(right));
+  const filteredNearby = nearby.filter(
+    (merchant) => merchantTypeFilter === "All" || merchant.merchantType === merchantTypeFilter,
+  );
 
   return (
     <KeyboardAvoidingView
@@ -1032,6 +1045,9 @@ export default function HomeScreen() {
                   checkoutAttempt.current = null;
                   setAnchorStore(value);
                   setCatalogStoreID(value);
+                  setNearby([]);
+                  setNearbySearched(false);
+                  setMerchantTypeFilter("All");
                 }}
                 value={anchorStore}
               />
@@ -1044,7 +1060,36 @@ export default function HomeScreen() {
                   secondary
                 />
               </View>
-              {nearby.map((merchant) => (
+              {merchantTypes.length > 0 ? (
+                <View style={styles.filterRow} accessibilityRole="tablist" accessibilityLabel="Filter nearby merchants by type">
+                  {["All", ...merchantTypes].map((merchantType) => (
+                    <Pressable
+                      accessibilityRole="tab"
+                      accessibilityState={{ selected: merchantTypeFilter === merchantType }}
+                      key={merchantType}
+                      onPress={() => setMerchantTypeFilter(merchantType)}
+                      style={[
+                        styles.filterChip,
+                        merchantTypeFilter === merchantType && styles.filterChipActive,
+                      ]}
+                    >
+                      <Text style={[
+                        styles.filterChipText,
+                        merchantTypeFilter === merchantType && styles.filterChipTextActive,
+                      ]}>
+                        {merchantType}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+              ) : null}
+              {nearbySearched && nearby.length === 0 ? (
+                <Text style={styles.tinyNote}>No nearby shops are available for this restaurant.</Text>
+              ) : null}
+              {nearbySearched && nearby.length > 0 && filteredNearby.length === 0 ? (
+                <Text style={styles.tinyNote}>No nearby shops match this type.</Text>
+              ) : null}
+              {filteredNearby.map((merchant) => (
                 <View key={merchant.merchantId}>
                   <View style={styles.resultRow}>
                     <View style={styles.resultIcon}><Text style={styles.resultIconText}>+</Text></View>
@@ -1572,6 +1617,11 @@ const styles = StyleSheet.create({
   actionText: { color: "#fff", fontWeight: "800", fontSize: 12, textAlign: "center" },
   actionTextSecondary: { color: "#24443b" },
   actionRow: { gap: 3 },
+  filterRow: { flexDirection: "row", flexWrap: "wrap", gap: 7, marginTop: 12 },
+  filterChip: { borderWidth: 1, borderColor: "#dfe7e1", backgroundColor: "#f8faf8", borderRadius: 18, paddingHorizontal: 12, paddingVertical: 8 },
+  filterChipActive: { borderColor: "#397457", backgroundColor: "#e7f1eb" },
+  filterChipText: { color: "#64756e", fontSize: 11, fontWeight: "700" },
+  filterChipTextActive: { color: "#24443b" },
   messageBox: { padding: 13, borderRadius: 11, backgroundColor: "#fff1e9", marginTop: 12 },
   messageText: { color: "#8e4229", fontSize: 12, lineHeight: 18 },
   loader: { marginTop: 12 },
