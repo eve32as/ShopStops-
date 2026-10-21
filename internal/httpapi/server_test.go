@@ -257,7 +257,11 @@ func TestReadinessChecksDatabase(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			recorder := httptest.NewRecorder()
-			New(test.repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
+			var repo Repository
+			if test.repo != nil {
+				repo = test.repo
+			}
+			New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
 				ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 			if recorder.Code != test.wantStatus || !strings.Contains(recorder.Body.String(), test.wantBody) {
 				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
