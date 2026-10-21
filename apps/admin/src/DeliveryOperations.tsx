@@ -89,6 +89,9 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
   const [zoneDrafts, setZoneDrafts] = useState<Record<string, DispatchLimitDraft>>({})
   const [seedOrderId, setSeedOrderId] = useState('')
   const [capacityLiters, setCapacityLiters] = useState('100')
+  const [maxOrdersOverride, setMaxOrdersOverride] = useState('')
+  const [pickupRadiusOverride, setPickupRadiusOverride] = useState('')
+  const [dropoffRadiusOverride, setDropoffRadiusOverride] = useState('')
   const [dispatchKey, setDispatchKey] = useState('')
   const [bundle, setBundle] = useState<Bundle | null>(null)
   const [dispatchError, setDispatchError] = useState('')
@@ -245,6 +248,23 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
       setDispatchError('Vehicle capacity must be greater than 0 and no more than 10,000 liters.')
       return
     }
+    const maxOrders = maxOrdersOverride.trim() ? Number(maxOrdersOverride) : undefined
+    const pickupRadius = pickupRadiusOverride.trim() ? Number(pickupRadiusOverride) : undefined
+    const dropoffRadius = dropoffRadiusOverride.trim() ? Number(dropoffRadiusOverride) : undefined
+    if (maxOrders !== undefined && (!Number.isInteger(maxOrders) || maxOrders < 1 || maxOrders > 100)) {
+      setDispatchError('Max orders override must be an integer from 1 to 100.')
+      return
+    }
+    if (pickupRadius !== undefined &&
+      (!Number.isInteger(pickupRadius) || pickupRadius < 0 || pickupRadius > 100000)) {
+      setDispatchError('Pickup radius override must be an integer from 0 to 100,000 meters.')
+      return
+    }
+    if (dropoffRadius !== undefined &&
+      (!Number.isInteger(dropoffRadius) || dropoffRadius < 0 || dropoffRadius > 100000)) {
+      setDispatchError('Drop-off radius override must be an integer from 0 to 100,000 meters.')
+      return
+    }
     let url: URL
     try {
       url = apiUrl(gatewayUrl, '/dispatch/bundles')
@@ -268,6 +288,9 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
         body: JSON.stringify({
           seedOrderId: seedOrderId.trim(),
           capacityLiters: capacity,
+          ...(maxOrders !== undefined ? { maxOrders } : {}),
+          ...(pickupRadius !== undefined ? { pickupRadiusMeters: pickupRadius } : {}),
+          ...(dropoffRadius !== undefined ? { dropoffRadiusMeters: dropoffRadius } : {}),
         }),
       })
       if (!response.ok) throw await requestError(response)
@@ -431,7 +454,7 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
           <div className="delivery-section-heading">
             <div>
               <strong>Create a delivery bundle</strong>
-              <p>Run proximity dispatch with the saved limits for the seed order’s delivery zone.</p>
+              <p>Run proximity dispatch with zone defaults or override limits for this bundle.</p>
             </div>
           </div>
           <form className="dispatch-form" onSubmit={createBundle}>
@@ -447,12 +470,36 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
                 setCapacityLiters(event.target.value)
                 setDispatchKey('')
               }} /></label>
+              <label>
+                Max orders override
+                <small>Optional · 1–100 · blank uses the zone default</small>
+                <input disabled={dispatching} type="number" min="1" max="100" step="1" value={maxOrdersOverride} onChange={(event) => {
+                  setMaxOrdersOverride(event.target.value)
+                  setDispatchKey('')
+                }} />
+              </label>
+              <label>
+                Pickup radius override (m)
+                <small>Optional · 0–100,000 · blank uses the zone default</small>
+                <input disabled={dispatching} type="number" min="0" max="100000" step="1" value={pickupRadiusOverride} onChange={(event) => {
+                  setPickupRadiusOverride(event.target.value)
+                  setDispatchKey('')
+                }} />
+              </label>
+              <label>
+                Drop-off radius override (m)
+                <small>Optional · 0–100,000 · blank uses the zone default</small>
+                <input disabled={dispatching} type="number" min="0" max="100000" step="1" value={dropoffRadiusOverride} onChange={(event) => {
+                  setDropoffRadiusOverride(event.target.value)
+                  setDispatchKey('')
+                }} />
+              </label>
             </div>
             {dispatchError ? <div className="alert alert-error" role="alert">{dispatchError}</div> : null}
             <button className="submit-button" disabled={dispatching} type="submit">
               {dispatching ? 'Creating bundle…' : 'Create bundle'}
             </button>
-            <p className="form-footnote">Zone defaults supply max orders and radii. Retries reuse the idempotency key until the request succeeds or inputs change.</p>
+            <p className="form-footnote">Blank overrides use zone defaults. Retries reuse the idempotency key until the request succeeds or inputs change.</p>
           </form>
           {bundle ? (
             <div className="bundle-result" role="status">
