@@ -99,5 +99,35 @@ jobs:
       - if: matrix.app == 'mobile'
         run: npm run typecheck
         working-directory: apps/mobile
-      - run: npm audit
-        working-directory: apps/${{ matrix.app }}
+      - if: matrix.app == 'admin'
+        run: npm audit
+        working-directory: apps/admin
+      - if: matrix.app == 'mobile'
+        id: mobile-audit
+        name: Run mobile dependency audit
+        run: |
+          set +e
+          npm audit --json > audit-result.json
+          audit_status=$?
+          echo "exit_code=$audit_status" >> "$GITHUB_OUTPUT"
+          exit 0
+        working-directory: apps/mobile
+      - if: matrix.app == 'mobile' && always()
+        id: mobile-audit-report
+        name: Summarize audit and notify on push failures
+        continue-on-error: true
+        env:
+          AUDIT_EXIT_CODE: ${{ steps.mobile-audit.outputs.exit_code }}
+          WEBHOOK_URL: ${{ github.event_name == 'push' && secrets.WEBHOOK_URL || '' }}
+        run: node ../../scripts/mobile-audit-report.cjs audit-result.json
+        working-directory: apps/mobile
+      - if: matrix.app == 'mobile' && always()
+        name: Enforce mobile dependency audit
+        env:
+          AUDIT_EXIT_CODE: ${{ steps.mobile-audit.outputs.exit_code }}
+          REPORT_OUTCOME: ${{ steps.mobile-audit-report.outcome }}
+        run: |
+          if [[ "$AUDIT_EXIT_CODE" != "0" || "$REPORT_OUTCOME" != "success" ]]; then
+            echo "Mobile dependency audit failed; release remains blocked."
+            exit 1
+          fi
