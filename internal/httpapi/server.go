@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -289,6 +290,7 @@ func NewWithPayments(
 func (s *Server) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
+	mux.HandleFunc("GET /readyz", s.readiness)
 	mux.Handle("GET /stores/{storeLocationId}/nearby-merchants", s.authorized(http.HandlerFunc(s.nearbyMerchants)))
 	mux.Handle("GET /stores/{storeLocationId}/catalog", s.authorized(http.HandlerFunc(s.catalogItems)))
 	mux.Handle("POST /orders", s.authorized(http.HandlerFunc(s.createCustomerOrder)))
@@ -317,7 +319,7 @@ func (s *Server) handler() http.Handler {
 	mux.Handle("PATCH /admin/delivery-zones/{zoneId}", s.authorized(http.HandlerFunc(s.updateAdminDeliveryZone)))
 	mux.Handle("PATCH /admin/delivery-zones/{zoneId}/dispatch-limits", s.authorized(http.HandlerFunc(s.updateAdminDispatchLimits)))
 	mux.HandleFunc("POST /webhooks/stripe", s.stripeWebhook)
-	return mux
+	return secureResponseHeaders(recoverPanics(s.log, mux))
 }
 
 func (s *Server) authorized(next http.Handler) http.Handler {
@@ -333,17 +335,21 @@ func (s *Server) authorized(next http.Handler) http.Handler {
 }
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) readiness(w http.ResponseWriter, r *http.Request) {
 	if s.repo == nil {
 		writeError(w, http.StatusServiceUnavailable, "database unavailable")
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), time.Second)
 	defer cancel()
 	if err := s.repo.PingContext(ctx); err != nil {
 		writeError(w, http.StatusServiceUnavailable, "database unavailable")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 }
 
 func (s *Server) nearbyMerchants(w http.ResponseWriter, r *http.Request) {
@@ -1926,9 +1932,70 @@ func writeError(w http.ResponseWriter, status int, message string) {
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
+}
+
+type recoveryResponseWriter struct {
+	http.ResponseWriter
+	wroteHeader bool
+}
+
+func (w *recoveryResponseWriter) WriteHeader(status int) {
+	if w.wroteHeader {
+		return
+	}
+	w.wroteHeader = true
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *recoveryResponseWriter) Write(body []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(body)
+}
+
+func (w *recoveryResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
+func recoverPanics(logger *slog.Logger, next http.Handler) http.Handler {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		response := &recoveryResponseWriter{ResponseWriter: w}
+		defer func() {
+			recovered := recover()
+			if recovered == nil {
+				return
+			}
+			if recovered == http.ErrAbortHandler {
+				panic(recovered)
+			}
+			logger.Error("recovered HTTP handler panic",
+				"method", r.Method,
+				"path", r.URL.Path,
+				"panic_type", reflect.TypeOf(recovered).String(),
+			)
+			if !response.wroteHeader {
+				writeError(response, http.StatusInternalServerError, "request could not be completed")
+			}
+		}()
+		next.ServeHTTP(response, r)
+	})
+}
+
+func secureResponseHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Permissions-Policy", "camera=(), microphone=()")
+		next.ServeHTTP(w, r)
+	})
 }
 
 func isUUID(value string) bool {

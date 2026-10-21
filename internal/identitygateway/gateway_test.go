@@ -207,6 +207,8 @@ func TestRequiredRolesAreScopedByRoute(t *testing.T) {
 		ok      bool
 		allowed bool
 	}{
+		{http.MethodGet, "/healthz", "anonymous", true, true},
+		{http.MethodGet, "/readyz", "anonymous", true, true},
 		{http.MethodGet, "/stores/00000000-0000-0000-0000-000000000001/catalog", "customer", true, true},
 		{http.MethodPost, "/dispatch/bundles", "dispatch", true, true},
 		{http.MethodPost, "/dispatch/bundles", "admin", true, true},

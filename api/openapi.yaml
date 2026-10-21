@@ -14,7 +14,17 @@ paths:
   /healthz:
     get:
       operationId: healthCheck
+      summary: Check API liveness
+      description: Confirms the API process is responding; it does not depend on database availability.
+      security: []
+      responses:
+        '200':
+          description: API process is alive
+  /readyz:
+    get:
+      operationId: readinessCheck
       summary: Check API and database readiness
+      description: Intended for deployment health checks; returns ready only when the database is reachable.
       security: []
       responses:
         '200':

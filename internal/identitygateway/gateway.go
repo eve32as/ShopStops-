@@ -219,6 +219,8 @@ func requiredRoles(method, path string) ([]string, bool) {
 		return nil, false
 	}
 	switch {
+	case method == http.MethodGet && (path == "/healthz" || path == "/readyz"):
+		return nil, true
 	case method == http.MethodGet && len(segments) == 3 &&
 		segments[0] == "stores" && isUUID(segments[1]) &&
 		(segments[2] == "nearby-merchants" || segments[2] == "catalog"):

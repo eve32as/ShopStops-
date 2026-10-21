@@ -36,6 +36,38 @@ volume from the ordered SQL files in `db/migrations`. It is not a substitute for
 managed secrets, TLS termination, backups, or a reviewed migration process for
 an existing database.
 
+## Production release gates
+
+This repository is not a production deployment. The following provider choices
+are provisional planning assumptions, not configured infrastructure: AWS Cognito
+for hosted OIDC, ECS/Fargate and RDS PostgreSQL/PostGIS for hosting, AWS Secrets
+Manager and CloudWatch for secrets and telemetry. Select a road-network routing
+provider after cost and coverage review. Push delivery requires APNs/FCM
+credentials and platform setup. Production use remains blocked until owners
+provision and verify these services.
+
+Release criteria:
+
+- **Shopper:** native sign-in and recovery; successful, failed, and pending
+  payment handling; order history and live/recoverable delivery updates; consent
+  and privacy controls.
+- **Merchant:** verified store ownership; complete paid-order fulfillment,
+  catalog, and billing workflows; clear subscription and payout failure handling.
+- **Driver:** authenticated assignment discovery; safe foreground/background
+  location consent; ordered navigation and stop progression; retry/offline
+  recovery and completion behavior.
+- **Dispatch/admin:** least-privilege access; assignment, reassignment and
+  recovery workflows; actionable monitoring, audit history, and support tools.
+- **Platform:** TLS at the deployment edge; managed secrets; tested database
+  backup restoration and migrations; dashboards and actionable alerts; load,
+  security, accessibility, and end-to-end role-flow testing; rollback and
+  incident procedures.
+
+The API exposes `/healthz` for process liveness and `/readyz` for database
+readiness. These probes do not replace production monitoring or a deployment
+health-check configuration. Do not treat a successful local build or smoke test
+as evidence that any release gate has passed.
+
 Backend capabilities can be deployed independently as traffic and ownership
 needs emerge:
 

@@ -57,7 +57,13 @@ export STRIPE_MERCHANT_MONTHLY_PRICE_ID
 go run ./cmd/shopstops-api
 ```
 
-The API listens on `:8080` by default; set `HTTP_ADDR` to override it. It
+The API listens on `:8080` by default; set `HTTP_ADDR` to override it.
+`GET /healthz` is a database-independent liveness probe; `GET /readyz` checks
+database reachability with a one-second timeout and is suitable for deployment
+readiness checks. The gateway permits both probes without a user token. Neither
+probe replaces production monitoring.
+
+The API
 implements health checks, nearby subscribed-merchant discovery, atomic
 dispatch, checkout creation/payment, Stripe webhooks, driver route reads,
 catalog discovery, order creation, ordered stop arrival/completion, and GPS

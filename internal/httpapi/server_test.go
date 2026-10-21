@@ -235,10 +235,57 @@ func testServer() http.Handler {
 
 func TestHealthIsPublic(t *testing.T) {
 	recorder := httptest.NewRecorder()
-	New(&fakeRepository{}, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
+	New(nil, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
 		ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+}
+
+func TestReadinessChecksDatabase(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		repo       *fakeRepository
+		wantStatus int
+		wantBody   string
+	}{
+		{name: "ready", repo: &fakeRepository{}, wantStatus: http.StatusOK, wantBody: `"status":"ready"`},
+		{name: "database unavailable", repo: &fakeRepository{pingErr: context.DeadlineExceeded},
+			wantStatus: http.StatusServiceUnavailable, wantBody: `"error":"database unavailable"`},
+		{name: "repository unavailable", wantStatus: http.StatusServiceUnavailable,
+			wantBody: `"error":"database unavailable"`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			New(test.repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
+				ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+			if recorder.Code != test.wantStatus || !strings.Contains(recorder.Body.String(), test.wantBody) {
+				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestHTTPHandlerRecoversPanicsAndSetsSecurityHeaders(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	handler := secureResponseHeaders(recoverPanics(logger, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic("unexpected failure")
+	})))
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/test", nil))
+	if recorder.Code != http.StatusInternalServerError ||
+		!strings.Contains(recorder.Body.String(), `"error":"request could not be completed"`) {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	for header, want := range map[string]string{
+		"X-Content-Type-Options": "nosniff",
+		"X-Frame-Options":        "DENY",
+		"Referrer-Policy":        "no-referrer",
+		"Permissions-Policy":     "camera=(), microphone=()",
+	} {
+		if got := recorder.Header().Get(header); got != want {
+			t.Errorf("%s = %q, want %q", header, got, want)
+		}
 	}
 }
 
