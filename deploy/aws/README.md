@@ -30,17 +30,21 @@ An operator must provide:
 - An encrypted, versioned S3 bucket and KMS key for remote Terraform state.
   Enable S3 state locking with `use_lockfile`; restrict bucket and KMS access
   to the deployment role and state administrators.
-- Existing private ECR repositories and immutable API and gateway image
-  references using `@sha256:<digest>`.
+- Existing private ECR repositories and immutable API, gateway, and database
+  migration image references using `@sha256:<digest>`. Build the migration image
+  from `Dockerfile.db-migrate`.
 - Two or three available AZ names in the selected region and an ACM certificate
   already issued in that same region for the production hostname.
 - A configured OIDC provider. Its issuer, audience, role claim, and actor claim
   must match real signed tokens accepted by the gateway. Cognito remains a
   provisional option; validate its access-token audience and role-claim
   behavior before setting production values.
-- A production database connection and payment configuration plan, including a
-  secure way to run database role bootstrap and migrations from inside the VPC.
-  This repository does not yet provide that migration runner.
+- A production database connection and payment configuration plan. The
+  `scripts/db-migrate.sh` runner provisions a constrained `shopstops_app` login,
+  applies checksummed migrations under a separate no-login migration role, and
+  grants runtime table/function access. The one-off ECS task definition runs
+  this runner inside private subnets with the RDS master secret available only
+  to its separate execution role.
 
 Terraform uses the S3 backend declared in `versions.tf`. Create a private local
 `backend.hcl` (ignored by Git) with the actual state bucket, key, region, KMS
@@ -54,6 +58,17 @@ encrypt      = true
 kms_key_id   = "arn:aws:kms:us-east-1:000000000000:key/replace-with-key-id"
 use_lockfile = true
 ```
+
+Build and publish the migration runner to the private ECR repository before
+planning, then use the image digest (not its mutable tag) for `migration_image`:
+
+```sh
+docker build --file Dockerfile.db-migrate --tag "$MIGRATION_IMAGE_TAG" .
+docker push "$MIGRATION_IMAGE_TAG"
+```
+
+Resolve the pushed image digest from ECR and set `migration_image` to
+`<repository-uri>@<image-digest>` in the private variables file.
 
 Then initialize and validate:
 
@@ -84,15 +99,30 @@ plan before applying. The RDS instance has deletion protection and Terraform
    network, database, load balancer, log groups, task definitions, and empty
    secret entries without starting containers that depend on unpopulated
    secrets. Image references must still be valid immutable digests.
-2. Populate the application database role and apply
-   `../../db/migrations/*.sql` in numeric order using an approved, temporary
-   runner inside the private VPC. Do not use the RDS master account for the
-   application. Until the migration runner and role grants have been reviewed
-   and tested, this step is an explicit release blocker.
-3. Put the least-privilege role's `DATABASE_URL` and a randomly generated
-   `SHOPSTOPS_INTERNAL_API_TOKEN` into the output Secrets Manager entries.
-   Use the organization's secrets process; do not pass secret values as
-   Terraform inputs or shell command-line arguments.
+2. Generate an application database password of at least 32 characters and
+   store it in `application_database_password_secret_arn`. The same password
+   must be used in the app `DATABASE_URL`; store that URL and a separate random
+   `SHOPSTOPS_INTERNAL_API_TOKEN` in their Secrets Manager entries. Use the
+   organization's secret-entry process; do not pass values as Terraform inputs
+   or shell command-line arguments. URL-encode reserved characters in the
+   database URL and use `sslmode=verify-full`.
+3. Run the one-off ECS task using the output task definition and private network
+   identifiers. Its execution role can read the RDS-managed master password and
+   application password; the task role has no database or secret permissions.
+   Example (substitute the subnet IDs from `private_application_subnet_ids`):
+
+   ```sh
+   aws ecs run-task \
+     --cluster "$(terraform -chdir=deploy/aws output -raw ecs_cluster_name)" \
+     --task-definition "$(terraform -chdir=deploy/aws output -raw database_migration_task_definition)" \
+     --launch-type FARGATE \
+     --network-configuration 'awsvpcConfiguration={subnets=[subnet-aaa,subnet-bbb],securityGroups=['"$(terraform -chdir=deploy/aws output -raw database_migration_security_group_id)"'],assignPublicIp=DISABLED}'
+   ```
+
+   Confirm task exit code zero and inspect its CloudWatch log stream. The runner
+   serializes migration attempts, applies each migration transactionally, skips
+   matching checksums on repeat runs, and fails closed if an applied migration
+   file changes. Do not use the master account for the API.
 4. If using Stripe, first populate the three Stripe secrets with values for the
    correct environment, validate webhook signing and Connect/payout readiness,
    then set `enable_stripe = true`. Keep test and live credentials isolated.
@@ -119,12 +149,15 @@ internal token must remain consistent.
 - Metrics alarms are only a starting point. Subscribe and test the alarm topic,
   set service-specific SLO thresholds, and add tracing and operational
   dashboards before launch.
-- The API's database role and ordered migration application are not automated
-  here. Do not set `deploy_application = true` until a reviewed private
-  migration/bootstrap process has completed successfully.
+- The migration runner is tested on a fresh database and a data-preserving
+  008-to-009 upgrade in CI. A production owner must still validate its behavior
+  against the selected RDS version and rehearse restore and rollback.
 - The current mobile dependency graph reports high-severity npm audit findings
-  in the Expo/Metro toolchain. The CI audit intentionally blocks release until
-  maintainers can apply compatible upstream fixes and verify the native build.
+  in the Expo/Metro toolchain, including braces and node-forge advisories with
+  no upstream patched versions yet. Expo was refreshed to the latest patch in
+  SDK 58 and its compatible package versions; this did not clear the advisories.
+  The CI audit intentionally blocks release until compatible fixes are
+  published and the native build is verified.
 - This baseline does not make the shopper, merchant, driver, or admin clients
   release-complete. See `../../docs/architecture.md` for the role-specific
   release gates.

@@ -49,6 +49,36 @@ case "$app_read" in
     ;;
 esac
 
+app_data_read=$(PGUSER=shopstops_app PGPASSWORD="$SHOPSTOPS_DB_APP_PASSWORD" \
+    PGDATABASE="$fresh_db" psql --no-psqlrc --set=ON_ERROR_STOP=1 --tuples-only --no-align \
+    --command="SELECT count(*) FROM delivery_zones" 2>&1 || true)
+case "$app_data_read" in
+    *[!0-9]*|'')
+      echo "Application role could not read application data: $app_data_read" >&2
+      exit 1
+      ;;
+esac
+
+zone_id=10000000-0000-4000-8000-000000000001
+store_id=20000000-0000-4000-8000-000000000001
+order_id=30000000-0000-4000-8000-000000000001
+PGDATABASE="$fresh_db" psql --no-psqlrc --quiet --set=ON_ERROR_STOP=1 \
+  --command="INSERT INTO delivery_zones (id, name, boundary) VALUES ('$zone_id', 'application role smoke zone', ST_Multi(ST_MakeEnvelope(-74.1, 40.6, -73.8, 40.9, 4326)))"
+PGDATABASE="$fresh_db" psql --no-psqlrc --quiet --set=ON_ERROR_STOP=1 \
+  --command="INSERT INTO store_locations (id, name, address, location) VALUES ('$store_id', 'application role smoke store', '1 Test Way', ST_SetSRID(ST_MakePoint(-73.98, 40.75), 4326)::geography)"
+PGDATABASE="$fresh_db" psql --no-psqlrc --quiet --set=ON_ERROR_STOP=1 \
+  --command="INSERT INTO orders (id, customer_ref, store_location_id, delivery_zone_id, dropoff_location, delivery_window_start, delivery_window_end, volume_liters, state, ready_at) VALUES ('$order_id', 'bootstrap-smoke', '$store_id', '$zone_id', ST_SetSRID(ST_MakePoint(-73.97, 40.75), 4326)::geography, now(), now() + interval '2 hours', 2, 'ready', now())"
+bundle_id=$(PGUSER=shopstops_app PGPASSWORD="$SHOPSTOPS_DB_APP_PASSWORD" \
+  PGDATABASE="$fresh_db" psql --no-psqlrc --quiet --set=ON_ERROR_STOP=1 --tuples-only --no-align \
+  --command="SELECT create_proximity_bundle('$order_id', 'bootstrap-app-role-smoke', 10)")
+case "$bundle_id" in
+  ????????-????-????-????-????????????) ;;
+  *)
+      echo "Application role could not perform an authorized bundle operation: $bundle_id" >&2
+      exit 1
+      ;;
+esac
+
 app_ddl=$(PGUSER=shopstops_app PGPASSWORD="$SHOPSTOPS_DB_APP_PASSWORD" \
   PGDATABASE="$fresh_db" psql --no-psqlrc --set=ON_ERROR_STOP=1 \
   --command="CREATE TABLE public.shopstops_app_must_not_create_tables(id integer)" 2>&1 || true)

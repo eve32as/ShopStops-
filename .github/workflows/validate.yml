@@ -44,12 +44,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes postgresql-client
-          for migration in db/migrations/*.sql; do
-            psql --host=localhost --username=shopstops --dbname=shopstops --set ON_ERROR_STOP=1 --file "$migration"
-          done
-          for test_file in db/tests/*.sql; do
-            psql --host=localhost --username=shopstops --dbname=shopstops --set ON_ERROR_STOP=1 --file "$test_file"
-          done
+          scripts/test-db-bootstrap.sh
+        env:
+          PGHOST: localhost
+          PGPORT: 5432
+          PGDATABASE: shopstops
+          PGUSER: shopstops
+          PGPASSWORD: local-ci-admin-password-not-used-with-trust
+          PGSSLMODE: disable
+          SHOPSTOPS_DB_APP_PASSWORD: local-ci-app-password-never-use-in-production
 
   terraform:
     name: Terraform validation
@@ -63,6 +66,13 @@ jobs:
       - run: terraform -chdir=deploy/aws fmt -check -recursive
       - run: terraform -chdir=deploy/aws init -backend=false -input=false
       - run: terraform -chdir=deploy/aws validate
+
+  migration-image:
+    name: Database migration image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: docker build --file Dockerfile.db-migrate --tag shopstops-db-migrate:ci .
 
   clients:
     name: ${{ matrix.app }} client checks

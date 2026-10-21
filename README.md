@@ -105,6 +105,13 @@ and known release blockers are documented in
 [`deploy/aws/README.md`](deploy/aws/README.md). It does not provision or apply
 cloud resources without an authorized operator.
 
+The private database bootstrap runner is `scripts/db-migrate.sh`; run it only
+from an approved network path with privileged migration credentials delivered by
+the secret manager. It records migration checksums, uses a separate no-login
+migration owner, and grants the API a non-owner database role. The CI harness
+`scripts/test-db-bootstrap.sh` verifies fresh setup, repeat execution,
+permissions, checksum drift rejection, and a data-preserving upgrade.
+
 The Compose stack builds the API and gateway, starts PostgreSQL/PostGIS, applies
 the numbered SQL migrations when creating a **new** database volume, and keeps
 the API and database off host-published ports. Only the gateway is published,

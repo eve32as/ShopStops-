@@ -5,6 +5,7 @@ set -eu
 : "${PGPORT:=5432}"
 : "${PGDATABASE:?PGDATABASE must identify the target database}"
 : "${PGUSER:?PGUSER must be the privileged migration operator}"
+: "${PGPASSWORD:?PGPASSWORD must be provided by the secret manager}"
 : "${PGSSLMODE:=verify-full}"
 : "${SHOPSTOPS_DB_APP_PASSWORD:?SHOPSTOPS_DB_APP_PASSWORD must be supplied by the secret manager}"
 : "${SHOPSTOPS_MIGRATIONS_DIR:=$(dirname "$0")/../db/migrations}"
@@ -32,6 +33,7 @@ command -v sha256sum >/dev/null 2>&1 || {
 
 set --
 found_migration=false
+previous_sequence=
 for migration in "$SHOPSTOPS_MIGRATIONS_DIR"/*.sql; do
   [ -f "$migration" ] || continue
   filename=${migration##*/}
@@ -42,6 +44,12 @@ for migration in "$SHOPSTOPS_MIGRATIONS_DIR"/*.sql; do
       exit 2
       ;;
   esac
+  sequence=${filename%%_*}
+  if [ "$sequence" = "$previous_sequence" ]; then
+    echo "Duplicate migration sequence: $sequence" >&2
+    exit 2
+  fi
+  previous_sequence=$sequence
   set -- "$@" "$migration"
   found_migration=true
 done
@@ -102,7 +110,7 @@ SQL
     printf "  WHERE version = '%s' AND checksum <> '%s'\n" "$version" "$checksum"
     printf ") THEN 'true' ELSE 'false' END AS checksum_mismatch\n"
     printf '%s\n' '\gset' '\if :checksum_mismatch'
-    printf '%s\n' "\echo Migration checksum changed after applying $version." '\quit 3' '\endif'
+    printf '%s\n' "\echo Migration checksum changed after applying $version." 'SELECT 1 / 0;' '\endif'
     printf "\nSELECT CASE WHEN EXISTS (\n"
     printf "  SELECT 1 FROM shopstops_meta.schema_migrations WHERE version = '%s'\n" "$version"
     printf ") THEN 'true' ELSE 'false' END AS migration_applied\n"
@@ -118,7 +126,49 @@ SQL
 
   cat <<'SQL'
 RESET ROLE;
-GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA public TO shopstops_app;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO shopstops_app;
+GRANT INSERT ON TABLE
+  bundle_orders,
+  catalog_items,
+  checkout_invoice_lines,
+  checkout_orders,
+  checkout_payments,
+  checkout_refunds,
+  connect_transfer_reversals,
+  connect_transfers,
+  dc_tax_ledger,
+  delivery_bundles,
+  delivery_stops,
+  driver_location_samples,
+  merchant_subscriptions,
+  order_line_items,
+  orders,
+  outbox_events,
+  platform_checkout_ledger,
+  stripe_disputes,
+  stripe_payment_intent_attempts,
+  stripe_webhook_events,
+  unified_checkouts,
+  unified_delivery_routes,
+  unified_route_stop_events,
+  unified_route_stops
+TO shopstops_app;
+GRANT UPDATE ON TABLE
+  catalog_items,
+  checkout_payments,
+  checkout_refunds,
+  connect_transfer_reversals,
+  connect_transfers,
+  dc_tax_ledger,
+  delivery_zones,
+  merchant_subscriptions,
+  orders,
+  stripe_webhook_events,
+  unified_checkouts,
+  unified_delivery_routes,
+  unified_route_stops
+TO shopstops_app;
+GRANT UPDATE (id) ON TABLE store_locations TO shopstops_app;
 GRANT DELETE ON TABLE checkout_invoice_lines TO shopstops_app;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO shopstops_app;
 GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO shopstops_app;

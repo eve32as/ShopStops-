@@ -28,6 +28,26 @@ output "internal_api_token_secret_arn" {
   value       = aws_secretsmanager_secret.internal_api_token.arn
 }
 
+output "application_database_password_secret_arn" {
+  description = "Populate with the generated password for shopstops_app and use the same value in DATABASE_URL."
+  value       = aws_secretsmanager_secret.app_database_password.arn
+}
+
+output "database_migration_task_definition" {
+  description = "One-off Fargate migration task definition; run only during a controlled deployment."
+  value       = aws_ecs_task_definition.migrator.family
+}
+
+output "database_migration_security_group_id" {
+  description = "Security group for private migration tasks; it has no inbound access."
+  value       = aws_security_group.migrator.id
+}
+
+output "private_application_subnet_ids" {
+  description = "Private subnets for ECS Fargate tasks and the one-off migration task."
+  value       = [for subnet in aws_subnet.application : subnet.id]
+}
+
 output "stripe_secret_arns" {
   description = "Optional Stripe secret ARNs; secret values are never stored in Terraform."
   value = var.enable_stripe ? {

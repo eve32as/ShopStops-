@@ -36,6 +36,11 @@ resource "aws_cloudwatch_log_group" "gateway" {
   retention_in_days = 90
 }
 
+resource "aws_cloudwatch_log_group" "migrator" {
+  name              = "/ecs/${local.name}/db-migrator"
+  retention_in_days = 90
+}
+
 resource "aws_iam_role" "ecs_execution" {
   name = "${local.name}-ecs-execution"
 
@@ -245,7 +250,7 @@ resource "aws_ecs_task_definition" "migrator" {
     name                   = "db-migrator"
     image                  = var.migration_image
     essential              = true
-    readonlyRootFilesystem  = true
+    readonlyRootFilesystem = true
     environment = [
       { name = "PGHOST", value = aws_db_instance.main.address },
       { name = "PGPORT", value = "5432" },
@@ -274,6 +279,11 @@ resource "aws_ecs_task_definition" "migrator" {
       }
     }
   }])
+
+  depends_on = [
+    aws_iam_role_policy_attachment.migrator_execution,
+    aws_iam_role_policy.migrator_secrets
+  ]
 }
 
 resource "aws_ecs_service" "api" {
