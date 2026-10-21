@@ -86,3 +86,66 @@ resource "aws_cloudwatch_metric_alarm" "gateway_5xx" {
     TargetGroup  = aws_lb_target_group.gateway.arn_suffix
   }
 }
+
+resource "aws_cloudwatch_metric_alarm" "ecs_service_cpu" {
+  for_each = var.deploy_application ? toset(["api", "gateway"]) : toset([])
+
+  alarm_name          = "${local.name}-${each.key}-cpu-high"
+  alarm_description   = "ECS ${each.key} service CPU utilization is persistently high."
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  evaluation_periods  = 3
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/ECS"
+  period              = 60
+  statistic           = "Average"
+  threshold           = var.ecs_cpu_alarm_percent
+  alarm_actions       = [aws_sns_topic.alarms.arn]
+  ok_actions          = [aws_sns_topic.alarms.arn]
+  treat_missing_data  = "notBreaching"
+  dimensions = {
+    ClusterName = aws_ecs_cluster.main.name
+    ServiceName = each.key
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "ecs_service_memory" {
+  for_each = var.deploy_application ? toset(["api", "gateway"]) : toset([])
+
+  alarm_name          = "${local.name}-${each.key}-memory-high"
+  alarm_description   = "ECS ${each.key} service memory utilization is persistently high."
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  evaluation_periods  = 3
+  metric_name         = "MemoryUtilization"
+  namespace           = "AWS/ECS"
+  period              = 60
+  statistic           = "Average"
+  threshold           = var.ecs_memory_alarm_percent
+  alarm_actions       = [aws_sns_topic.alarms.arn]
+  ok_actions          = [aws_sns_topic.alarms.arn]
+  treat_missing_data  = "notBreaching"
+  dimensions = {
+    ClusterName = aws_ecs_cluster.main.name
+    ServiceName = each.key
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "ecs_service_running_tasks" {
+  for_each = var.deploy_application ? toset(["api", "gateway"]) : toset([])
+
+  alarm_name          = "${local.name}-${each.key}-running-tasks-low"
+  alarm_description   = "ECS ${each.key} service has fewer running tasks than its minimum healthy capacity."
+  comparison_operator = "LessThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "RunningTaskCount"
+  namespace           = "ECS/ContainerInsights"
+  period              = 60
+  statistic           = "Minimum"
+  threshold           = var.ecs_min_healthy_tasks
+  alarm_actions       = [aws_sns_topic.alarms.arn]
+  ok_actions          = [aws_sns_topic.alarms.arn]
+  treat_missing_data  = "notBreaching"
+  dimensions = {
+    ClusterName = aws_ecs_cluster.main.name
+    ServiceName = each.key
+  }
+}

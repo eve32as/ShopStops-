@@ -74,6 +74,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: docker build --file Dockerfile.db-migrate --tag shopstops-db-migrate:ci .
 
+  operations:
+    name: Operational script checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: bash -n scripts/*.sh
+      - run: |
+          sudo apt-get update
+          sudo apt-get install --yes shellcheck
+      - run: shellcheck scripts/*.sh
+
   clients:
     name: ${{ matrix.app }} client checks
     runs-on: ubuntu-latest
@@ -131,3 +142,26 @@ jobs:
             echo "Mobile dependency audit failed; release remains blocked."
             exit 1
           fi
+
+  release-gate:
+    name: Release gate
+    if: ${{ always() }}
+    needs: [go, database, terraform, migration-image, operations, clients]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every validation job to pass
+        env:
+          GO_RESULT: ${{ needs.go.result }}
+          DATABASE_RESULT: ${{ needs.database.result }}
+          TERRAFORM_RESULT: ${{ needs.terraform.result }}
+          MIGRATION_IMAGE_RESULT: ${{ needs.migration-image.result }}
+          OPERATIONS_RESULT: ${{ needs.operations.result }}
+          CLIENTS_RESULT: ${{ needs.clients.result }}
+        run: |
+          for result in "$GO_RESULT" "$DATABASE_RESULT" "$TERRAFORM_RESULT" \
+            "$MIGRATION_IMAGE_RESULT" "$OPERATIONS_RESULT" "$CLIENTS_RESULT"; do
+            if [[ "$result" != "success" ]]; then
+              echo "Release blocked: validation job result was $result."
+              exit 1
+            fi
+          done

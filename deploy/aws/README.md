@@ -161,6 +161,56 @@ refreshed in running containers. Rotate them by updating Secrets Manager and
 rolling the ECS service. The API's currently configured database URL and
 internal token must remain consistent.
 
+## ECS monitoring and restart runbook
+
+ECS Container Insights supplies service CPU, memory, and running-task metrics;
+CloudWatch alarms notify the configured SNS topic when either service remains
+above its configured CPU/memory threshold or falls below
+`ecs_min_healthy_tasks`. The ALB separately checks gateway `/v1/readyz`, and
+existing alarms report unhealthy gateway targets and elevated 5xx responses.
+Subscribe an on-call address to the SNS topic and confirm the subscription
+before enabling application services. Alarm thresholds are initial operating
+defaults; tune them against measured staging traffic and task sizing.
+
+For an alarm or failed deployment:
+
+1. Check the alarm details, ECS service events/deployment history, ALB target
+   health, and the relevant API or gateway CloudWatch log group. Confirm whether
+   the issue is load, a bad task image/configuration, dependency health, or a
+   deployment/migration problem before changing capacity.
+2. For a routine restart or secret refresh, replace tasks through ECS rather
+   than terminating individual tasks:
+
+   ```sh
+   aws ecs update-service --cluster "$CLUSTER" --service api --force-new-deployment
+   aws ecs wait services-stable --cluster "$CLUSTER" --services api
+   ```
+
+   Repeat for `gateway` only when needed. Confirm the service has at least
+   `ecs_min_healthy_tasks` running tasks and the gateway targets are healthy
+   before declaring recovery. The deployment uses a 100% minimum healthy
+   percentage, 200% maximum, and rollback-enabled circuit breaker; preserve that
+   capacity policy during recovery.
+3. If a new task definition caused the incident, update the service to the
+   previously approved immutable task-definition revision, wait for stability,
+   and verify readiness and role-based smoke tests. Do not roll back database
+   migrations by editing migration history; use an approved forward fix.
+4. Record the alarm, impact, mitigation, and follow-up. Escalate if recovery
+   requires changing desired capacity, security groups, database state, or
+   payment configuration.
+
+Fargate does not provide host SSH. Do not install a privileged in-container
+monitor or use manual task termination as a restart mechanism. Use AWS-managed
+metrics, service events, application logs, ECS deployments, and the configured
+alarm channel for routine operations. ECS Exec is disabled in this foundation.
+
+The `Validate` workflow runs Go, database, Terraform, migration-image, client,
+and operational-script checks. Configure the repository's protected release
+branch to require the `Release gate` status check; the gate fails unless every
+validation job succeeds. Keep the dependency audits blocking: unresolved audit
+findings require an approved dependency fix or explicit security-owner exception,
+not a CI bypass.
+
 ## Operations and release limitations
 
 - RDS automated backups are retained for 35 days; a restore drill and recovery

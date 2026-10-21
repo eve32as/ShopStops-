@@ -232,3 +232,36 @@ variable "alarm_email" {
   type        = string
   default     = ""
 }
+
+variable "ecs_cpu_alarm_percent" {
+  description = "Average ECS service CPU utilization percentage that triggers an alarm."
+  type        = number
+  default     = 85
+
+  validation {
+    condition     = var.ecs_cpu_alarm_percent > 0 && var.ecs_cpu_alarm_percent <= 100
+    error_message = "ecs_cpu_alarm_percent must be greater than 0 and at most 100."
+  }
+}
+
+variable "ecs_memory_alarm_percent" {
+  description = "Average ECS service memory utilization percentage that triggers an alarm."
+  type        = number
+  default     = 85
+
+  validation {
+    condition     = var.ecs_memory_alarm_percent > 0 && var.ecs_memory_alarm_percent <= 100
+    error_message = "ecs_memory_alarm_percent must be greater than 0 and at most 100."
+  }
+}
+
+variable "ecs_min_healthy_tasks" {
+  description = "Minimum running tasks expected for each deployed API and gateway service."
+  type        = number
+  default     = 2
+
+  validation {
+    condition     = var.ecs_min_healthy_tasks >= 1 && floor(var.ecs_min_healthy_tasks) == var.ecs_min_healthy_tasks
+    error_message = "ecs_min_healthy_tasks must be a positive integer."
+  }
+}
