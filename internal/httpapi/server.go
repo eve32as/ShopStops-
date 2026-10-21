@@ -1422,7 +1422,8 @@ func (p *PostgresRepository) AdminDeliveryZones(ctx context.Context) ([]Delivery
 	rows, err := p.db.QueryContext(ctx, `
 		SELECT id, name, enabled, dispatch_max_orders,
 		       dispatch_pickup_radius_m, dispatch_dropoff_radius_m,
-		       dispatch_limits_updated_by, dispatch_limits_updated_at
+		       dispatch_limits_updated_by, dispatch_limits_updated_at,
+		       ST_AsGeoJSON(boundary)::jsonb
 		FROM delivery_zones
 		ORDER BY name, id`)
 	if err != nil {
@@ -1435,7 +1436,7 @@ func (p *PostgresRepository) AdminDeliveryZones(ctx context.Context) ([]Delivery
 		if err := rows.Scan(
 			&zone.ID, &zone.Name, &zone.Enabled, &zone.MaxOrders,
 			&zone.PickupRadiusMeters, &zone.DropoffRadiusMeters,
-			&zone.DispatchLimitsUpdatedBy, &zone.DispatchLimitsUpdatedAt,
+			&zone.DispatchLimitsUpdatedBy, &zone.DispatchLimitsUpdatedAt, &zone.Boundary,
 		); err != nil {
 			return nil, err
 		}
@@ -1550,12 +1551,13 @@ func (p *PostgresRepository) UpdateAdminDeliveryZone(
 		WHERE id = $1::uuid
 		RETURNING id, name, enabled, dispatch_max_orders,
 		          dispatch_pickup_radius_m, dispatch_dropoff_radius_m,
-		          dispatch_limits_updated_by, dispatch_limits_updated_at`,
+		          dispatch_limits_updated_by, dispatch_limits_updated_at,
+		          ST_AsGeoJSON(boundary)::jsonb`,
 		zoneID, enabled,
 	).Scan(
 		&zone.ID, &zone.Name, &zone.Enabled, &zone.MaxOrders,
 		&zone.PickupRadiusMeters, &zone.DropoffRadiusMeters,
-		&zone.DispatchLimitsUpdatedBy, &zone.DispatchLimitsUpdatedAt,
+		&zone.DispatchLimitsUpdatedBy, &zone.DispatchLimitsUpdatedAt, &zone.Boundary,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return DeliveryZone{}, ErrNotFound
@@ -1582,13 +1584,14 @@ func (p *PostgresRepository) UpdateAdminDispatchLimits(
 		WHERE id = $1::uuid
 		RETURNING id, name, enabled, dispatch_max_orders,
 		          dispatch_pickup_radius_m, dispatch_dropoff_radius_m,
-		          dispatch_limits_updated_by, dispatch_limits_updated_at`,
+		          dispatch_limits_updated_by, dispatch_limits_updated_at,
+		          ST_AsGeoJSON(boundary)::jsonb`,
 		zoneID, *request.MaxOrders, *request.PickupRadiusMeters,
 		*request.DropoffRadiusMeters, adminActor,
 	).Scan(
 		&zone.ID, &zone.Name, &zone.Enabled, &zone.MaxOrders,
 		&zone.PickupRadiusMeters, &zone.DropoffRadiusMeters,
-		&zone.DispatchLimitsUpdatedBy, &zone.DispatchLimitsUpdatedAt,
+		&zone.DispatchLimitsUpdatedBy, &zone.DispatchLimitsUpdatedAt, &zone.Boundary,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return DeliveryZone{}, ErrNotFound

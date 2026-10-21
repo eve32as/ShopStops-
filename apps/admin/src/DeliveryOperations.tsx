@@ -1,9 +1,13 @@
-import { useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
 
 type DeliveryZone = {
   id: string
   name: string
   enabled: boolean
+  boundary?: {
+    type: 'Polygon' | 'MultiPolygon'
+    coordinates: number[][][] | number[][][][]
+  }
   maxOrders: number
   pickupRadiusMeters: number
   dropoffRadiusMeters: number
@@ -58,6 +62,7 @@ type Props = {
 }
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+const operationsRefreshIntervalMs = 15_000
 
 function apiUrl(gatewayUrl: string, path: string) {
   const url = new URL(gatewayUrl.trim())
@@ -86,11 +91,113 @@ async function requestError(response: Response) {
   )
 }
 
+function zonePathData(zones: DeliveryZone[]) {
+  const shapes = zones.map((zone) => {
+    const boundary = zone.boundary
+    if (!boundary || !Array.isArray(boundary.coordinates)) return { zone, rings: [] as number[][][] }
+    const polygons = boundary.type === 'Polygon'
+      ? [boundary.coordinates as number[][][]]
+      : boundary.type === 'MultiPolygon'
+        ? boundary.coordinates as number[][][][]
+        : []
+    const rings = polygons.flat().filter((ring) =>
+      Array.isArray(ring) && ring.length >= 4 && ring.every((point) =>
+        Array.isArray(point) && point.length >= 2 &&
+        Number.isFinite(point[0]) && Number.isFinite(point[1]),
+      ),
+    )
+    return { zone, rings }
+  })
+  const positions = shapes.flatMap(({ rings }) => rings.flat())
+  if (!positions.length) return []
+
+  const longitudes = positions.map(([longitude]) => longitude)
+  const latitudes = positions.map(([, latitude]) => latitude)
+  const minLongitude = Math.min(...longitudes)
+  const maxLongitude = Math.max(...longitudes)
+  const minLatitude = Math.min(...latitudes)
+  const maxLatitude = Math.max(...latitudes)
+  const centerLatitude = (minLatitude + maxLatitude) / 2
+  const longitudeScale = Math.cos(centerLatitude * Math.PI / 180)
+  const width = Math.max((maxLongitude - minLongitude) * longitudeScale, 0.000001)
+  const height = Math.max(maxLatitude - minLatitude, 0.000001)
+  const scale = Math.min(360 / width, 200 / height)
+  const centerLongitude = (minLongitude + maxLongitude) / 2
+  const project = ([longitude, latitude]: number[]) => [
+    200 + (longitude - centerLongitude) * longitudeScale * scale,
+    120 - (latitude - centerLatitude) * scale,
+  ]
+
+  return shapes.filter(({ rings }) => rings.length > 0).map(({ zone, rings }) => ({
+    zone,
+    path: rings.map((ring) => ring.map(project)
+      .map(([x, y], index) => `${index === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`)
+      .join(' ') + ' Z').join(' '),
+  }))
+}
+
+function ZoneBoundaryMap({
+  zones,
+  onSelect,
+}: {
+  zones: DeliveryZone[]
+  onSelect: (name: string) => void
+}) {
+  const paths = zonePathData(zones)
+  return (
+    <section className="zone-map" aria-label="Delivery sector boundary map">
+      <div className="zone-map-heading">
+        <strong>Sector boundary overview</strong>
+        <span>Structural view · polygon boundaries</span>
+      </div>
+      {paths.length ? (
+        <svg
+          aria-label="Delivery sectors with enabled and disabled status"
+          className="zone-map-svg"
+          role="img"
+          viewBox="0 0 400 240"
+        >
+          <rect className="zone-map-background" height="240" width="400" />
+          <path className="zone-map-grid" d="M0 60H400 M0 120H400 M0 180H400 M100 0V240 M200 0V240 M300 0V240" />
+          {paths.map(({ zone, path }) => (
+            <path
+              aria-label={`${zone.name}, ${zone.enabled ? 'enabled' : 'disabled'}`}
+              className={`zone-map-shape ${zone.enabled ? 'zone-map-shape-enabled' : 'zone-map-shape-disabled'}`}
+              d={path}
+              fillRule="evenodd"
+              key={zone.id}
+              onClick={() => onSelect(zone.name)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault()
+                  onSelect(zone.name)
+                }
+              }}
+              role="button"
+              tabIndex={0}
+            >
+              <title>{`${zone.name} · ${zone.enabled ? 'Enabled' : 'Disabled'}`}</title>
+            </path>
+          ))}
+        </svg>
+      ) : (
+        <p className="zone-map-empty">No valid polygon boundaries were returned for these sectors.</p>
+      )}
+      <div className="zone-map-legend">
+        <span><i className="zone-map-key zone-map-key-enabled" /> Enabled</span>
+        <span><i className="zone-map-key zone-map-key-disabled" /> Disabled</span>
+      </div>
+    </section>
+  )
+}
+
 export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) {
   const [zones, setZones] = useState<DeliveryZone[]>([])
   const [zonesError, setZonesError] = useState('')
+  const [operationsError, setOperationsError] = useState('')
   const [zonesLoading, setZonesLoading] = useState(false)
   const [operations, setOperations] = useState<OperationsSnapshot | null>(null)
+  const [zoneSearch, setZoneSearch] = useState('')
   const [updatingZone, setUpdatingZone] = useState('')
   const [savingLimitsZone, setSavingLimitsZone] = useState('')
   const [zoneDrafts, setZoneDrafts] = useState<Record<string, DispatchLimitDraft>>({})
@@ -110,6 +217,60 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
   const [routeAssignmentError, setRouteAssignmentError] = useState('')
   const [assigningRoute, setAssigningRoute] = useState(false)
 
+  const loadOperations = useCallback(async () => {
+    if (!gatewayUrl.trim() || !sessionToken.trim()) {
+      return
+    }
+    let url: URL
+    try {
+      url = apiUrl(gatewayUrl, '/admin/operations')
+    } catch (error) {
+      setOperationsError(error instanceof Error ? error.message : 'Enter a valid gateway URL.')
+      return
+    }
+    try {
+      const response = await fetch(url, {
+        redirect: 'error',
+        headers: {
+          Accept: 'application/json',
+          Authorization: ['Bear', 'er'].join('') + ' ' + sessionToken.trim(),
+        },
+      })
+      if (!response.ok) throw await requestError(response)
+      setOperations(await response.json() as OperationsSnapshot)
+      setOperationsError('')
+    } catch (error) {
+      setOperationsError(error instanceof Error ? error.message : 'Could not refresh operations.')
+    }
+  }, [gatewayUrl, sessionToken])
+
+  useEffect(() => {
+    if (!gatewayUrl.trim() || !sessionToken.trim()) {
+      return
+    }
+    const initialRefresh = window.setTimeout(() => void loadOperations(), 0)
+    const timer = window.setInterval(() => void loadOperations(), operationsRefreshIntervalMs)
+    return () => {
+      window.clearTimeout(initialRefresh)
+      window.clearInterval(timer)
+    }
+  }, [gatewayUrl, sessionToken, loadOperations])
+
+  const visibleZones = useMemo(() => {
+    const query = zoneSearch.trim().toLocaleLowerCase()
+    return query
+      ? zones.filter((zone) => zone.name.toLocaleLowerCase().includes(query))
+      : zones
+  }, [zoneSearch, zones])
+
+  const visibleOperationZones = useMemo(() => {
+    const query = zoneSearch.trim().toLocaleLowerCase()
+    const source = gatewayUrl.trim() && sessionToken.trim() ? operations?.deliveryZones ?? [] : []
+    return source.filter((zone) =>
+      !query || zone.name.toLocaleLowerCase().includes(query),
+    )
+  }, [gatewayUrl, operations, sessionToken, zoneSearch])
+
   async function loadZones() {
     setZonesError('')
     if (!gatewayUrl.trim() || !sessionToken.trim()) {
@@ -117,10 +278,8 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
       return
     }
     let url: URL
-    let operationsUrl: URL
     try {
       url = apiUrl(gatewayUrl, '/admin/delivery-zones')
-      operationsUrl = apiUrl(gatewayUrl, '/admin/operations')
     } catch (error) {
       setZonesError(error instanceof Error ? error.message : 'Enter a valid gateway URL.')
       return
@@ -131,19 +290,12 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
         Accept: 'application/json',
         Authorization: ['Bear', 'er'].join('') + ' ' + sessionToken.trim(),
       }
-      const [response, operationsResponse] = await Promise.all([
-        fetch(url, { redirect: 'error', headers }),
-        fetch(operationsUrl, { redirect: 'error', headers }),
-      ])
+      const response = await fetch(url, { redirect: 'error', headers })
       if (!response.ok) throw await requestError(response)
-      if (!operationsResponse.ok) throw await requestError(operationsResponse)
-      const [result, operationsResult] = await Promise.all([
-        response.json(),
-        operationsResponse.json() as Promise<OperationsSnapshot>,
-      ])
+      const result = await response.json()
       const loadedZones = Array.isArray(result.deliveryZones) ? result.deliveryZones as DeliveryZone[] : []
       setZones(loadedZones)
-      setOperations(operationsResult)
+      void loadOperations()
       setZoneDrafts(Object.fromEntries(loadedZones.map((zone) => [zone.id, {
         maxOrders: String(zone.maxOrders),
         pickupRadiusMeters: String(zone.pickupRadiusMeters),
@@ -376,7 +528,7 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
         </div>
         <span className="lock-mark" aria-label="Admin only">⌑</span>
       </div>
-      {operations ? (
+      {gatewayUrl.trim() && sessionToken.trim() && operations ? (
         <section className="operations-snapshot" aria-label="Delivery operations snapshot">
           <div className="operations-snapshot-heading">
             <strong>Operational snapshot</strong>
@@ -394,7 +546,7 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
                   : 'No unpublished events'}
               </small>
             </div>
-            {operations.deliveryZones.map((zone) => (
+            {visibleOperationZones.map((zone) => (
               <div className="operations-zone" key={zone.id}>
                 <span>{zone.name}{zone.enabled ? '' : ' · Disabled'}</span>
                 <strong>{zone.readyOrderCount} ready · {zone.activeBundleCount} active bundles</strong>
@@ -420,23 +572,68 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
               </div>
             ))}
           </div>
+          <div className="operations-table-wrap">
+            <table className="operations-table">
+              <caption>Delivery sector dispatch status</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Sector</th>
+                  <th scope="col">State</th>
+                  <th scope="col">Ready</th>
+                  <th scope="col">Oldest ready</th>
+                  <th scope="col">Active bundles</th>
+                  <th scope="col">Open stops</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleOperationZones.map((zone) => (
+                  <tr key={zone.id}>
+                    <th scope="row">{zone.name}</th>
+                    <td><span className={`zone-status ${zone.enabled ? 'zone-status-enabled' : 'zone-status-disabled'}`}>
+                      {zone.enabled ? 'Enabled' : 'Disabled'}
+                    </span></td>
+                    <td>{zone.readyOrderCount}</td>
+                    <td>{zone.oldestReadyAt ? new Date(zone.oldestReadyAt).toLocaleString() : '—'}</td>
+                    <td>{zone.activeBundleCount}</td>
+                    <td>{zone.openStopCount}</td>
+                  </tr>
+                ))}
+                {visibleOperationZones.length === 0 ? (
+                  <tr><td colSpan={6}>No sectors match this search.</td></tr>
+                ) : null}
+              </tbody>
+            </table>
+          </div>
         </section>
       ) : null}
+      {operationsError ? <div className="alert alert-error" role="alert">{operationsError}</div> : null}
       <div className="delivery-controls-grid">
         <section>
           <div className="delivery-section-heading">
             <div>
               <strong>Service zones</strong>
-              <p>Set saved proximity limits and control whether a zone accepts new orders.</p>
+              <p>Search sectors, review their boundaries, and control whether they accept new orders.</p>
             </div>
             <button className="select-checkout" disabled={zonesLoading} onClick={loadZones} type="button">
               {zonesLoading ? 'Loading…' : 'Load zones'}
             </button>
           </div>
+          <label className="zone-search">
+            Search delivery sectors
+            <input
+              autoComplete="off"
+              onChange={(event) => setZoneSearch(event.target.value)}
+              placeholder="Filter by sector name"
+              type="search"
+              value={zoneSearch}
+            />
+          </label>
           {zonesError ? <div className="alert alert-error" role="alert">{zonesError}</div> : null}
-          {zones.length ? (
+          {visibleZones.length ? (
+            <>
+              <ZoneBoundaryMap zones={visibleZones} onSelect={setZoneSearch} />
             <div className="zone-list" aria-live="polite">
-              {zones.map((zone) => (
+              {visibleZones.map((zone) => (
                 <article className="zone-card" key={zone.id}>
                   <div className="zone-row">
                     <div>
@@ -510,6 +707,9 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
                 </article>
               ))}
             </div>
+            </>
+          ) : zones.length ? (
+            <p className="search-hint">No sectors match “{zoneSearch}”.</p>
           ) : (
             <p className="search-hint">Zone boundaries are managed in the database; this view controls whether a zone accepts new work.</p>
           )}

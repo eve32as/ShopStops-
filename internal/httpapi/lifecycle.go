@@ -69,14 +69,15 @@ type AdminCheckoutRepository interface {
 }
 
 type DeliveryZone struct {
-	ID                      string    `json:"id"`
-	Name                    string    `json:"name"`
-	Enabled                 bool      `json:"enabled"`
-	MaxOrders               int       `json:"maxOrders"`
-	PickupRadiusMeters      int       `json:"pickupRadiusMeters"`
-	DropoffRadiusMeters     int       `json:"dropoffRadiusMeters"`
-	DispatchLimitsUpdatedBy string    `json:"dispatchLimitsUpdatedBy"`
-	DispatchLimitsUpdatedAt time.Time `json:"dispatchLimitsUpdatedAt"`
+	ID                      string          `json:"id"`
+	Name                    string          `json:"name"`
+	Enabled                 bool            `json:"enabled"`
+	Boundary                json.RawMessage `json:"boundary"`
+	MaxOrders               int             `json:"maxOrders"`
+	PickupRadiusMeters      int             `json:"pickupRadiusMeters"`
+	DropoffRadiusMeters     int             `json:"dropoffRadiusMeters"`
+	DispatchLimitsUpdatedBy string          `json:"dispatchLimitsUpdatedBy"`
+	DispatchLimitsUpdatedAt time.Time       `json:"dispatchLimitsUpdatedAt"`
 }
 
 type AdminDeliveryRepository interface {

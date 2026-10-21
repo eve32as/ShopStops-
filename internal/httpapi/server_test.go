@@ -617,6 +617,7 @@ func TestCreateBundleMapsIneligibleSeedToConflict(t *testing.T) {
 func TestAdminDeliveryZonesRequiresAdminAndListsZones(t *testing.T) {
 	repo := &fakeRepository{deliveryZones: []DeliveryZone{{
 		ID: "00000000-0000-0000-0000-000000000001", Name: "North", Enabled: true,
+		Boundary: json.RawMessage(`{"type":"MultiPolygon","coordinates":[[[[-77.1,38.8],[-77.0,38.8],[-77.0,38.9],[-77.1,38.8]]]]}`),
 	}}}
 	handler := New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil)))
 
@@ -638,7 +639,8 @@ func TestAdminDeliveryZonesRequiresAdminAndListsZones(t *testing.T) {
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK ||
 		!strings.Contains(recorder.Body.String(), `"name":"North"`) ||
-		!strings.Contains(recorder.Body.String(), `"enabled":true`) {
+		!strings.Contains(recorder.Body.String(), `"enabled":true`) ||
+		!strings.Contains(recorder.Body.String(), `"type":"MultiPolygon"`) {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
