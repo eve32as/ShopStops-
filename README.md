@@ -26,6 +26,19 @@ specified in [`api/openapi.yaml`](api/openapi.yaml).
 Database integration fixtures are in `db/tests/`; apply all migrations before
 running the matching SQL test files.
 
+## Go ORM models
+
+`internal/models` provides GORM mappings for all 30 persisted tables and the
+`merchant_storefront_visibility` view, including custom PostGIS, JSONB, and
+exact-decimal field types. Open an existing PostgreSQL database with
+`models.OpenPostgres(DATABASE_URL)`. The numbered SQL migrations remain the
+schema authority: they define constraints, indexes, triggers, views, and
+stored procedures that GORM cannot safely recreate. Apply migrations before
+using the models, and do not call `AutoMigrate`. The existing HTTP repository
+continues to use `database/sql`; this is a separate ORM layer for code that
+needs model-based queries. User identities are issued by the configured OIDC
+provider and are not persisted as local account rows.
+
 ## Run the API
 
 After applying all migrations, set `DATABASE_URL` and a private internal API
