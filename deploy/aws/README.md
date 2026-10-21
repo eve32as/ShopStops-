@@ -9,6 +9,9 @@ gateway task definitions and opt-in services; encrypted, Multi-AZ RDS PostgreSQL
 Secrets Manager entries; CloudWatch logs and alarms; and least-privilege service
 security groups.
 
+This guide is for an authorized staging deployment only. Production deployment
+requires separate approval and the release gates documented by the service owner.
+
 The API is never exposed by the load balancer. Public traffic reaches only the
 gateway. `/v1/readyz` is the load-balancer health check. The RDS master password
 is managed by RDS and its secret ARN is output for controlled bootstrap only.
@@ -34,12 +37,13 @@ An operator must provide:
   migration image references using `@sha256:<digest>`. Build the migration image
   from `Dockerfile.db-migrate`.
 - Two or three available AZ names in the selected region and an ACM certificate
-  already issued in that same region for the production hostname.
+  already issued in that same region for the staging hostname.
 - A configured OIDC provider. Its issuer, audience, role claim, and actor claim
   must match real signed tokens accepted by the gateway. Cognito remains a
   provisional option; validate its access-token audience and role-claim
-  behavior before setting production values.
-- A production database connection and payment configuration plan. The
+  behavior before setting staging values.
+
+- A staging database connection and payment configuration plan. The
   `scripts/db-migrate.sh` runner provisions a constrained `shopstops_app` login,
   applies checksummed migrations under a separate no-login migration role, and
   grants runtime table/function access. The one-off ECS task definition runs
@@ -52,7 +56,7 @@ key ARN, encryption, and `use_lockfile = true`, for example:
 
 ```hcl
 bucket       = "organization-terraform-state"
-key          = "shopstops/production/terraform.tfstate"
+key          = "shopstops/staging/terraform.tfstate"
 region       = "us-east-1"
 encrypt      = true
 kms_key_id   = "arn:aws:kms:us-east-1:000000000000:key/replace-with-key-id"
@@ -83,9 +87,9 @@ deployment system. Do not store credentials or secret values in that file.
 Always inspect a saved plan before applying:
 
 ```sh
-terraform -chdir=deploy/aws plan -var-file=production.tfvars -out=production.tfplan
-terraform -chdir=deploy/aws show production.tfplan
-terraform -chdir=deploy/aws apply production.tfplan
+terraform -chdir=deploy/aws plan -var-file=staging.tfvars -out=staging.tfplan
+terraform -chdir=deploy/aws show staging.tfplan
+terraform -chdir=deploy/aws apply staging.tfplan
 ```
 
 Creating Multi-AZ RDS, a public ALB, per-AZ NAT gateways, and always-on ECS
@@ -129,7 +133,7 @@ plan before applying. The RDS instance has deletion protection and Terraform
 5. Verify the configured OIDC issuer, audience, role claim, CORS origins, image
    digests, certificate hostname, database extensions, and applied migrations.
    Then set `deploy_application = true` and apply a reviewed plan.
-6. Point production DNS at the ALB alias target, confirm the certificate and
+6. Point staging DNS at the ALB alias target, confirm the certificate and
    `/v1/readyz`, subscribe the operations rotation to `alarm_topic_arn`, and
    perform role-based and payment-provider smoke tests before accepting traffic.
 
