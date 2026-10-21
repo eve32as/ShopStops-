@@ -103,7 +103,9 @@ provide a sign-in UI or issue tokens. Never distribute the internal token.
 The AWS Terraform deployment foundation and its prerequisites, staged bootstrap,
 and known release blockers are documented in
 [`deploy/aws/README.md`](deploy/aws/README.md). It does not provision or apply
-cloud resources without an authorized operator.
+cloud resources without an authorized operator. The AWS guide includes the ACM
+hostname preflight and Route 53 alias mapping procedure, plus an independently
+KMS-encrypted PostgreSQL backup and restore-drill runbook.
 
 The private database bootstrap runner is `scripts/db-migrate.sh`; run it only
 from an approved network path with privileged migration credentials delivered by

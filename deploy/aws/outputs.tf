@@ -1,6 +1,11 @@
 output "load_balancer_dns_name" {
-  description = "Public HTTPS endpoint DNS name; create a DNS alias after certificate and hostname validation."
+  description = "AWS load balancer DNS name behind the configured gateway_hostname alias."
   value       = aws_lb.gateway.dns_name
+}
+
+output "gateway_hostname" {
+  description = "Configured public HTTPS hostname mapped to the gateway load balancer."
+  value       = aws_route53_record.gateway.fqdn
 }
 
 output "load_balancer_zone_id" {

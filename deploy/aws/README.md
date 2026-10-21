@@ -37,7 +37,9 @@ An operator must provide:
   migration image references using `@sha256:<digest>`. Build the migration image
   from `Dockerfile.db-migrate`.
 - Two or three available AZ names in the selected region and an ACM certificate
-  already issued in that same region for the staging hostname.
+  already issued in that same region for the public gateway hostname.
+- The public Route 53 hosted-zone ID containing the gateway hostname. Terraform
+  creates an A-alias record to the load balancer.
 - A configured OIDC provider. Its issuer, audience, role claim, and actor claim
   must match real signed tokens accepted by the gateway. Cognito remains a
   provisional option; validate its access-token audience and role-claim
@@ -84,6 +86,23 @@ terraform -chdir=deploy/aws validate
 
 Set deployment inputs through an ignored `*.tfvars` file or the approved
 deployment system. Do not store credentials or secret values in that file.
+Set `gateway_hostname`, `route53_zone_id`, and `certificate_arn`. Before planning,
+verify the certificate using the authorized AWS identity:
+
+```sh
+AWS_REGION='us-east-1' \
+CERTIFICATE_ARN='arn:aws:acm:us-east-1:123456789012:certificate/replace-me' \
+GATEWAY_HOSTNAME='api.staging.example.com' \
+  scripts/validate-acm-certificate.sh
+```
+
+The preflight rejects certificates that are pending validation, in another
+region, or do not cover the hostname (including invalid wildcard depth). The
+HTTPS listener attaches the ACM certificate and enforces
+`ELBSecurityPolicy-TLS13-1-2-2021-06`; port 80 only redirects to HTTPS. Terraform
+maps the configured hostname to the ALB through the specified public hosted
+zone. Keep ACM DNS-validation records in place so ACM can renew the certificate.
+
 Always inspect a saved plan before applying:
 
 ```sh
@@ -133,8 +152,8 @@ plan before applying. The RDS instance has deletion protection and Terraform
 5. Verify the configured OIDC issuer, audience, role claim, CORS origins, image
    digests, certificate hostname, database extensions, and applied migrations.
    Then set `deploy_application = true` and apply a reviewed plan.
-6. Point staging DNS at the ALB alias target, confirm the certificate and
-   `/v1/readyz`, subscribe the operations rotation to `alarm_topic_arn`, and
+6. Confirm the Terraform-created hostname alias, certificate chain, and
+   `/v1/readyz`; subscribe the operations rotation to `alarm_topic_arn`, and
    perform role-based and payment-provider smoke tests before accepting traffic.
 
 Secret values are read by ECS task execution roles at task start and are not
@@ -145,9 +164,35 @@ internal token must remain consistent.
 ## Operations and release limitations
 
 - RDS automated backups are retained for 35 days; a restore drill and recovery
-  time objective still need to be demonstrated by the service owner.
-- This root does not create the remote-state bucket, ECR repositories, ACM
-  certificate, DNS records, OIDC user lifecycle, live Stripe configuration,
+  time objective still need to be demonstrated by the service owner. These
+  automated backups are not a substitute for independent logical exports.
+- `scripts/backup-postgres-s3.sh` creates a custom-format `pg_dump`, checks its
+  archive and SHA-256 after an SSE-KMS S3 upload/download round trip, and uses
+  `verify-full` PostgreSQL TLS. Run it from an approved private-network backup
+  runner with an authorized read-only backup database role and an AWS workload
+  identity. The role needs scoped S3 `PutObject`/`GetObject` plus KMS
+  `GenerateDataKey`/`Decrypt` permissions for the selected key; the bucket must
+  enforce TLS, enable versioning, and have an approved lifecycle/retention
+  policy. Supply the database password via the approved secret manager or
+  protected `PGPASSFILE`, never as a command argument. Example environment:
+
+  ```sh
+  export PGHOST='private-rds-endpoint'
+  export PGUSER='shopstops_backup'
+  export PGDATABASE='shopstops'
+  export PGSSLMODE='verify-full'
+  export PGSSLROOTCERT='/etc/ssl/certs/rds-global-bundle.pem'
+  export BACKUP_S3_URI='s3://approved-backup-bucket/shopstops/production'
+  export BACKUP_SSE_KMS_KEY_ID='arn:aws:kms:us-east-1:123456789012:key/replace-me'
+  scripts/backup-postgres-s3.sh
+  ```
+
+  Schedule it through an approved production scheduler and alert on nonzero exit
+  or stale backup age. Restrict bucket and KMS access, keep backups separate
+  from the database account, and rehearse checksum verification plus
+  `pg_restore` into an isolated database before relying on the recovery point.
+- This root does not create the remote-state/backup buckets, ECR repositories,
+  ACM certificate or its DNS validation records, OIDC user lifecycle, live Stripe configuration,
   road-routing integration, APNs/FCM setup, app-store builds, or on-call
   procedures.
 - Metrics alarms are only a starting point. Subscribe and test the alarm topic,

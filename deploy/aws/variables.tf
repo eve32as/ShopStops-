@@ -41,8 +41,41 @@ variable "availability_zones" {
 }
 
 variable "certificate_arn" {
-  description = "ARN of a validated ACM certificate covering the production hostname."
+  description = "ARN of an issued ACM certificate covering gateway_hostname in aws_region."
   type        = string
+
+  validation {
+    condition     = can(regex("^arn:aws[a-zA-Z-]*:acm:${var.aws_region}:[0-9]{12}:certificate/[A-Za-z0-9-]+$", var.certificate_arn))
+    error_message = "certificate_arn must be an ACM certificate ARN in aws_region."
+  }
+}
+
+variable "gateway_hostname" {
+  description = "Public DNS hostname served by the HTTPS gateway listener."
+  type        = string
+
+  validation {
+    condition = (
+      lower(var.gateway_hostname) == var.gateway_hostname &&
+      length(split(".", var.gateway_hostname)) >= 2 &&
+      alltrue([
+        for label in split(".", var.gateway_hostname) :
+        length(label) >= 1 && length(label) <= 63 &&
+        can(regex("^[a-z0-9]([a-z0-9-]*[a-z0-9])?$", label))
+      ])
+    )
+    error_message = "gateway_hostname must be a lowercase DNS hostname without a trailing dot or wildcard."
+  }
+}
+
+variable "route53_zone_id" {
+  description = "ID of the public Route 53 hosted zone containing gateway_hostname."
+  type        = string
+
+  validation {
+    condition     = can(regex("^Z[A-Z0-9]+$", var.route53_zone_id))
+    error_message = "route53_zone_id must be a Route 53 hosted zone ID."
+  }
 }
 
 variable "oidc_issuer" {

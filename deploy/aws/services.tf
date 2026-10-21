@@ -367,6 +367,13 @@ resource "aws_lb_listener" "https" {
   certificate_arn   = var.certificate_arn
   ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
 
+  lifecycle {
+    precondition {
+      condition     = can(regex("^arn:aws[a-zA-Z-]*:acm:${var.aws_region}:[0-9]{12}:certificate/", var.certificate_arn))
+      error_message = "The gateway TLS certificate must be issued in the same AWS region as the load balancer."
+    }
+  }
+
   default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.gateway.arn
