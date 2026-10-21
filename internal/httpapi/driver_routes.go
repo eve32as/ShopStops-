@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -65,7 +64,7 @@ func (s *Server) createAssignedRoute(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, ErrNotFound):
 		writeError(w, http.StatusNotFound, "paid checkout not found")
 	case errors.Is(err, ErrConflict):
-		writeError(w, http.StatusConflict, "checkout already has a different or inactive route")
+		writeError(w, http.StatusConflict, "checkout is not eligible or already has a conflicting route assignment")
 	case err != nil:
 		s.databaseError(w, err)
 	default:
@@ -79,7 +78,7 @@ func (p *PostgresRepository) DriverRoutes(
 	rows, err := p.db.QueryContext(ctx, `
 		SELECT id
 		FROM unified_delivery_routes
-		WHERE driver_ref = $1 AND status IN ('planned', 'routed', 'in_progress')
+		WHERE driver_ref = $1 AND status = 'in_progress'
 		ORDER BY created_at DESC, id
 		LIMIT 50`, driverRef)
 	if err != nil {
@@ -122,57 +121,18 @@ func (p *PostgresRepository) CreateAssignedRoute(
 	}
 	defer tx.Rollback()
 
+	var checkoutExists bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS (SELECT 1 FROM unified_checkouts WHERE id = $1)`,
+		checkoutID,
+	).Scan(&checkoutExists); err != nil {
+		return routeResponse{}, err
+	}
+	if !checkoutExists {
+		return routeResponse{}, ErrNotFound
+	}
+
 	var routeID string
-	err = tx.QueryRowContext(ctx, `
-		SELECT id FROM unified_delivery_routes WHERE idempotency_key = $1 FOR UPDATE`,
-		idempotencyKey,
-	).Scan(&routeID)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return routeResponse{}, err
-	}
-	if err == nil {
-		var storedCheckoutID, assignedDriver string
-		var status string
-		if err := tx.QueryRowContext(ctx, `
-			SELECT checkout_id::text, COALESCE(driver_ref, ''), status
-			FROM unified_delivery_routes WHERE id = $1`,
-			routeID,
-		).Scan(&storedCheckoutID, &assignedDriver, &status); err != nil {
-			return routeResponse{}, err
-		}
-		if storedCheckoutID != checkoutID || assignedDriver != driverRef || status == "cancelled" {
-			return routeResponse{}, ErrConflict
-		}
-		if err := tx.Commit(); err != nil {
-			return routeResponse{}, err
-		}
-		return p.DriverRoute(ctx, routeID, driverRef)
-	}
-
-	var checkoutStatus string
-	if err := tx.QueryRowContext(ctx, `
-		SELECT status FROM unified_checkouts WHERE id = $1 FOR UPDATE`,
-		checkoutID,
-	).Scan(&checkoutStatus); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return routeResponse{}, ErrNotFound
-		}
-		return routeResponse{}, err
-	}
-	if checkoutStatus != "paid" {
-		return routeResponse{}, ErrConflict
-	}
-	var checkoutHasRoute bool
-	if err := tx.QueryRowContext(ctx, `
-		SELECT EXISTS (SELECT 1 FROM unified_delivery_routes WHERE checkout_id = $1)`,
-		checkoutID,
-	).Scan(&checkoutHasRoute); err != nil {
-		return routeResponse{}, err
-	}
-	if checkoutHasRoute {
-		return routeResponse{}, ErrConflict
-	}
-
 	if err := tx.QueryRowContext(ctx,
 		`SELECT create_unified_route($1, $2, 'osrm')::text`,
 		checkoutID, idempotencyKey,
@@ -195,7 +155,8 @@ func (p *PostgresRepository) CreateAssignedRoute(
 	}
 	if storedCheckoutID != checkoutID ||
 		(assignedDriver != "" && assignedDriver != driverRef) ||
-		status == "cancelled" {
+		status == "cancelled" ||
+		(status == "completed" && assignedDriver != driverRef) {
 		return routeResponse{}, ErrConflict
 	}
 	if status != "completed" {

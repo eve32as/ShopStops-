@@ -173,6 +173,7 @@ export default function HomeScreen() {
   const [checkout, setCheckout] = useState<Checkout | null>(null);
   const [route, setRoute] = useState<Route | null>(null);
   const [assignedRoutes, setAssignedRoutes] = useState<Route[]>([]);
+  const [assignedRoutesLoaded, setAssignedRoutesLoaded] = useState(false);
   const [subscription, setSubscription] = useState<Subscription | null>(null);
   const [merchantStoreLocations, setMerchantStoreLocations] = useState<MerchantStoreLocation[]>([]);
   const [merchantOrders, setMerchantOrders] = useState<MerchantOrder[]>([]);
@@ -298,6 +299,7 @@ export default function HomeScreen() {
       setRoute(null);
       setRouteId("");
       setAssignedRoutes([]);
+      setAssignedRoutesLoaded(false);
       routeStopAttempts.current.clear();
       setSubscription(null);
       setMerchantCatalog([]);
@@ -494,7 +496,10 @@ export default function HomeScreen() {
 
   async function loadAssignedRoutes() {
     const result = await run(() => apiRequest<Route[]>(settings, "driver/routes"));
-    if (result) setAssignedRoutes(result);
+    if (result) {
+      setAssignedRoutes(result);
+      setAssignedRoutesLoaded(true);
+    }
   }
 
   async function updateRouteStop(stopId: string, type: "arrive" | "complete") {
@@ -533,6 +538,7 @@ export default function HomeScreen() {
           : current,
       );
       if (result.routeStatus === "completed" && tracking) {
+        setAssignedRoutes((current) => current.filter((item) => item.id !== routeKey));
         await endTracking();
       }
     }
@@ -1358,23 +1364,22 @@ export default function HomeScreen() {
               onPress={() => void loadAssignedRoutes()}
               secondary
             />
-            {assignedRoutes.length === 0 ? (
+            {assignedRoutesLoaded && assignedRoutes.length === 0 ? (
               <Text style={styles.tinyNote}>No active routes are assigned to this driver.</Text>
-            ) : (
-              assignedRoutes.map((assignedRoute) => (
-                <View key={assignedRoute.id} style={styles.merchantItem}>
-                  <Text style={styles.resultTitle}>Route · {assignedRoute.status.replaceAll("_", " ")}</Text>
-                  <Text style={styles.resultSub}>Checkout · {assignedRoute.checkoutId}</Text>
-                  <Text style={styles.resultSub}>{assignedRoute.stops.length} ordered stops</Text>
-                  <ActionButton
-                    disabled={busy || tracking}
-                    label={route?.id === assignedRoute.id ? "Route loaded" : "Open assigned route"}
-                    onPress={() => void loadRoute(assignedRoute.id)}
-                    secondary
-                  />
-                </View>
-              ))
-            )}
+            ) : null}
+            {assignedRoutes.map((assignedRoute) => (
+              <View key={assignedRoute.id} style={styles.merchantItem}>
+                <Text style={styles.resultTitle}>Route · {assignedRoute.status.replaceAll("_", " ")}</Text>
+                <Text style={styles.resultSub}>Checkout · {assignedRoute.checkoutId}</Text>
+                <Text style={styles.resultSub}>{assignedRoute.stops.length} ordered stops</Text>
+                <ActionButton
+                  disabled={busy || tracking}
+                  label={route?.id === assignedRoute.id ? "Route loaded" : "Open assigned route"}
+                  onPress={() => void loadRoute(assignedRoute.id)}
+                  secondary
+                />
+              </View>
+            ))}
             <Field
               editable={!tracking && !busy}
               label="Assigned route ID"
