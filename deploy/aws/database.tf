@@ -35,32 +35,32 @@ resource "aws_iam_role_policy_attachment" "rds_monitoring" {
 }
 
 resource "aws_db_instance" "main" {
-  identifier                  = local.name
-  engine                      = "postgres"
-  engine_version              = var.db_engine_version
-  instance_class              = var.db_instance_class
-  allocated_storage           = var.db_allocated_storage_gib
-  max_allocated_storage       = var.db_max_storage_gib
-  storage_type                = "gp3"
-  storage_encrypted           = true
-  kms_key_id                  = aws_kms_key.database.arn
-  db_name                     = "shopstops"
-  username                    = "shopstops_admin"
-  manage_master_user_password = true
-  multi_az                    = true
-  db_subnet_group_name        = aws_db_subnet_group.main.name
-  vpc_security_group_ids      = [aws_security_group.database.id]
-  publicly_accessible         = false
-  backup_retention_period     = 35
-  auto_minor_version_upgrade  = true
-  deletion_protection         = true
-  copy_tags_to_snapshot       = true
-  performance_insights_enabled = true
+  identifier                            = local.name
+  engine                                = "postgres"
+  engine_version                        = var.db_engine_version
+  instance_class                        = var.db_instance_class
+  allocated_storage                     = var.db_allocated_storage_gib
+  max_allocated_storage                 = var.db_max_storage_gib
+  storage_type                          = "gp3"
+  storage_encrypted                     = true
+  kms_key_id                            = aws_kms_key.database.arn
+  db_name                               = "shopstops"
+  username                              = "shopstops_admin"
+  manage_master_user_password           = true
+  multi_az                              = true
+  db_subnet_group_name                  = aws_db_subnet_group.main.name
+  vpc_security_group_ids                = [aws_security_group.database.id]
+  publicly_accessible                   = false
+  backup_retention_period               = 35
+  auto_minor_version_upgrade            = true
+  deletion_protection                   = true
+  copy_tags_to_snapshot                 = true
+  performance_insights_enabled          = true
   performance_insights_retention_period = 7
   monitoring_interval                   = 60
-  monitoring_role_arn                  = aws_iam_role.rds_monitoring.arn
-  enabled_cloudwatch_logs_exports      = ["postgresql", "upgrade"]
-  apply_immediately                    = false
+  monitoring_role_arn                   = aws_iam_role.rds_monitoring.arn
+  enabled_cloudwatch_logs_exports       = ["postgresql", "upgrade"]
+  apply_immediately                     = false
 
   lifecycle {
     prevent_destroy = true

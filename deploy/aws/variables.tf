@@ -50,8 +50,8 @@ variable "oidc_issuer" {
   type        = string
 
   validation {
-    condition     = can(regex("^https://[^[:space:]]+/$", var.oidc_issuer))
-    error_message = "oidc_issuer must be an HTTPS issuer URL ending in a slash."
+    condition     = can(regex("^https://[^[:space:]]+$", var.oidc_issuer))
+    error_message = "oidc_issuer must be an HTTPS issuer URL."
   }
 }
 
@@ -148,16 +148,32 @@ variable "api_delivery_fee_cents" {
   description = "Delivery fee in cents."
   type        = number
   default     = 0
+
+  validation {
+    condition     = var.api_delivery_fee_cents >= 0 && var.api_delivery_fee_cents <= 2147483647 && floor(var.api_delivery_fee_cents) == var.api_delivery_fee_cents
+    error_message = "The delivery fee must be a non-negative 32-bit integer number of cents."
+  }
 }
 
 variable "api_service_fee_cents" {
   description = "Service fee in cents."
   type        = number
   default     = 0
+
+  validation {
+    condition     = var.api_service_fee_cents >= 0 && var.api_service_fee_cents <= 2147483647 && floor(var.api_service_fee_cents) == var.api_service_fee_cents
+    error_message = "The service fee must be a non-negative 32-bit integer number of cents."
+  }
 }
 
 variable "enable_stripe" {
   description = "Inject Stripe secrets into the API. Secrets must be populated before enabling."
+  type        = bool
+  default     = false
+}
+
+variable "deploy_application" {
+  description = "Start ECS services only after required secrets, database role, and ordered migrations are ready."
   type        = bool
   default     = false
 }

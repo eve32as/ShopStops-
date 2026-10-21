@@ -1,6 +1,6 @@
 locals {
-  name     = "${var.project_name}-${var.environment}"
-  az_index = { for index, az in var.availability_zones : az => index }
+  name        = "${var.project_name}-${var.environment}"
+  az_index    = { for index, az in var.availability_zones : az => index }
   subnet_bits = 8
 }
 
@@ -106,80 +106,112 @@ resource "aws_security_group" "load_balancer" {
   name        = "${local.name}-alb"
   description = "Public HTTPS ingress to the identity gateway only"
   vpc_id      = aws_vpc.main.id
-
-  ingress {
-    description = "HTTPS"
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    description = "HTTP redirect to HTTPS"
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  egress {
-    from_port       = 8081
-    to_port         = 8081
-    protocol        = "tcp"
-    security_groups = [aws_security_group.gateway.id]
-  }
 }
 
 resource "aws_security_group" "gateway" {
   name        = "${local.name}-gateway"
   description = "Gateway ingress from the load balancer"
   vpc_id      = aws_vpc.main.id
-
-  ingress {
-    from_port       = 8081
-    to_port         = 8081
-    protocol        = "tcp"
-    security_groups = [aws_security_group.load_balancer.id]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
 }
 
 resource "aws_security_group" "api" {
   name        = "${local.name}-api"
   description = "API ingress from the identity gateway"
   vpc_id      = aws_vpc.main.id
-
-  ingress {
-    from_port       = 8080
-    to_port         = 8080
-    protocol        = "tcp"
-    security_groups = [aws_security_group.gateway.id]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
 }
 
 resource "aws_security_group" "database" {
   name        = "${local.name}-database"
   description = "PostgreSQL ingress from the API only"
   vpc_id      = aws_vpc.main.id
+}
 
-  ingress {
-    from_port       = 5432
-    to_port         = 5432
-    protocol        = "tcp"
-    security_groups = [aws_security_group.api.id]
-  }
+resource "aws_vpc_security_group_ingress_rule" "alb_https" {
+  security_group_id = aws_security_group.load_balancer.id
+  description       = "HTTPS from public clients"
+  cidr_ipv4         = "0.0.0.0/0"
+  from_port         = 443
+  ip_protocol       = "tcp"
+  to_port           = 443
+}
+
+resource "aws_vpc_security_group_ingress_rule" "alb_http" {
+  security_group_id = aws_security_group.load_balancer.id
+  description       = "HTTP redirect to HTTPS"
+  cidr_ipv4         = "0.0.0.0/0"
+  from_port         = 80
+  ip_protocol       = "tcp"
+  to_port           = 80
+}
+
+resource "aws_vpc_security_group_egress_rule" "alb_to_gateway" {
+  security_group_id            = aws_security_group.load_balancer.id
+  description                  = "Forward requests only to the identity gateway"
+  referenced_security_group_id = aws_security_group.gateway.id
+  from_port                    = 8081
+  ip_protocol                  = "tcp"
+  to_port                      = 8081
+}
+
+resource "aws_vpc_security_group_ingress_rule" "gateway_from_alb" {
+  security_group_id            = aws_security_group.gateway.id
+  description                  = "Requests from the public load balancer"
+  referenced_security_group_id = aws_security_group.load_balancer.id
+  from_port                    = 8081
+  ip_protocol                  = "tcp"
+  to_port                      = 8081
+}
+
+resource "aws_vpc_security_group_egress_rule" "gateway_to_api" {
+  security_group_id            = aws_security_group.gateway.id
+  description                  = "Forward authenticated requests to the API"
+  referenced_security_group_id = aws_security_group.api.id
+  from_port                    = 8080
+  ip_protocol                  = "tcp"
+  to_port                      = 8080
+}
+
+resource "aws_vpc_security_group_egress_rule" "gateway_https" {
+  security_group_id = aws_security_group.gateway.id
+  description       = "HTTPS to OIDC discovery and JWKS endpoints"
+  cidr_ipv4         = "0.0.0.0/0"
+  from_port         = 443
+  ip_protocol       = "tcp"
+  to_port           = 443
+}
+
+resource "aws_vpc_security_group_ingress_rule" "api_from_gateway" {
+  security_group_id            = aws_security_group.api.id
+  description                  = "Requests from the identity gateway only"
+  referenced_security_group_id = aws_security_group.gateway.id
+  from_port                    = 8080
+  ip_protocol                  = "tcp"
+  to_port                      = 8080
+}
+
+resource "aws_vpc_security_group_egress_rule" "api_to_database" {
+  security_group_id            = aws_security_group.api.id
+  description                  = "PostgreSQL traffic to the database"
+  referenced_security_group_id = aws_security_group.database.id
+  from_port                    = 5432
+  ip_protocol                  = "tcp"
+  to_port                      = 5432
+}
+
+resource "aws_vpc_security_group_egress_rule" "api_https" {
+  security_group_id = aws_security_group.api.id
+  description       = "HTTPS for Stripe API operations"
+  cidr_ipv4         = "0.0.0.0/0"
+  from_port         = 443
+  ip_protocol       = "tcp"
+  to_port           = 443
+}
+
+resource "aws_vpc_security_group_ingress_rule" "database_from_api" {
+  security_group_id            = aws_security_group.database.id
+  description                  = "PostgreSQL from the API only"
+  referenced_security_group_id = aws_security_group.api.id
+  from_port                    = 5432
+  ip_protocol                  = "tcp"
+  to_port                      = 5432
 }

@@ -31,8 +31,8 @@ output "internal_api_token_secret_arn" {
 output "stripe_secret_arns" {
   description = "Optional Stripe secret ARNs; secret values are never stored in Terraform."
   value = var.enable_stripe ? {
-    secret_key   = aws_secretsmanager_secret.stripe_secret_key[0].arn
-    webhook      = aws_secretsmanager_secret.stripe_webhook_secret[0].arn
+    secret_key    = aws_secretsmanager_secret.stripe_secret_key[0].arn
+    webhook       = aws_secretsmanager_secret.stripe_webhook_secret[0].arn
     monthly_price = aws_secretsmanager_secret.stripe_merchant_price[0].arn
   } : {}
 }

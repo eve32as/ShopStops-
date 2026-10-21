@@ -113,7 +113,6 @@ resource "aws_service_discovery_service" "api" {
   }
 
   health_check_custom_config {
-    failure_threshold = 1
   }
 }
 
@@ -195,11 +194,13 @@ resource "aws_ecs_task_definition" "gateway" {
 }
 
 resource "aws_ecs_service" "api" {
-  name            = "api"
-  cluster         = aws_ecs_cluster.main.id
-  task_definition = aws_ecs_task_definition.api.arn
-  desired_count   = 2
-  launch_type     = "FARGATE"
+  count = var.deploy_application ? 1 : 0
+
+  name                               = "api"
+  cluster                            = aws_ecs_cluster.main.id
+  task_definition                    = aws_ecs_task_definition.api.arn
+  desired_count                      = 2
+  launch_type                        = "FARGATE"
   deployment_minimum_healthy_percent = 100
   deployment_maximum_percent         = 200
   enable_execute_command             = false
@@ -224,11 +225,11 @@ resource "aws_ecs_service" "api" {
 }
 
 resource "aws_lb" "gateway" {
-  name               = substr("${local.name}-gateway", 0, 32)
-  internal           = false
-  load_balancer_type = "application"
-  security_groups    = [aws_security_group.load_balancer.id]
-  subnets            = [for subnet in aws_subnet.public : subnet.id]
+  name                       = substr("${local.name}-gateway", 0, 32)
+  internal                   = false
+  load_balancer_type         = "application"
+  security_groups            = [aws_security_group.load_balancer.id]
+  subnets                    = [for subnet in aws_subnet.public : subnet.id]
   drop_invalid_header_fields = true
   idle_timeout               = 60
 }
@@ -280,11 +281,13 @@ resource "aws_lb_listener" "https" {
 }
 
 resource "aws_ecs_service" "gateway" {
-  name            = "gateway"
-  cluster         = aws_ecs_cluster.main.id
-  task_definition = aws_ecs_task_definition.gateway.arn
-  desired_count   = 2
-  launch_type     = "FARGATE"
+  count = var.deploy_application ? 1 : 0
+
+  name                               = "gateway"
+  cluster                            = aws_ecs_cluster.main.id
+  task_definition                    = aws_ecs_task_definition.gateway.arn
+  desired_count                      = 2
+  launch_type                        = "FARGATE"
   deployment_minimum_healthy_percent = 100
   deployment_maximum_percent         = 200
   enable_execute_command             = false
@@ -315,27 +318,27 @@ resource "aws_ecs_service" "gateway" {
 }
 
 resource "aws_appautoscaling_target" "api" {
-  count = var.enable_api_autoscaling ? 1 : 0
+  count = var.enable_api_autoscaling && var.deploy_application ? 1 : 0
 
   max_capacity       = 10
   min_capacity       = 2
-  resource_id        = "service/${aws_ecs_cluster.main.name}/${aws_ecs_service.api.name}"
+  resource_id        = "service/${aws_ecs_cluster.main.name}/${aws_ecs_service.api[0].name}"
   scalable_dimension = "ecs:service:DesiredCount"
   service_namespace  = "ecs"
 }
 
 resource "aws_appautoscaling_target" "gateway" {
-  count = var.enable_api_autoscaling ? 1 : 0
+  count = var.enable_api_autoscaling && var.deploy_application ? 1 : 0
 
   max_capacity       = 10
   min_capacity       = 2
-  resource_id        = "service/${aws_ecs_cluster.main.name}/${aws_ecs_service.gateway.name}"
+  resource_id        = "service/${aws_ecs_cluster.main.name}/${aws_ecs_service.gateway[0].name}"
   scalable_dimension = "ecs:service:DesiredCount"
   service_namespace  = "ecs"
 }
 
 resource "aws_appautoscaling_policy" "api_cpu" {
-  count = var.enable_api_autoscaling ? 1 : 0
+  count = var.enable_api_autoscaling && var.deploy_application ? 1 : 0
 
   name               = "${local.name}-api-cpu"
   policy_type        = "TargetTrackingScaling"
@@ -354,7 +357,7 @@ resource "aws_appautoscaling_policy" "api_cpu" {
 }
 
 resource "aws_appautoscaling_policy" "gateway_cpu" {
-  count = var.enable_api_autoscaling ? 1 : 0
+  count = var.enable_api_autoscaling && var.deploy_application ? 1 : 0
 
   name               = "${local.name}-gateway-cpu"
   policy_type        = "TargetTrackingScaling"
