@@ -18,6 +18,7 @@ import {
 } from "react-native";
 import { ApiError, apiRequest, idempotencyKey, type ApiSettings } from "../src/api";
 import {
+  getDriverLocationContext,
   isDriverLocationUpdatesActive,
   startDriverLocationUpdates,
   stopDriverLocationUpdates,
@@ -81,6 +82,7 @@ type Checkout = {
 };
 type Route = {
   id: string;
+  checkoutId: string;
   status: string;
   routingProvider: string;
   stops: {
@@ -170,6 +172,7 @@ export default function HomeScreen() {
   const [quantities, setQuantities] = useState<Record<string, number>>({});
   const [checkout, setCheckout] = useState<Checkout | null>(null);
   const [route, setRoute] = useState<Route | null>(null);
+  const [assignedRoutes, setAssignedRoutes] = useState<Route[]>([]);
   const [subscription, setSubscription] = useState<Subscription | null>(null);
   const [merchantStoreLocations, setMerchantStoreLocations] = useState<MerchantStoreLocation[]>([]);
   const [merchantOrders, setMerchantOrders] = useState<MerchantOrder[]>([]);
@@ -293,6 +296,8 @@ export default function HomeScreen() {
       terminalOrders.current.clear();
       setCheckout(null);
       setRoute(null);
+      setRouteId("");
+      setAssignedRoutes([]);
       routeStopAttempts.current.clear();
       setSubscription(null);
       setMerchantCatalog([]);
@@ -473,15 +478,23 @@ export default function HomeScreen() {
     else setMessage("Payment submitted. Your order updates when Stripe confirms it.");
   }
 
-  async function loadRoute() {
-    if (!routeId.trim()) {
+  async function loadRoute(routeID = routeId.trim()) {
+    if (!isUUID(routeID)) {
       setMessage("Enter your assigned route ID.");
       return;
     }
     const result = await run(() =>
-      apiRequest<Route>(settings, `driver/routes/${encodeURIComponent(routeId.trim())}`),
+      apiRequest<Route>(settings, `driver/routes/${encodeURIComponent(routeID)}`),
     );
-    if (result) setRoute(result);
+    if (result) {
+      setRoute(result);
+      setRouteId(result.id);
+    }
+  }
+
+  async function loadAssignedRoutes() {
+    const result = await run(() => apiRequest<Route[]>(settings, "driver/routes"));
+    if (result) setAssignedRoutes(result);
   }
 
   async function updateRouteStop(stopId: string, type: "arrive" | "complete") {
@@ -519,6 +532,9 @@ export default function HomeScreen() {
             }
           : current,
       );
+      if (result.routeStatus === "completed" && tracking) {
+        await endTracking();
+      }
     }
   }
 
@@ -730,17 +746,48 @@ export default function HomeScreen() {
   ]);
 
   useEffect(() => {
-    void isDriverLocationUpdatesActive().then((active) => {
-      setTracking(active);
-      if (active) setRole("Driver");
+    let mounted = true;
+    void getDriverLocationContext().then((context) => {
+      if (!mounted) return;
+      if (!context) {
+        void isDriverLocationUpdatesActive().then((active) => {
+          if (!mounted) return;
+          setTracking(active);
+          if (active) setRole("Driver");
+        });
+        return;
+      }
+      setGatewayUrl(context.settings.baseUrl);
+      setSessionToken(context.settings.sessionToken);
+      setRouteId(context.routeId);
+      setRole("Driver");
+      setTracking(true);
+      void apiRequest<Route>(
+        context.settings,
+        `driver/routes/${encodeURIComponent(context.routeId)}`,
+      ).then((activeRoute) => {
+        if (mounted) setRoute(activeRoute);
+      }).catch((error) => {
+        if (mounted) setMessage(error instanceof ApiError ? error.message : "Could not restore the active route.");
+      });
     });
     const syncTracking = () => {
-      void isDriverLocationUpdatesActive().then(setTracking);
+      void isDriverLocationUpdatesActive().then((active) => {
+        if (!mounted) return;
+        setTracking(active);
+        if (!active) {
+          setRoute(null);
+          setRouteId("");
+        }
+      });
     };
     const subscription = AppState.addEventListener("change", (state) => {
       if (state === "active") syncTracking();
     });
-    return () => subscription.remove();
+    return () => {
+      mounted = false;
+      subscription.remove();
+    };
   }, []);
 
   async function refreshSubscription() {
@@ -1301,11 +1348,33 @@ export default function HomeScreen() {
             <Text style={styles.sectionEyebrow}>DRIVER / ACTIVE DELIVERY</Text>
             <Text style={styles.sectionTitle}>Every stop, in the right order.</Text>
             <Text style={styles.helpText}>
-              Load your assigned route and share location about every five seconds while this screen is
-              open or in the background. Location updates may be delayed by the operating system.
-              Your gateway session is stored securely only while sharing is active. Stop sequencing
-              is controlled by the server.
+              Refresh to see routes assigned to your signed-in driver identity. Share location about
+              every five seconds while a route is active; OS scheduling may delay updates. Your
+              gateway session is stored securely only while sharing is active.
             </Text>
+            <ActionButton
+              disabled={busy || tracking}
+              label="Refresh my assigned routes"
+              onPress={() => void loadAssignedRoutes()}
+              secondary
+            />
+            {assignedRoutes.length === 0 ? (
+              <Text style={styles.tinyNote}>No active routes are assigned to this driver.</Text>
+            ) : (
+              assignedRoutes.map((assignedRoute) => (
+                <View key={assignedRoute.id} style={styles.merchantItem}>
+                  <Text style={styles.resultTitle}>Route · {assignedRoute.status.replaceAll("_", " ")}</Text>
+                  <Text style={styles.resultSub}>Checkout · {assignedRoute.checkoutId}</Text>
+                  <Text style={styles.resultSub}>{assignedRoute.stops.length} ordered stops</Text>
+                  <ActionButton
+                    disabled={busy || tracking}
+                    label={route?.id === assignedRoute.id ? "Route loaded" : "Open assigned route"}
+                    onPress={() => void loadRoute(assignedRoute.id)}
+                    secondary
+                  />
+                </View>
+              ))
+            )}
             <Field
               editable={!tracking && !busy}
               label="Assigned route ID"

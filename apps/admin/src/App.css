@@ -97,6 +97,9 @@ label small { color: #9aa59f; font-size: 9px; font-weight: 400; }
 .lifecycle-record { color: #66776e; border-top: 1px solid #edf0ed; font-size: 9px; line-height: 15px; margin-top: 10px; padding-top: 8px; overflow-wrap: anywhere; }
 .dispute-record { color: #993f36; }
 .delivery-operations { margin-top: 17px; }
+.route-assignment { border-top: 1px solid #e7ebe6; margin-top: 20px; padding-top: 18px; }
+.route-assignment-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.route-assignment-form .alert, .route-assignment-form .submit-button, .route-assignment-form .form-footnote { grid-column: 1 / -1; }
 .operations-snapshot { border: 1px solid #e7ebe6; border-radius: 8px; margin-bottom: 18px; padding: 12px; }
 .operations-snapshot-heading { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
 .operations-snapshot-heading strong { color: #364e44; font-size: 11px; }
@@ -126,6 +129,7 @@ label small { color: #9aa59f; font-size: 9px; font-weight: 400; }
 .bundle-result strong { font-size: 10px; }
 @media (max-width: 850px) { .delivery-controls-grid { grid-template-columns: 1fr; } }
 @media (max-width: 620px) { .dispatch-numbers, .zone-limit-form { grid-template-columns: 1fr; } }
+@media (max-width: 620px) { .route-assignment-form { grid-template-columns: 1fr; } }
 @media (max-width: 850px) { .rail { width: 66px; flex-basis: 66px; padding: 20px 9px; } .brand { padding: 0; } .brand > span:last-child, .rail-label, .nav-item:not(.nav-active), .nav-active { font-size: 0; } .nav-active { justify-content: center; } .nav-icon { font-size: 16px; } .rail-bottom span { display: none; } .overview-grid { grid-template-columns: 1fr 1fr; } .overview-dark { grid-column: 1 / -1; } }
 @media (max-width: 850px) { .search-form { grid-template-columns: 1fr 1fr; } .search-button { min-height: 40px; } }
 @media (max-width: 620px) { .rail { display: none; } .topbar { padding: 0 18px; height: 58px; } .breadcrumbs { font-size: 8px; } .page { padding: 27px 16px; } .page-heading { align-items: flex-start; flex-direction: column; } .status-pill { align-self: flex-start; } .overview-grid { grid-template-columns: 1fr; } .overview-dark { grid-column: auto; } .content-grid { grid-template-columns: 1fr; } .panel { padding: 18px; } .search-form { grid-template-columns: 1fr; } .checkout-result-heading { align-items: flex-start; flex-direction: column; } .page-footer { gap: 12px; flex-direction: column; } }

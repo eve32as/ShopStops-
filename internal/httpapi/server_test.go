@@ -759,41 +759,41 @@ func TestDriverCanReadAssignedRoute(t *testing.T) {
 		!strings.Contains(recorder.Body.String(), `"type":"dropoff"`) {
 		t.Fatalf("status=%d driver=%s body=%s", recorder.Code, repo.driverRef, recorder.Body.String())
 	}
+}
 
-	func TestDriverCanListAssignedRoutes(t *testing.T) {
-		repo := &fakeRepository{driverRoutes: []routeResponse{{
-			ID: "00000000-0000-0000-0000-000000000010", Status: "in_progress",
-		}}}
-		request := httptest.NewRequest(http.MethodGet, "/driver/routes", nil)
-		request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
-		request.Header.Set("X-ShopStops-Actor", "driver-123")
-		request.Header.Set("X-ShopStops-Actor-Role", "driver")
-		recorder := httptest.NewRecorder()
-		New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
-			ServeHTTP(recorder, request)
-		if recorder.Code != http.StatusOK || repo.driverRef != "driver-123" ||
-			!strings.Contains(recorder.Body.String(), `"status":"in_progress"`) {
-			t.Fatalf("status=%d driver=%s body=%s", recorder.Code, repo.driverRef, recorder.Body.String())
-		}
+func TestDriverCanListAssignedRoutes(t *testing.T) {
+	repo := &fakeRepository{driverRoutes: []routeResponse{{
+		ID: "00000000-0000-0000-0000-000000000010", Status: "in_progress",
+	}}}
+	request := httptest.NewRequest(http.MethodGet, "/driver/routes", nil)
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "driver-123")
+	request.Header.Set("X-ShopStops-Actor-Role", "driver")
+	recorder := httptest.NewRecorder()
+	New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
+		ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || repo.driverRef != "driver-123" ||
+		!strings.Contains(recorder.Body.String(), `"status":"in_progress"`) {
+		t.Fatalf("status=%d driver=%s body=%s", recorder.Code, repo.driverRef, recorder.Body.String())
 	}
+}
 
-	func TestDispatchCanCreateAssignedRoute(t *testing.T) {
-		const checkoutID = "00000000-0000-0000-0000-000000000010"
-		repo := &fakeRepository{assignedRoute: routeResponse{
-			ID: "00000000-0000-0000-0000-000000000011", Status: "in_progress",
-		}}
-		request := httptest.NewRequest(http.MethodPost, "/dispatch/routes", strings.NewReader(
-			`{"checkoutId":"`+checkoutID+`","driverRef":"driver-123"}`))
-		request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
-		request.Header.Set("X-ShopStops-Actor", "dispatcher-123")
-		request.Header.Set("Idempotency-Key", "route-123")
-		recorder := httptest.NewRecorder()
-		New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
-			ServeHTTP(recorder, request)
-		if recorder.Code != http.StatusCreated || repo.assignedCheckoutID != checkoutID ||
-			repo.assignedDriverRef != "driver-123" || repo.assignedRouteKey != "route-123" {
-			t.Fatalf("status=%d repository=%+v body=%s", recorder.Code, repo, recorder.Body.String())
-		}
+func TestDispatchCanCreateAssignedRoute(t *testing.T) {
+	const checkoutID = "00000000-0000-0000-0000-000000000010"
+	repo := &fakeRepository{assignedRoute: routeResponse{
+		ID: "00000000-0000-0000-0000-000000000011", Status: "in_progress",
+	}}
+	request := httptest.NewRequest(http.MethodPost, "/dispatch/routes", strings.NewReader(
+		`{"checkoutId":"`+checkoutID+`","driverRef":"driver-123"}`))
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "dispatcher-123")
+	request.Header.Set("Idempotency-Key", "route-123")
+	recorder := httptest.NewRecorder()
+	New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
+		ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated || repo.assignedCheckoutID != checkoutID ||
+		repo.assignedDriverRef != "driver-123" || repo.assignedRouteKey != "route-123" {
+		t.Fatalf("status=%d repository=%+v body=%s", recorder.Code, repo, recorder.Body.String())
 	}
 }
 

@@ -156,3 +156,26 @@ export async function isDriverLocationUpdatesActive() {
     return false;
   }
 }
+
+export async function getDriverLocationContext(): Promise<BackgroundContext | null> {
+  try {
+    if (!(await isDriverLocationUpdatesActive())) return null;
+    const storedContext = await SecureStore.getItemAsync(contextKey);
+    if (!storedContext) return null;
+    const context = JSON.parse(storedContext) as BackgroundContext;
+    if (
+      !context ||
+      typeof context.routeId !== "string" ||
+      !context.routeId ||
+      typeof context.settings?.baseUrl !== "string" ||
+      !context.settings.baseUrl ||
+      typeof context.settings?.sessionToken !== "string" ||
+      !context.settings.sessionToken
+    ) {
+      return null;
+    }
+    return context;
+  } catch {
+    return null;
+  }
+}

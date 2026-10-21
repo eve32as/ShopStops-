@@ -432,6 +432,10 @@ paths:
       responses:
         '200':
           description: Ordered route waypoints and route matrix data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnifiedDriverRoute'
         '403':
           description: Route is not assigned to this driver
         '404':
@@ -848,6 +852,66 @@ paths:
           description: Dispatch/admin role required
         '409':
           description: Seed order is unavailable or reserved
+  /dispatch/routes:
+    post:
+      operationId: createAssignedRoute
+      summary: Create and assign a delivery route for a paid checkout
+      description: Requires a dispatch or admin role. Creates the route and its ordered stops, assigns it to the specified driver, and activates it for location and stop updates. The request is idempotent.
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [checkoutId, driverRef]
+              properties:
+                checkoutId:
+                  type: string
+                  format: uuid
+                driverRef:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+      responses:
+        '201':
+          description: Assigned route created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnifiedDriverRoute'
+        '400':
+          description: Invalid route assignment request
+        '403':
+          description: Dispatch/admin role required
+        '404':
+          description: Checkout not found
+        '409':
+          description: Checkout is not paid or already has a conflicting route
+  /driver/routes:
+    get:
+      operationId: listDriverRoutes
+      summary: List active routes assigned to the authenticated driver
+      description: Returns only active routes assigned to the driver's authenticated identity.
+      responses:
+        '200':
+          description: Active assigned routes
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/UnifiedDriverRoute'
+        '403':
+          description: Driver role required
   /driver/bundles/{bundleId}:
     get:
       operationId: getDriverBundle
@@ -926,6 +990,63 @@ components:
         type: string
         format: uuid
   schemas:
+    UnifiedDriverRoute:
+      type: object
+      required: [id, checkoutId, status, routingProvider, stops, legs]
+      properties:
+        id:
+          type: string
+          format: uuid
+        checkoutId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [planned, routed, in_progress, completed, cancelled]
+        routingProvider:
+          type: string
+          enum: [osrm, google_maps, manual]
+        stops:
+          type: array
+          items:
+            type: object
+            required: [id, sequence, type, latitude, longitude, status]
+            properties:
+              id:
+                type: string
+                format: uuid
+              sequence:
+                type: integer
+              type:
+                type: string
+                enum: [pickup, dropoff]
+              latitude:
+                type: number
+              longitude:
+                type: number
+              status:
+                type: string
+                enum: [pending, arrived, completed]
+              storeLocationId:
+                type: string
+                format: uuid
+        legs:
+          type: array
+          items:
+            type: object
+            required: [fromSequence, toSequence, distanceMeters, durationSeconds, provider]
+            properties:
+              fromSequence:
+                type: integer
+              toSequence:
+                type: integer
+              distanceMeters:
+                type: integer
+              durationSeconds:
+                type: integer
+              provider:
+                type: string
+                enum: [osrm, google_maps]
     NearbyMerchant:
       type: object
       required: [merchantId, name, merchantType, storeLocationId, distanceMeters]

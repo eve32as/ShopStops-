@@ -45,6 +45,13 @@ type Bundle = {
   }>
 }
 
+type AssignedRoute = {
+  id: string
+  checkoutId: string
+  status: string
+  stops: Array<{ id: string; sequence: number; type: string; status: string }>
+}
+
 type Props = {
   gatewayUrl: string
   sessionToken: string
@@ -96,6 +103,12 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
   const [bundle, setBundle] = useState<Bundle | null>(null)
   const [dispatchError, setDispatchError] = useState('')
   const [dispatching, setDispatching] = useState(false)
+  const [routeCheckoutId, setRouteCheckoutId] = useState('')
+  const [routeDriverRef, setRouteDriverRef] = useState('')
+  const [routeAssignmentKey, setRouteAssignmentKey] = useState('')
+  const [assignedRoute, setAssignedRoute] = useState<AssignedRoute | null>(null)
+  const [routeAssignmentError, setRouteAssignmentError] = useState('')
+  const [assigningRoute, setAssigningRoute] = useState(false)
 
   async function loadZones() {
     setZonesError('')
@@ -300,6 +313,57 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
       setDispatchError(error instanceof Error ? error.message : 'Could not create dispatch bundle.')
     } finally {
       setDispatching(false)
+    }
+  }
+
+  async function createAssignedRoute(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setRouteAssignmentError('')
+    setAssignedRoute(null)
+    if (!gatewayUrl.trim() || !sessionToken.trim()) {
+      setRouteAssignmentError('Add the trusted gateway URL and admin session token above.')
+      return
+    }
+    if (!uuidPattern.test(routeCheckoutId.trim())) {
+      setRouteAssignmentError('Enter a valid paid checkout UUID.')
+      return
+    }
+    if (!routeDriverRef.trim() || routeDriverRef.trim().length > 200) {
+      setRouteAssignmentError('Enter the assigned driver identity (up to 200 characters).')
+      return
+    }
+    let url: URL
+    try {
+      url = apiUrl(gatewayUrl, '/dispatch/routes')
+    } catch (error) {
+      setRouteAssignmentError(error instanceof Error ? error.message : 'Enter a valid gateway URL.')
+      return
+    }
+    const requestKey = routeAssignmentKey || newKey()
+    setRouteAssignmentKey(requestKey)
+    setAssigningRoute(true)
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        redirect: 'error',
+        headers: {
+          Accept: 'application/json',
+          Authorization: ['Bear', 'er'].join('') + ' ' + sessionToken.trim(),
+          'Content-Type': 'application/json',
+          'Idempotency-Key': requestKey,
+        },
+        body: JSON.stringify({
+          checkoutId: routeCheckoutId.trim(),
+          driverRef: routeDriverRef.trim(),
+        }),
+      })
+      if (!response.ok) throw await requestError(response)
+      setAssignedRoute(await response.json() as AssignedRoute)
+      setRouteAssignmentKey('')
+    } catch (error) {
+      setRouteAssignmentError(error instanceof Error ? error.message : 'Could not assign route.')
+    } finally {
+      setAssigningRoute(false)
     }
   }
 
@@ -511,6 +575,45 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
           ) : null}
         </section>
       </div>
+      <section className="route-assignment">
+        <div className="delivery-section-heading">
+          <div>
+            <strong>Assign a paid checkout to a driver</strong>
+            <p>Create the ordered driver route and activate it for location and stop updates.</p>
+          </div>
+        </div>
+        <form className="route-assignment-form" onSubmit={createAssignedRoute}>
+          <label>
+            Paid checkout UUID
+            <input autoCapitalize="none" disabled={assigningRoute} value={routeCheckoutId} onChange={(event) => {
+              setRouteCheckoutId(event.target.value)
+              setRouteAssignmentKey('')
+            }} />
+          </label>
+          <label>
+            Driver identity
+            <small>Must match the identity-provider subject used by the driver app.</small>
+            <input autoCapitalize="none" disabled={assigningRoute} maxLength={200} value={routeDriverRef} onChange={(event) => {
+              setRouteDriverRef(event.target.value)
+              setRouteAssignmentKey('')
+            }} />
+          </label>
+          {routeAssignmentError ? <div className="alert alert-error" role="alert">{routeAssignmentError}</div> : null}
+          <button className="submit-button" disabled={assigningRoute} type="submit">
+            {assigningRoute ? 'Assigning route…' : 'Create and assign route'}
+          </button>
+          <p className="form-footnote">Only paid checkouts eligible for unified routing can be assigned. Retries reuse the idempotency key until success or input changes.</p>
+        </form>
+        {assignedRoute ? (
+          <div className="bundle-result" role="status">
+            <strong>Route {assignedRoute.id} · {assignedRoute.status}</strong>
+            <span>Checkout {assignedRoute.checkoutId}</span>
+            {assignedRoute.stops.map((stop) => (
+              <span key={stop.id}>Stop {stop.sequence} · {stop.type} · {stop.status}</span>
+            ))}
+          </div>
+        ) : null}
+      </section>
     </section>
   )
 }

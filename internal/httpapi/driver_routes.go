@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type createAssignedRouteRequest struct {
@@ -175,6 +177,10 @@ func (p *PostgresRepository) CreateAssignedRoute(
 		`SELECT create_unified_route($1, $2, 'osrm')::text`,
 		checkoutID, idempotencyKey,
 	).Scan(&routeID); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "P0001" {
+			return routeResponse{}, ErrConflict
+		}
 		return routeResponse{}, err
 	}
 
