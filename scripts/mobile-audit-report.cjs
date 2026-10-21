@@ -1,8 +1,8 @@
 const fs = require("node:fs");
 const https = require("node:https");
 
-function escapeMarkdown(value) {
-  return String(value).replace(/\|/g, "\\|");
+function safePackageName(value) {
+  return String(value).replace(/[^a-z\d@/._-]/gi, "_").slice(0, 214);
 }
 
 function appendSummary(markdown) {
@@ -82,7 +82,7 @@ async function main() {
     lines.push("| --- | --- | --- |");
     for (const [name, finding] of vulnerabilities.slice(0, 100)) {
       const severity = /^[a-z]+$/i.test(finding.severity || "") ? finding.severity.toUpperCase() : "UNKNOWN";
-      lines.push(`| \`${escapeMarkdown(name)}\` | ${severity} | ${finding.isDirect ? "Yes" : "No"} |`);
+      lines.push(`| ${safePackageName(name)} | ${severity} | ${finding.isDirect ? "Yes" : "No"} |`);
     }
     if (vulnerabilities.length > 100) {
       lines.push("", `Showing the first 100 of ${vulnerabilities.length} affected packages.`);
@@ -103,7 +103,7 @@ async function main() {
     const repository = process.env.GITHUB_REPOSITORY || "unknown repository";
     const runUrl = `https://github.com/${repository}/actions/runs/${process.env.GITHUB_RUN_ID}`;
     const packages = vulnerabilities.slice(0, 30)
-      .map(([name, finding]) => `${name} (${finding.severity || "unknown"})`)
+      .map(([name, finding]) => `${safePackageName(name)} (${finding.severity || "unknown"})`)
       .join(", ");
     const more = vulnerabilities.length > 30 ? `, and ${vulnerabilities.length - 30} more` : "";
     const reportStatus = reportError ? " Audit report unavailable; inspect the job logs." : "";
