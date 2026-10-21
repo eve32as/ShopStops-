@@ -285,7 +285,7 @@ func NewWithPayments(
 	s := &Server{
 		repo: repo, token: token, log: logger,
 		dispatchStreams: newDispatchStreamHub(),
-		payments: payments, webhookSecret: webhookSecret,
+		payments:        payments, webhookSecret: webhookSecret,
 	}
 	if len(merchantPriceIDs) > 0 {
 		s.merchantPriceID = merchantPriceIDs[0]

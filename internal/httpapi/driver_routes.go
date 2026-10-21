@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -121,30 +122,54 @@ func (p *PostgresRepository) CreateAssignedRoute(
 	}
 	defer tx.Rollback()
 
-	var checkoutExists bool
-	if err := tx.QueryRowContext(ctx, `
-		SELECT EXISTS (SELECT 1 FROM unified_checkouts WHERE id = $1)`,
+	var storedCheckoutID string
+	err = tx.QueryRowContext(ctx, `
+		SELECT id::text FROM unified_checkouts WHERE id = $1 FOR UPDATE`,
 		checkoutID,
-	).Scan(&checkoutExists); err != nil {
-		return routeResponse{}, err
-	}
-	if !checkoutExists {
+	).Scan(&storedCheckoutID)
+	if errors.Is(err, sql.ErrNoRows) {
 		return routeResponse{}, ErrNotFound
 	}
-
-	var routeID string
-	if err := tx.QueryRowContext(ctx,
-		`SELECT create_unified_route($1, $2, 'osrm')::text`,
-		checkoutID, idempotencyKey,
-	).Scan(&routeID); err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "P0001" {
-			return routeResponse{}, ErrConflict
-		}
+	if err != nil {
 		return routeResponse{}, err
 	}
 
-	var storedCheckoutID, assignedDriver, status string
+	var routeID, storedIdempotencyKey, assignedDriver, status string
+	err = tx.QueryRowContext(ctx, `
+		SELECT id::text, idempotency_key, COALESCE(driver_ref, ''), status
+		FROM unified_delivery_routes WHERE checkout_id = $1 FOR UPDATE`,
+		checkoutID,
+	).Scan(&routeID, &storedIdempotencyKey, &assignedDriver, &status)
+	if errors.Is(err, sql.ErrNoRows) {
+		if err := tx.QueryRowContext(ctx,
+			`SELECT create_unified_route($1, $2, 'osrm')::text`,
+			checkoutID, idempotencyKey,
+		).Scan(&routeID); err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) &&
+				(pgErr.Code == "P0001" || pgErr.Code == "23505") {
+				return routeResponse{}, ErrConflict
+			}
+			return routeResponse{}, err
+		}
+	} else if err != nil {
+		return routeResponse{}, err
+	} else if storedIdempotencyKey != idempotencyKey {
+		if !strings.HasPrefix(storedIdempotencyKey, "stripe-checkout-session-") ||
+			assignedDriver != "" {
+			return routeResponse{}, ErrConflict
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE unified_delivery_routes SET idempotency_key = $2
+			WHERE id = $1`, routeID, idempotencyKey); err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+				return routeResponse{}, ErrConflict
+			}
+			return routeResponse{}, err
+		}
+	}
+
 	err = tx.QueryRowContext(ctx, `
 		SELECT checkout_id::text, COALESCE(driver_ref, ''), status
 		FROM unified_delivery_routes WHERE id = $1 FOR UPDATE`,

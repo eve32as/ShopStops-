@@ -523,33 +523,34 @@ func TestStripeGatewayWebhookSignatureVerification(t *testing.T) {
 		t.Fatalf("verified event=%+v err=%v", event, err)
 	}
 
-	func TestStripeGatewayParsesCheckoutSessionCompletion(t *testing.T) {
-		const checkoutID = "00000000-0000-0000-0000-000000000001"
-		payload := []byte(`{"id":"evt_session","object":"event","api_version":"` +
-			stripe.APIVersion + `","created":1792390000,"data":{"object":{"id":"cs_test","object":"checkout.session","mode":"payment","status":"complete","payment_status":"paid","payment_intent":"pi_test","amount_total":3120,"currency":"usd","client_reference_id":"` +
-			checkoutID + `","metadata":{"shopstops_checkout_id":"` + checkoutID +
-			`"}}},"livemode":false,"pending_webhooks":1,"type":"checkout.session.completed"}`)
-		signed := webhook.GenerateTestSignedPayload(&webhook.UnsignedPayload{
-			Payload: payload, Secret: "webhook-test-secret",
-		}).Header
-		gateway := NewStripeGateway("unused-test-key")
-		event, summary, err := gateway.VerifyWebhook(payload, signed, "webhook-test-secret")
-		if err != nil || event.ID != "evt_session" || event.Type != "checkout.session.completed" ||
-			event.CheckoutID != checkoutID || event.PaymentIntentID != "pi_test" ||
-			event.AmountCents != 3120 || event.Currency != "usd" ||
-			event.PaymentStatus != "succeeded" {
-			t.Fatalf("parsed event=%+v err=%v", event, err)
-		}
-		if strings.Contains(string(summary), "client_secret") {
-			t.Fatalf("sanitized checkout-session summary contains sensitive data: %s", summary)
-		}
-	}
 	if strings.Contains(string(summary), "client_secret") {
 		t.Fatalf("sanitized event summary contains a client secret: %s", summary)
 	}
 	_, _, err = gateway.VerifyWebhook(payload, signed+"x", "webhook-test-secret")
 	if err == nil {
 		t.Fatal("modified Stripe signature was accepted")
+	}
+}
+
+func TestStripeGatewayParsesCheckoutSessionCompletion(t *testing.T) {
+	const checkoutID = "00000000-0000-0000-0000-000000000001"
+	payload := []byte(`{"id":"evt_session","object":"event","api_version":"` +
+		stripe.APIVersion + `","created":1792390000,"data":{"object":{"id":"cs_test","object":"checkout.session","mode":"payment","status":"complete","payment_status":"paid","payment_intent":"pi_test","amount_total":3120,"currency":"usd","client_reference_id":"` +
+		checkoutID + `","metadata":{"shopstops_checkout_id":"` + checkoutID +
+		`"}}},"livemode":false,"pending_webhooks":1,"type":"checkout.session.completed"}`)
+	signed := webhook.GenerateTestSignedPayload(&webhook.UnsignedPayload{
+		Payload: payload, Secret: "webhook-test-secret",
+	}).Header
+	gateway := NewStripeGateway("unused-test-key")
+	event, summary, err := gateway.VerifyWebhook(payload, signed, "webhook-test-secret")
+	if err != nil || event.ID != "evt_session" || event.Type != "checkout.session.completed" ||
+		event.CheckoutID != checkoutID || event.PaymentIntentID != "pi_test" ||
+		event.AmountCents != 3120 || event.Currency != "usd" ||
+		event.PaymentStatus != "succeeded" {
+		t.Fatalf("parsed event=%+v err=%v", event, err)
+	}
+	if strings.Contains(string(summary), "client_secret") {
+		t.Fatalf("sanitized checkout-session summary contains sensitive data: %s", summary)
 	}
 }
 

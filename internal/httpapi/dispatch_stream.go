@@ -81,7 +81,7 @@ func (s *Server) streamAdminDispatchEvents(w http.ResponseWriter, r *http.Reques
 	}
 	defer unsubscribe()
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		Subprotocols:        []string{dispatchStreamSubprotocol},
+		Subprotocols: []string{dispatchStreamSubprotocol},
 		// The OIDC gateway enforces the configured Origin allowlist.
 		InsecureSkipVerify: true,
 	})

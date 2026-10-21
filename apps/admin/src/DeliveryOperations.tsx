@@ -724,7 +724,7 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
                     <td>{route.openStopCount}</td>
                     <td>{route.lastLocationAt
                       ? `${Math.max(0, Math.floor(
-                        (Date.now() - Date.parse(route.lastLocationAt)) / 60000,
+                        (Date.parse(operations.generatedAt) - Date.parse(route.lastLocationAt)) / 60000,
                       ))} min ago`
                       : 'No location report'}</td>
                   </tr>

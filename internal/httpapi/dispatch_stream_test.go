@@ -61,7 +61,7 @@ func TestAdminDispatchStreamRequiresAdminRole(t *testing.T) {
 func TestAdminDispatchStreamPublishesLocationFreshnessWithoutCoordinates(t *testing.T) {
 	server := &Server{
 		repo: &fakeRepository{}, token: strings.Repeat("t", 32),
-		log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		log:             slog.New(slog.NewTextHandler(io.Discard, nil)),
 		dispatchStreams: newDispatchStreamHub(),
 	}
 	httpServer := httptest.NewServer(server.handler())
@@ -75,7 +75,7 @@ func TestAdminDispatchStreamPublishesLocationFreshnessWithoutCoordinates(t *test
 	conn, response, err := websocket.Dial(ctx,
 		"ws"+strings.TrimPrefix(httpServer.URL, "http")+"/admin/dispatch/stream",
 		&websocket.DialOptions{
-			HTTPHeader:  headers,
+			HTTPHeader:   headers,
 			Subprotocols: []string{dispatchStreamSubprotocol},
 		},
 	)

@@ -152,6 +152,8 @@ paid eligible checkout through `POST /v1/dispatch/routes`. This activates the
 route and creates its ordered stops atomically. Drivers retrieve their active
 assignments through `GET /v1/driver/routes` or fetch one route by ID; route
 creation retries require the same idempotency key and assignment details.
+Stripe-session-created planned routes can be assigned through the same endpoint;
+their first assignment adopts the supplied idempotency key.
 
 The database emits `delivery.bundle.activated` with `bundleId`, `orderIds`, and
 `stopCount` in the outbox. Suggested follow-on events are

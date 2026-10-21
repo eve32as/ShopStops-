@@ -280,9 +280,6 @@ SELECT process_stripe_checkout_event(
     '{"eventId":"evt_test_success","type":"payment_intent.succeeded"}',
     :'checkout_id', 'pi_test_success', 3120, 'usd', 'succeeded', 100, 'ch_test_success'
 );
-SELECT record_checkout_payment(
-    :'api_checkout_id', 'pi_test_session', 2620, 0, 'requires_payment_method'
-);
 SELECT process_stripe_checkout_session_completed(
     'evt_checkout_session',
     '{"eventId":"evt_checkout_session","type":"checkout.session.completed"}',
@@ -314,6 +311,30 @@ BEGIN
        OR (SELECT count(*) FROM unified_delivery_routes
            WHERE idempotency_key = 'stripe-checkout-session-evt_checkout_session') <> 1 THEN
         RAISE EXCEPTION 'paid checkout session did not reconcile to one active route';
+    END IF;
+END;
+$$;
+UPDATE unified_delivery_routes
+SET idempotency_key = 'dispatch-session-assignment-key',
+    driver_ref = 'driver-session-test', status = 'in_progress'
+WHERE id = current_setting('shopstops.test_checkout_session_route_id')::uuid;
+DO $$
+DECLARE
+    v_route_id uuid;
+BEGIN
+    v_route_id := process_stripe_checkout_session_completed(
+        'evt_checkout_session',
+        '{"eventId":"evt_checkout_session","type":"checkout.session.completed"}',
+        current_setting('shopstops.test_api_checkout_id')::uuid,
+        'pi_test_session', 2620, 'usd', 80, 'ch_test_session'
+    );
+    IF current_setting('shopstops.test_checkout_session_route_id')::uuid <> v_route_id
+       OR (SELECT count(*) FROM unified_delivery_routes
+           WHERE checkout_id = current_setting('shopstops.test_api_checkout_id')::uuid) <> 1
+       OR (SELECT driver_ref FROM unified_delivery_routes
+           WHERE checkout_id = current_setting('shopstops.test_api_checkout_id')::uuid) <>
+           'driver-session-test' THEN
+        RAISE EXCEPTION 'checkout session replay did not preserve the assigned route';
     END IF;
 END;
 $$;

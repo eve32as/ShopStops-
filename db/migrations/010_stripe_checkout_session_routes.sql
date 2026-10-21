@@ -44,15 +44,29 @@ BEGIN
         RETURN v_route_id;
     END IF;
 
+    IF NOT EXISTS (
+        SELECT 1 FROM checkout_payments WHERE checkout_id = p_checkout_id
+    ) THEN
+        PERFORM record_checkout_payment(
+            p_checkout_id, p_payment_intent_id, p_amount_cents, 0,
+            'requires_payment_method'
+        );
+    END IF;
+
     PERFORM process_stripe_checkout_event(
         p_event_id, 'payment_intent.succeeded', p_payload, p_checkout_id,
         p_payment_intent_id, p_amount_cents, p_currency, 'succeeded',
         p_processing_fee_cents, p_charge_id
     );
 
-    SELECT create_unified_route(
-        p_checkout_id, 'stripe-checkout-session-' || p_event_id
-    ) INTO v_route_id;
+    SELECT id INTO v_route_id
+    FROM unified_delivery_routes
+    WHERE checkout_id = p_checkout_id;
+    IF NOT FOUND THEN
+        SELECT create_unified_route(
+            p_checkout_id, 'stripe-checkout-session-' || p_event_id
+        ) INTO v_route_id;
+    END IF;
 
     UPDATE stripe_webhook_events
     SET processed_at = now()
