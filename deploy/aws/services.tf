@@ -126,9 +126,10 @@ resource "aws_ecs_task_definition" "api" {
   task_role_arn            = aws_iam_role.ecs_task.arn
 
   container_definitions = jsonencode([{
-    name      = "api"
-    image     = var.api_image
-    essential = true
+    name                   = "api"
+    image                  = var.api_image
+    essential              = true
+    readonlyRootFilesystem = true
     portMappings = [{
       containerPort = 8080
       protocol      = "tcp"
@@ -163,9 +164,10 @@ resource "aws_ecs_task_definition" "gateway" {
   task_role_arn            = aws_iam_role.ecs_task.arn
 
   container_definitions = jsonencode([{
-    name      = "gateway"
-    image     = var.gateway_image
-    essential = true
+    name                   = "gateway"
+    image                  = var.gateway_image
+    essential              = true
+    readonlyRootFilesystem = true
     portMappings = [{
       containerPort = 8081
       protocol      = "tcp"

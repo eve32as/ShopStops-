@@ -14,6 +14,17 @@ resource "aws_db_subnet_group" "main" {
   subnet_ids = [for subnet in aws_subnet.database : subnet.id]
 }
 
+resource "aws_db_parameter_group" "main" {
+  name   = "${local.name}-postgres16"
+  family = "postgres16"
+
+  parameter {
+    name         = "rds.force_ssl"
+    value        = "1"
+    apply_method = "immediate"
+  }
+}
+
 resource "aws_iam_role" "rds_monitoring" {
   name = "${local.name}-rds-monitoring"
 
@@ -49,6 +60,7 @@ resource "aws_db_instance" "main" {
   manage_master_user_password           = true
   multi_az                              = true
   db_subnet_group_name                  = aws_db_subnet_group.main.name
+  parameter_group_name                  = aws_db_parameter_group.main.name
   vpc_security_group_ids                = [aws_security_group.database.id]
   publicly_accessible                   = false
   backup_retention_period               = 35

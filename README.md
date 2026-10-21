@@ -100,6 +100,11 @@ provide a sign-in UI or issue tokens. Never distribute the internal token.
 
 ## Local staging stack
 
+The AWS Terraform deployment foundation and its prerequisites, staged bootstrap,
+and known release blockers are documented in
+[`deploy/aws/README.md`](deploy/aws/README.md). It does not provision or apply
+cloud resources without an authorized operator.
+
 The Compose stack builds the API and gateway, starts PostgreSQL/PostGIS, applies
 the numbered SQL migrations when creating a **new** database volume, and keeps
 the API and database off host-published ports. Only the gateway is published,

@@ -2,6 +2,16 @@ resource "aws_sns_topic" "alarms" {
   name = "${local.name}-alarms"
 }
 
+resource "aws_cloudwatch_log_group" "database_postgresql" {
+  name              = "/aws/rds/instance/${local.name}/postgresql"
+  retention_in_days = 90
+}
+
+resource "aws_cloudwatch_log_group" "database_upgrade" {
+  name              = "/aws/rds/instance/${local.name}/upgrade"
+  retention_in_days = 90
+}
+
 resource "aws_sns_topic_subscription" "alarm_email" {
   count = var.alarm_email == "" ? 0 : 1
 

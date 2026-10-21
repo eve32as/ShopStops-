@@ -5,8 +5,9 @@ deployed environment and does not configure live identity, Stripe, maps, or
 mobile push credentials. It creates a VPC with public load-balancer subnets,
 private ECS subnets and isolated database subnets; NAT gateways in each
 availability zone; an HTTPS Application Load Balancer; ECS Fargate API and OIDC
-gateway services; encrypted, Multi-AZ RDS PostgreSQL; Secrets Manager entries;
-CloudWatch logs and alarms; and least-privilege service security groups.
+gateway task definitions and opt-in services; encrypted, Multi-AZ RDS PostgreSQL;
+Secrets Manager entries; CloudWatch logs and alarms; and least-privilege service
+security groups.
 
 The API is never exposed by the load balancer. Public traffic reaches only the
 gateway. `/v1/readyz` is the load-balancer health check. The RDS master password
@@ -14,6 +15,10 @@ is managed by RDS and its secret ARN is output for controlled bootstrap only.
 The application database URL, shared gateway token, and optional Stripe values
 are empty Secrets Manager entries: Terraform never accepts or stores their
 values.
+
+The RDS parameter group requires TLS for database connections. The populated
+application `DATABASE_URL` must use certificate-verifying TLS (for example,
+`sslmode=verify-full`) and the appropriate AWS RDS CA trust chain.
 
 ## Prerequisites
 
@@ -117,6 +122,9 @@ internal token must remain consistent.
 - The API's database role and ordered migration application are not automated
   here. Do not set `deploy_application = true` until a reviewed private
   migration/bootstrap process has completed successfully.
+- The current mobile dependency graph reports high-severity npm audit findings
+  in the Expo/Metro toolchain. The CI audit intentionally blocks release until
+  maintainers can apply compatible upstream fixes and verify the native build.
 - This baseline does not make the shopper, merchant, driver, or admin clients
   release-complete. See `../../docs/architecture.md` for the role-specific
   release gates.
