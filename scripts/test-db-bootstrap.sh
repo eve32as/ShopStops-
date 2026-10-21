@@ -8,7 +8,7 @@ set -eu
 : "${PGSSLMODE:=disable}"
 export PGPORT PGSSLMODE
 
-repo_root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+repo_root=$(CDPATH='' cd -- "$(dirname "$0")/.." && pwd)
 migrations_dir="$repo_root/db/migrations"
 test_prefix="shopstops_bootstrap_$$"
 fresh_db="${test_prefix}_fresh"
