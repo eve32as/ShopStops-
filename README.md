@@ -91,8 +91,9 @@ claim, and the configured role claim must be a role string or string array
 containing `customer`, `merchant`, `driver`, `dispatch`, or `admin`. It maps
 route access to those roles, removes client-supplied actor, role, forwarding,
 cookie, and authorization headers, and injects the verified actor/role plus the
-internal API bearer token. `/v1/healthz` and the Stripe-signature-verified
-`/v1/webhooks/stripe` route remain public. Place the gateway behind TLS
+internal API bearer token. `/v1/healthz`, `/v1/readyz`, and the
+Stripe-signature-verified `/v1/webhooks/stripe` route remain public. Place the
+gateway behind TLS
 termination and firewall the API so only the gateway and trusted operations
 systems can reach it. The gateway validates externally issued JWTs; it does not
 provide a sign-in UI or issue tokens. Never distribute the internal token.
