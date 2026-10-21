@@ -340,9 +340,11 @@ additional operational telemetry. Retain
 an audit trail for admin changes and driver progress. Recovery flows should
 release or re-dispatch unpicked orders after cancellation; picked-up orders
 must be handled explicitly rather than silently returned to the ready pool.
-The admin delivery view refreshes this snapshot every 15 seconds, filters zone
-metrics by sector name, and renders PostGIS polygon boundaries as a structural
-status map without basemap tiles.
+The admin delivery view refreshes this snapshot and active driver assignment
+summaries every 15 seconds, filters sector metrics by zone name, and renders
+PostGIS polygon boundaries as a structural status map without basemap tiles.
+Assignment summaries expose driver/route status, open-stop count, and last
+location-report time, but not driver coordinates or customer checkout IDs.
 
 ## Applying and validating the migration
 

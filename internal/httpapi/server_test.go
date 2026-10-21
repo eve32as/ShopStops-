@@ -14,84 +14,86 @@ import (
 )
 
 type fakeRepository struct {
-	pingErr               error
-	nearby                []NearbyMerchant
-	nearbyErr             error
-	nearbyStoreID         string
-	nearbyRadius          int
-	catalog               []CatalogItem
-	catalogErr            error
-	catalogStoreID        string
-	merchantLocations     []MerchantStoreLocation
-	merchantLocationsErr  error
-	merchantCatalog       []MerchantCatalogItem
-	merchantCatalogErr    error
-	merchantCatalogID     string
-	merchantItem          MerchantCatalogItem
-	merchantItemErr       error
-	merchantOrders        []MerchantOrder
-	merchantOrdersErr     error
-	merchantOrderState    string
-	merchantOrderErr      error
-	merchantOrderID       string
-	merchantOrderNewState string
-	merchantRequest       merchantCatalogItemRequest
-	merchantUpdate        merchantCatalogItemUpdateRequest
-	merchantKey           string
-	merchantFingerprint   string
-	order                 customerOrderResponse
-	orderErr              error
-	orderReq              customerOrderRequest
-	orderCustomer         string
-	orderKey              string
-	orderFingerprint      string
-	bundle                bundleResponse
-	bundleErr             error
-	bundleRequest         bundleRequest
-	bundleKey             string
-	route                 routeResponse
-	routeErr              error
-	routeID               string
-	driverRoutes          []routeResponse
-	driverRoutesErr       error
-	assignedRoute         routeResponse
-	assignedRouteErr      error
-	assignedCheckoutID    string
-	assignedDriverRef     string
-	assignedRouteKey      string
-	driverRef             string
-	locationID            int64
-	locationErr           error
-	location              driverLocationRequest
-	stopEvent             driverStopEventResponse
-	stopEventErr          error
-	stopID                string
-	stopEventReq          driverStopEventRequest
-	checkout              checkoutResponse
-	checkoutErr           error
-	checkoutReq           checkoutRequest
-	customerRef           string
-	checkoutKey           string
-	ownsOrder             bool
-	ownsOrderErr          error
-	orderEvents           []OrderEvent
-	orderEventsErr        error
-	eventOrderID          string
-	eventCustomerRef      string
-	eventAfterID          int64
-	eventLimit            int
-	deliveryZones         []DeliveryZone
-	deliveryZonesErr      error
-	operationsSnapshot    AdminOperationsSnapshot
-	operationsSnapshotErr error
-	updatedDeliveryZone   DeliveryZone
-	updateDeliveryZoneErr error
-	updatedDeliveryZoneID string
-	updatedZoneEnabled    bool
-	updatedDispatchLimits dispatchLimitsRequest
-	updatedDispatchActor  string
-	updateLimitsZone      DeliveryZone
-	updateLimitsErr       error
+	pingErr                error
+	nearby                 []NearbyMerchant
+	nearbyErr              error
+	nearbyStoreID          string
+	nearbyRadius           int
+	catalog                []CatalogItem
+	catalogErr             error
+	catalogStoreID         string
+	merchantLocations      []MerchantStoreLocation
+	merchantLocationsErr   error
+	merchantCatalog        []MerchantCatalogItem
+	merchantCatalogErr     error
+	merchantCatalogID      string
+	merchantItem           MerchantCatalogItem
+	merchantItemErr        error
+	merchantOrders         []MerchantOrder
+	merchantOrdersErr      error
+	merchantOrderState     string
+	merchantOrderErr       error
+	merchantOrderID        string
+	merchantOrderNewState  string
+	merchantRequest        merchantCatalogItemRequest
+	merchantUpdate         merchantCatalogItemUpdateRequest
+	merchantKey            string
+	merchantFingerprint    string
+	order                  customerOrderResponse
+	orderErr               error
+	orderReq               customerOrderRequest
+	orderCustomer          string
+	orderKey               string
+	orderFingerprint       string
+	bundle                 bundleResponse
+	bundleErr              error
+	bundleRequest          bundleRequest
+	bundleKey              string
+	route                  routeResponse
+	routeErr               error
+	routeID                string
+	driverRoutes           []routeResponse
+	driverRoutesErr        error
+	assignedRoute          routeResponse
+	assignedRouteErr       error
+	assignedCheckoutID     string
+	assignedDriverRef      string
+	assignedRouteKey       string
+	driverRef              string
+	locationID             int64
+	locationErr            error
+	location               driverLocationRequest
+	stopEvent              driverStopEventResponse
+	stopEventErr           error
+	stopID                 string
+	stopEventReq           driverStopEventRequest
+	checkout               checkoutResponse
+	checkoutErr            error
+	checkoutReq            checkoutRequest
+	customerRef            string
+	checkoutKey            string
+	ownsOrder              bool
+	ownsOrderErr           error
+	orderEvents            []OrderEvent
+	orderEventsErr         error
+	eventOrderID           string
+	eventCustomerRef       string
+	eventAfterID           int64
+	eventLimit             int
+	deliveryZones          []DeliveryZone
+	deliveryZonesErr       error
+	operationsSnapshot     AdminOperationsSnapshot
+	operationsSnapshotErr  error
+	adminDispatchRoutes    []AdminDispatchRoute
+	adminDispatchRoutesErr error
+	updatedDeliveryZone    DeliveryZone
+	updateDeliveryZoneErr  error
+	updatedDeliveryZoneID  string
+	updatedZoneEnabled     bool
+	updatedDispatchLimits  dispatchLimitsRequest
+	updatedDispatchActor   string
+	updateLimitsZone       DeliveryZone
+	updateLimitsErr        error
 }
 
 func (f *fakeRepository) PingContext(context.Context) error { return f.pingErr }
@@ -100,6 +102,9 @@ func (f *fakeRepository) AdminDeliveryZones(context.Context) ([]DeliveryZone, er
 }
 func (f *fakeRepository) AdminOperationsSnapshot(context.Context) (AdminOperationsSnapshot, error) {
 	return f.operationsSnapshot, f.operationsSnapshotErr
+}
+func (f *fakeRepository) AdminDispatchRoutes(context.Context) ([]AdminDispatchRoute, error) {
+	return f.adminDispatchRoutes, f.adminDispatchRoutesErr
 }
 func (f *fakeRepository) UpdateAdminDeliveryZone(
 	_ context.Context, zoneID string, enabled bool,
@@ -683,6 +688,44 @@ func TestAdminOperationsSnapshotRequiresAdmin(t *testing.T) {
 		if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), expected) {
 			t.Fatalf("admin status=%d missing %s body=%s", recorder.Code, expected, recorder.Body.String())
 		}
+	}
+}
+
+func TestAdminDispatchRoutesRequiresAdminAndReturnsAssignmentSummary(t *testing.T) {
+	lastLocationAt := time.Date(2026, time.October, 21, 20, 0, 0, 0, time.UTC)
+	repo := &fakeRepository{adminDispatchRoutes: []AdminDispatchRoute{{
+		ID:               "00000000-0000-0000-0000-000000000010",
+		DriverRef:        "driver-7",
+		DeliveryZoneName: "North",
+		Status:           "in_progress",
+		OpenStopCount:    2,
+		LastLocationAt:   &lastLocationAt,
+	}}}
+	handler := New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	request := httptest.NewRequest(http.MethodGet, "/admin/dispatch/routes", nil)
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "driver-7")
+	request.Header.Set("X-ShopStops-Actor-Role", "driver")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("non-admin status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/admin/dispatch/routes", nil)
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "admin-1")
+	request.Header.Set("X-ShopStops-Actor-Role", "admin")
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK ||
+		!strings.Contains(recorder.Body.String(), `"driverRef":"driver-7"`) ||
+		!strings.Contains(recorder.Body.String(), `"openStopCount":2`) ||
+		!strings.Contains(recorder.Body.String(), `"lastLocationAt"`) ||
+		strings.Contains(recorder.Body.String(), `"latitude"`) ||
+		strings.Contains(recorder.Body.String(), `"longitude"`) {
+		t.Fatalf("admin route summary status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 

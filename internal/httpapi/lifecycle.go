@@ -106,6 +106,16 @@ type AdminOperationsSnapshot struct {
 
 type AdminOperationsRepository interface {
 	AdminOperationsSnapshot(context.Context) (AdminOperationsSnapshot, error)
+	AdminDispatchRoutes(context.Context) ([]AdminDispatchRoute, error)
+}
+
+type AdminDispatchRoute struct {
+	ID               string     `json:"id"`
+	DriverRef        string     `json:"driverRef"`
+	DeliveryZoneName string     `json:"deliveryZoneName"`
+	Status           string     `json:"status"`
+	OpenStopCount    int64      `json:"openStopCount"`
+	LastLocationAt   *time.Time `json:"lastLocationAt"`
 }
 
 type dispatchLimitsRequest struct {

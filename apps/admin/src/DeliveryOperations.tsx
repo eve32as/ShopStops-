@@ -31,6 +31,15 @@ type OperationsSnapshot = {
   }>
 }
 
+type AdminDispatchRoute = {
+  id: string
+  driverRef: string
+  deliveryZoneName: string
+  status: string
+  openStopCount: number
+  lastLocationAt: string | null
+}
+
 type DispatchLimitDraft = {
   maxOrders: string
   pickupRadiusMeters: string
@@ -197,6 +206,7 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
   const [operationsError, setOperationsError] = useState('')
   const [zonesLoading, setZonesLoading] = useState(false)
   const [operations, setOperations] = useState<OperationsSnapshot | null>(null)
+  const [assignedRoutes, setAssignedRoutes] = useState<AdminDispatchRoute[]>([])
   const [zoneSearch, setZoneSearch] = useState('')
   const [updatingZone, setUpdatingZone] = useState('')
   const [savingLimitsZone, setSavingLimitsZone] = useState('')
@@ -229,15 +239,22 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
       return
     }
     try {
-      const response = await fetch(url, {
-        redirect: 'error',
-        headers: {
-          Accept: 'application/json',
-          Authorization: ['Bear', 'er'].join('') + ' ' + sessionToken.trim(),
-        },
-      })
+      const headers = {
+        Accept: 'application/json',
+        Authorization: ['Bear', 'er'].join('') + ' ' + sessionToken.trim(),
+      }
+      const [response, routesResponse] = await Promise.all([
+        fetch(url, { redirect: 'error', headers }),
+        fetch(apiUrl(gatewayUrl, '/admin/dispatch/routes'), { redirect: 'error', headers }),
+      ])
       if (!response.ok) throw await requestError(response)
-      setOperations(await response.json() as OperationsSnapshot)
+      if (!routesResponse.ok) throw await requestError(routesResponse)
+      const [snapshot, routeResult] = await Promise.all([
+        response.json() as Promise<OperationsSnapshot>,
+        routesResponse.json() as Promise<{ routes?: AdminDispatchRoute[] }>,
+      ])
+      setOperations(snapshot)
+      setAssignedRoutes(Array.isArray(routeResult.routes) ? routeResult.routes : [])
       setOperationsError('')
     } catch (error) {
       setOperationsError(error instanceof Error ? error.message : 'Could not refresh operations.')
@@ -270,6 +287,12 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
       !query || zone.name.toLocaleLowerCase().includes(query),
     )
   }, [gatewayUrl, operations, sessionToken, zoneSearch])
+  const visibleAssignedRoutes = useMemo(() => {
+    const query = zoneSearch.trim().toLocaleLowerCase()
+    return assignedRoutes.filter((route) =>
+      !query || route.deliveryZoneName.toLocaleLowerCase().includes(query),
+    )
+  }, [assignedRoutes, zoneSearch])
 
   async function loadZones() {
     setZonesError('')
@@ -603,6 +626,39 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
                 ) : null}
               </tbody>
             </table>
+          </div>
+          <div className="operations-table-wrap">
+            <table className="operations-table">
+              <caption>Active driver assignments · up to 100 latest</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Driver</th>
+                  <th scope="col">Sector</th>
+                  <th scope="col">Route</th>
+                  <th scope="col">Open stops</th>
+                  <th scope="col">Last location report</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleAssignedRoutes.map((route) => (
+                  <tr key={route.id}>
+                    <th scope="row">{route.driverRef}</th>
+                    <td>{route.deliveryZoneName}</td>
+                    <td><span className="zone-status zone-status-enabled">{route.status.replaceAll('_', ' ')}</span></td>
+                    <td>{route.openStopCount}</td>
+                    <td>{route.lastLocationAt
+                      ? `${Math.max(0, Math.floor(
+                        (Date.parse(operations.generatedAt) - Date.parse(route.lastLocationAt)) / 60000,
+                      ))} min ago`
+                      : 'No location report'}</td>
+                  </tr>
+                ))}
+                {visibleAssignedRoutes.length === 0 ? (
+                  <tr><td colSpan={5}>No active assignments match this sector search.</td></tr>
+                ) : null}
+              </tbody>
+            </table>
+            <p className="operations-privacy-note">Location timestamps are shown for operational freshness; driver coordinates are not exposed in this view.</p>
           </div>
         </section>
       ) : null}

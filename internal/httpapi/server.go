@@ -57,6 +57,7 @@ type Repository interface {
 	CreateCheckout(context.Context, checkoutRequest, string, string) (checkoutResponse, error)
 	DriverRoute(context.Context, string, string) (routeResponse, error)
 	DriverRoutes(context.Context, string) ([]routeResponse, error)
+	AdminDispatchRoutes(context.Context) ([]AdminDispatchRoute, error)
 	CreateAssignedRoute(context.Context, string, string, string) (routeResponse, error)
 	RecordDriverLocation(context.Context, string, string, driverLocationRequest) (int64, error)
 	RecordDriverStopEvent(
@@ -315,6 +316,7 @@ func (s *Server) handler() http.Handler {
 	mux.Handle("GET /admin/checkouts", s.authorized(http.HandlerFunc(s.searchAdminCheckouts)))
 	mux.Handle("POST /admin/checkouts/{checkoutId}/refund", s.authorized(http.HandlerFunc(s.refundCheckout)))
 	mux.Handle("GET /admin/operations", s.authorized(http.HandlerFunc(s.getAdminOperationsSnapshot)))
+	mux.Handle("GET /admin/dispatch/routes", s.authorized(http.HandlerFunc(s.listAdminDispatchRoutes)))
 	mux.Handle("GET /admin/delivery-zones", s.authorized(http.HandlerFunc(s.listAdminDeliveryZones)))
 	mux.Handle("PATCH /admin/delivery-zones/{zoneId}", s.authorized(http.HandlerFunc(s.updateAdminDeliveryZone)))
 	mux.Handle("PATCH /admin/delivery-zones/{zoneId}/dispatch-limits", s.authorized(http.HandlerFunc(s.updateAdminDispatchLimits)))
@@ -1455,6 +1457,7 @@ func (p *PostgresRepository) AdminOperationsSnapshot(
 	if err != nil {
 		return AdminOperationsSnapshot{}, err
 	}
+
 	defer tx.Rollback()
 	snapshot := AdminOperationsSnapshot{
 		DeliveryZoneOperations: make([]DeliveryZoneOperations, 0),
@@ -1539,6 +1542,58 @@ func (p *PostgresRepository) AdminOperationsSnapshot(
 		return AdminOperationsSnapshot{}, err
 	}
 	return snapshot, nil
+}
+
+func (s *Server) listAdminDispatchRoutes(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.authorizedActorRole(w, r, "admin"); !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	routes, err := s.repo.AdminDispatchRoutes(ctx)
+	if err != nil {
+		s.databaseError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"routes": routes})
+}
+
+func (p *PostgresRepository) AdminDispatchRoutes(ctx context.Context) ([]AdminDispatchRoute, error) {
+	rows, err := p.db.QueryContext(ctx, `
+		SELECT r.id, r.driver_ref, z.name, r.status,
+		       (SELECT count(*)
+		        FROM unified_route_stops s
+		        WHERE s.route_id = r.id AND s.status IN ('pending', 'arrived')),
+		       (SELECT max(l.observed_at)
+		        FROM driver_location_samples l
+		        WHERE l.route_id = r.id AND l.driver_ref = r.driver_ref),
+		FROM unified_delivery_routes r
+		JOIN unified_checkouts c ON c.id = r.checkout_id
+		JOIN delivery_zones z ON z.id = c.delivery_zone_id
+		WHERE r.driver_ref IS NOT NULL
+		  AND r.status IN ('planned', 'routed', 'in_progress')
+		ORDER BY r.created_at DESC, r.id
+		LIMIT 100`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	routes := make([]AdminDispatchRoute, 0)
+	for rows.Next() {
+		var route AdminDispatchRoute
+		var lastLocationAt sql.NullTime
+		if err := rows.Scan(
+			&route.ID, &route.DriverRef, &route.DeliveryZoneName,
+			&route.Status, &route.OpenStopCount, &lastLocationAt,
+		); err != nil {
+			return nil, err
+		}
+		if lastLocationAt.Valid {
+			route.LastLocationAt = &lastLocationAt.Time
+		}
+		routes = append(routes, route)
+	}
+	return routes, rows.Err()
 }
 
 func (p *PostgresRepository) UpdateAdminDeliveryZone(
