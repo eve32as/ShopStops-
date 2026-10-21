@@ -238,7 +238,8 @@ func requiredRoles(method, path string) ([]string, bool) {
 	case strings.HasPrefix(path, "/driver/"):
 		return methodRole(method, "driver")
 	case strings.HasPrefix(path, "/dispatch/"):
-		if method == http.MethodPost && path == "/dispatch/bundles" {
+		if method == http.MethodPost &&
+			(path == "/dispatch/bundles" || path == "/dispatch/routes") {
 			return []string{"dispatch", "admin"}, true
 		}
 	case strings.HasPrefix(path, "/admin/"):

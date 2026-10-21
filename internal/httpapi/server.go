@@ -55,6 +55,8 @@ type Repository interface {
 	CreateBundle(context.Context, bundleRequest, string) (bundleResponse, error)
 	CreateCheckout(context.Context, checkoutRequest, string, string) (checkoutResponse, error)
 	DriverRoute(context.Context, string, string) (routeResponse, error)
+	DriverRoutes(context.Context, string) ([]routeResponse, error)
+	CreateAssignedRoute(context.Context, string, string, string) (routeResponse, error)
 	RecordDriverLocation(context.Context, string, string, driverLocationRequest) (int64, error)
 	RecordDriverStopEvent(
 		context.Context, string, string, string, driverStopEventRequest,
@@ -298,6 +300,8 @@ func (s *Server) handler() http.Handler {
 	mux.Handle("POST /merchant/catalog", s.authorized(http.HandlerFunc(s.createMerchantCatalogItem)))
 	mux.Handle("PATCH /merchant/catalog/{itemId}", s.authorized(http.HandlerFunc(s.updateMerchantCatalogItem)))
 	mux.Handle("POST /dispatch/bundles", s.authorized(http.HandlerFunc(s.createBundle)))
+	mux.Handle("POST /dispatch/routes", s.authorized(http.HandlerFunc(s.createAssignedRoute)))
+	mux.Handle("GET /driver/routes", s.authorized(http.HandlerFunc(s.listDriverRoutes)))
 	mux.Handle("GET /driver/routes/{routeId}", s.authorized(http.HandlerFunc(s.getDriverRoute)))
 	mux.Handle("POST /driver/routes/{routeId}/location", s.authorized(http.HandlerFunc(s.recordDriverLocation)))
 	mux.Handle("POST /driver/routes/{routeId}/stops/{stopId}/events", s.authorized(http.HandlerFunc(s.recordDriverStopEvent)))
