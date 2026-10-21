@@ -1448,12 +1448,19 @@ func (p *PostgresRepository) AdminOperationsSnapshot(
 	snapshot := AdminOperationsSnapshot{
 		DeliveryZoneOperations: make([]DeliveryZoneOperations, 0),
 	}
+	var oldestPendingOutboxAt sql.NullTime
 	if err := tx.QueryRowContext(ctx, `
-		SELECT now(), count(*)
+		SELECT now(), count(*), min(created_at)
 		FROM outbox_events
 		WHERE published_at IS NULL`,
-	).Scan(&snapshot.GeneratedAt, &snapshot.PendingOutboxEvents); err != nil {
+	).Scan(
+		&snapshot.GeneratedAt, &snapshot.PendingOutboxEvents,
+		&oldestPendingOutboxAt,
+	); err != nil {
 		return AdminOperationsSnapshot{}, err
+	}
+	if oldestPendingOutboxAt.Valid {
+		snapshot.OldestPendingOutboxAt = &oldestPendingOutboxAt.Time
 	}
 	rows, err := tx.QueryContext(ctx, `
 		WITH ready_metrics AS (

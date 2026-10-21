@@ -14,6 +14,7 @@ type DeliveryZone = {
 type OperationsSnapshot = {
   generatedAt: string
   pendingOutboxEvents: number
+  oldestPendingOutboxAt: string | null
   deliveryZones: Array<{
     id: string
     name: string
@@ -295,7 +296,17 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
             <span>As of {new Date(operations.generatedAt).toLocaleTimeString()}</span>
           </div>
           <div className="operations-metrics">
-            <div><span>Pending outbox</span><strong>{operations.pendingOutboxEvents}</strong></div>
+            <div>
+              <span>Pending outbox</span>
+              <strong>{operations.pendingOutboxEvents}</strong>
+              <small>
+                {operations.oldestPendingOutboxAt
+                  ? `Oldest event ${Math.max(0, Math.floor(
+                    (Date.parse(operations.generatedAt) - Date.parse(operations.oldestPendingOutboxAt)) / 60000,
+                  ))} min ago`
+                  : 'No unpublished events'}
+              </small>
+            </div>
             {operations.deliveryZones.map((zone) => (
               <div className="operations-zone" key={zone.id}>
                 <span>{zone.name}{zone.enabled ? '' : ' · Disabled'}</span>

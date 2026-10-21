@@ -657,7 +657,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [generatedAt, pendingOutboxEvents, deliveryZones]
+                required: [generatedAt, pendingOutboxEvents, oldestPendingOutboxAt, deliveryZones]
                 properties:
                   generatedAt:
                     type: string
@@ -665,6 +665,10 @@ paths:
                   pendingOutboxEvents:
                     type: integer
                     format: int64
+                  oldestPendingOutboxAt:
+                    type: string
+                    format: date-time
+                    nullable: true
                   deliveryZones:
                     type: array
                     items:

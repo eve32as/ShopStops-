@@ -574,8 +574,9 @@ func TestAdminDeliveryZonesRequiresAdminAndListsZones(t *testing.T) {
 
 func TestAdminOperationsSnapshotRequiresAdmin(t *testing.T) {
 	oldestReadyOrderID := "00000000-0000-0000-0000-000000000002"
+	oldestPendingEventAt := time.Date(2026, time.October, 20, 12, 0, 0, 0, time.UTC)
 	repo := &fakeRepository{operationsSnapshot: AdminOperationsSnapshot{
-		PendingOutboxEvents: 4,
+		PendingOutboxEvents: 4, OldestPendingOutboxAt: &oldestPendingEventAt,
 		DeliveryZoneOperations: []DeliveryZoneOperations{{
 			ID: "00000000-0000-0000-0000-000000000001", Name: "North",
 			Enabled: true, ReadyOrderCount: 2, OldestReadyOrderID: &oldestReadyOrderID,
@@ -602,6 +603,7 @@ func TestAdminOperationsSnapshotRequiresAdmin(t *testing.T) {
 	handler.ServeHTTP(recorder, request)
 	for _, expected := range []string{
 		`"pendingOutboxEvents":4`, `"name":"North"`, `"enabled":true`, `"readyOrderCount":2`,
+		`"oldestPendingOutboxAt":"2026-10-20T12:00:00Z"`,
 		`"oldestReadyOrderId":"` + oldestReadyOrderID + `"`,
 		`"activeBundleCount":1`, `"openStopCount":3`,
 	} {

@@ -294,7 +294,8 @@ of dispatch records. Do not expose exact customer addresses or contact details
 to unauthorized users.
 
 The admin-only operations snapshot reports ready-order age, active bundle and
-open-stop counts per zone, and pending outbox backlog. Monitor dispatch latency,
+open-stop counts per zone, pending outbox count, and the age of its oldest
+unpublished event. Monitor dispatch latency,
 skipped/locked candidates, stop completion delays, and cancellations through
 additional operational telemetry. Retain
 an audit trail for admin changes and driver progress. Recovery flows should
