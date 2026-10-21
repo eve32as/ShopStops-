@@ -23,6 +23,7 @@ import {
   startDriverLocationUpdates,
   stopDriverLocationUpdates,
 } from "../src/backgroundLocation";
+import { NativeSignIn } from "../src/NativeSignIn";
 
 type Role = "Shopper" | "Driver" | "Merchant";
 type NearbyMerchant = {
@@ -124,6 +125,7 @@ type Subscription = {
 
 const stripeKeyConfigured = Boolean(process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY);
 const shopperOrderIDsKey = "shopstops.shopper-order-ids.v1";
+const userSessionKey = "shopstops.user-session.v1";
 
 function createDeliveryWindow(): DeliveryWindow {
   const start = new Date(Date.now() + 15 * 60 * 1000);
@@ -266,6 +268,54 @@ export default function HomeScreen() {
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    void SecureStore.getItemAsync(userSessionKey).then((saved) => {
+      if (!active || !saved) return;
+      try {
+        const stored = JSON.parse(saved) as {
+          accessToken?: unknown;
+          expiresAt?: unknown;
+          gatewayUrl?: unknown;
+        };
+        if (
+          typeof stored.accessToken === "string" &&
+          stored.accessToken.length > 0 &&
+          typeof stored.expiresAt === "number" &&
+          stored.expiresAt > Date.now() + 30_000 &&
+          typeof stored.gatewayUrl === "string"
+        ) {
+          setGatewayUrl(stored.gatewayUrl);
+          setSessionToken(stored.accessToken);
+        } else {
+          void SecureStore.deleteItemAsync(userSessionKey).catch(() => undefined);
+        }
+      } catch {
+        void SecureStore.deleteItemAsync(userSessionKey).catch(() => undefined);
+      }
+    }).catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  async function acceptSignIn(accessToken: string, expiresAt: number) {
+    if (!expiresAt || expiresAt <= Date.now()) {
+      throw new Error("The identity provider did not return a usable token expiry.");
+    }
+    await SecureStore.setItemAsync(userSessionKey, JSON.stringify({
+      accessToken,
+      expiresAt,
+      gatewayUrl: gatewayUrl.trim(),
+    }));
+    setSessionToken(accessToken);
+  }
+
+  async function signOut() {
+    await SecureStore.deleteItemAsync(userSessionKey).catch(() => undefined);
+    setSessionToken("");
+  }
 
   useEffect(() => {
     const changed =
@@ -1015,16 +1065,12 @@ export default function HomeScreen() {
         style={styles.input}
         value={gatewayUrl}
       />
-      <TextInput
-        accessibilityLabel="Session token"
-        autoCapitalize="none"
-        autoCorrect={false}
-        onChangeText={setSessionToken}
-        placeholder="User session token"
-        placeholderTextColor="#94a3b8"
-        secureTextEntry
-        style={styles.input}
-        value={sessionToken}
+      <NativeSignIn
+        disabled={busy}
+        gatewayUrl={gatewayUrl}
+        onSignedIn={acceptSignIn}
+        onSignOut={signOut}
+        signedIn={Boolean(sessionToken)}
       />
     </View>
   );

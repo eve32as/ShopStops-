@@ -5,6 +5,7 @@
   "dependencies": {
     "@stripe/stripe-react-native": "0.81.0",
     "expo": "~58.0.17",
+    "expo-auth-session": "~58.0.14",
     "expo-location": "~58.0.18",
     "expo-router": "~58.0.25",
     "expo-secure-store": "~58.0.2",

@@ -234,8 +234,12 @@ Run the mobile client from `apps/mobile` with `npm ci`, then use
 Run the admin client from `apps/admin` with `npm ci` and `npm run dev`. Configure
 `EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY` for mobile PaymentSheet flows. The shopper
 client can browse visible store catalogs and create orders before checkout; it
-still requires an OIDC provider that issues matching tokens and a valid customer
+requires `EXPO_PUBLIC_OIDC_ISSUER` and `EXPO_PUBLIC_OIDC_CLIENT_ID` for native
+authorization-code-with-PKCE sign-in. Register the `shopstops://auth` redirect URI
+for the iOS/Android public client and configure the provider to issue access tokens
+with the audience and role/actor claims expected by the gateway. The app keeps
+access tokens in OS secure storage until their reported expiry; it does not store
+a client secret or refresh token. The shopper also requires a valid customer
 delivery location. Shopper progress resumes from a device-secure per-order
 cursor and stops polling on completion, screen blur, app backgrounding, or
-account changes. Native provider sign-in and push/WebSocket delivery remain
-follow-on work.
+account changes. Push/WebSocket delivery remain follow-on work.

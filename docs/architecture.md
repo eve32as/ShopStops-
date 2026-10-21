@@ -314,8 +314,9 @@ full-refund operation. Both use the trusted gateway and require externally
 issued user tokens; the mobile client also requires Stripe publishable-key
 configuration. The clients are API-backed MVP foundations, not complete
 consumer, driver, merchant, or admin products.
-Native identity-provider sign-in, full operational reporting and alerting,
-production routing, and push or WebSocket integrations remain unimplemented.
+Mobile native identity-provider sign-in uses OIDC authorization code with PKCE.
+Provider account recovery, full operational reporting and alerting, production
+routing, and push or WebSocket integrations remain unimplemented.
 
 For rollout, configure the initial Union Market corridor as the only enabled
 zone and cap onboarding operationally at 15 merchants and 30 screened drivers.
