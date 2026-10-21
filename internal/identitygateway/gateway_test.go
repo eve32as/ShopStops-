@@ -148,6 +148,7 @@ func TestGatewayHealthAndStripeWebhookArePublicButUnknownRoutesAreHidden(t *test
 		path   string
 	}{
 		{http.MethodGet, "/v1/healthz"},
+		{http.MethodGet, "/v1/readyz"},
 		{http.MethodPost, "/v1/webhooks/stripe"},
 	} {
 		recorder := httptest.NewRecorder()
@@ -161,8 +162,8 @@ func TestGatewayHealthAndStripeWebhookArePublicButUnknownRoutesAreHidden(t *test
 	}
 	recorder := httptest.NewRecorder()
 	gateway.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/private", nil))
-	if recorder.Code != http.StatusNotFound || len(paths) != 2 ||
-		forwardedActors[0] != "" || forwardedActors[1] != "" {
+	if recorder.Code != http.StatusNotFound || len(paths) != 3 ||
+		forwardedActors[0] != "" || forwardedActors[1] != "" || forwardedActors[2] != "" {
 		t.Fatalf("unknown route status=%d upstream paths=%v forwarded actors=%v",
 			recorder.Code, paths, forwardedActors)
 	}

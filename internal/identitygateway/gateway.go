@@ -79,7 +79,8 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !g.handleCORS(w, r) {
 		return
 	}
-	if r.URL.Path == "/v1/healthz" && r.Method == http.MethodGet {
+	if (r.URL.Path == "/v1/healthz" || r.URL.Path == "/v1/readyz") &&
+		r.Method == http.MethodGet {
 		g.proxy.ServeHTTP(w, r)
 		return
 	}
