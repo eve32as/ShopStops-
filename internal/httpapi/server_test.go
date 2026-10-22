@@ -411,6 +411,22 @@ func TestCreateBundleAppliesDefaultsAndUsesIdempotencyKey(t *testing.T) {
 	}
 }
 
+func TestCreateBundleAllowsAdminRole(t *testing.T) {
+	repo := &fakeRepository{bundle: bundleResponse{ID: "bundle-id", Status: "active"}}
+	request := httptest.NewRequest(http.MethodPost, "/dispatch/bundles", strings.NewReader(
+		`{"seedOrderId":"00000000-0000-0000-0000-000000000001","capacityLiters":10}`))
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "admin-123")
+	request.Header.Set("X-ShopStops-Actor-Role", "admin")
+	request.Header.Set("Idempotency-Key", "admin-dispatch-request")
+	recorder := httptest.NewRecorder()
+	New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
+		ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || repo.bundleKey != "admin-dispatch-request" {
+		t.Fatalf("status=%d key=%q body=%s", recorder.Code, repo.bundleKey, recorder.Body.String())
+	}
+}
+
 func TestCreateBundleAllowsExplicitZeroRadius(t *testing.T) {
 	repo := &fakeRepository{bundle: bundleResponse{ID: "bundle-id", Status: "active"}}
 	request := httptest.NewRequest(http.MethodPost, "/dispatch/bundles", strings.NewReader(
@@ -543,6 +559,7 @@ func TestDriverStopEventRejectsInvalidType(t *testing.T) {
 		strings.NewReader(`{"eventId":"stop-event-1","type":"skip","observedAt":"2026-10-19T08:00:00Z"}`))
 	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
 	request.Header.Set("X-ShopStops-Actor", "driver-123")
+	request.Header.Set("X-ShopStops-Actor-Role", "driver")
 	recorder := httptest.NewRecorder()
 	testServer().ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusBadRequest {
