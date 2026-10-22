@@ -647,7 +647,7 @@ func (s *Server) updateAdminDispatchLimits(w http.ResponseWriter, r *http.Reques
 		(request.DriverMileageCostPerMileCents != nil &&
 			(*request.DriverMileageCostPerMileCents < 0 ||
 				*request.DriverMileageCostPerMileCents > 100000)) {
-		writeError(w, http.StatusBadRequest, "dispatch limits are outside allowed ranges")
+		writeError(w, http.StatusBadRequest, "zone settings are outside allowed ranges")
 		return
 	}
 	repository, ok := s.repo.(AdminDeliveryRepository)

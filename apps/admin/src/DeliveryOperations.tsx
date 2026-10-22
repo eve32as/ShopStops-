@@ -866,7 +866,7 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
                       {savingLimitsZone === zone.id ? 'Saving…' : 'Save zone settings'}
                     </button>
                   </div>
-                  <small className="zone-audit">Updated {new Date(zone.dispatchLimitsUpdatedAt).toLocaleString()} by {zone.dispatchLimitsUpdatedBy}</small>
+                  <small className="zone-audit">Settings updated {new Date(zone.dispatchLimitsUpdatedAt).toLocaleString()} by {zone.dispatchLimitsUpdatedBy}</small>
                 </article>
               ))}
             </div>

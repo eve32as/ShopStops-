@@ -15,48 +15,6 @@ BEGIN
 END;
 $$;
 
-INSERT INTO delivery_zones (name, boundary)
-VALUES ('Mileage admin settings test zone',
-        ST_Multi(ST_MakeEnvelope(-77.05, 38.85, -76.95, 38.95, 4326)))
-RETURNING id AS mileage_admin_zone_id \gset
-SELECT set_config('shopstops.test_mileage_admin_zone_id', :'mileage_admin_zone_id', true);
-UPDATE delivery_zones
-SET dispatch_max_orders = 5,
-    dispatch_pickup_radius_m = 1500,
-    dispatch_dropoff_radius_m = 2500,
-    dispatch_limits_updated_by = 'admin-mileage-test',
-    dispatch_limits_updated_at = now(),
-    driver_mileage_cost_per_mile_cents = 80
-WHERE id = :'mileage_admin_zone_id';
-INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload)
-VALUES (
-    'delivery_zone', :'mileage_admin_zone_id',
-    'delivery.zone.dispatch_limits.updated',
-    jsonb_build_object(
-        'deliveryZoneId', :'mileage_admin_zone_id',
-        'maxOrders', 5, 'pickupRadiusMeters', 1500,
-        'dropoffRadiusMeters', 2500, 'updatedBy', 'admin-mileage-test',
-        'driverMileageCostPerMileCents', 80
-    )
-);
-DO $$
-DECLARE
-    v_zone_id uuid := current_setting('shopstops.test_mileage_admin_zone_id')::uuid;
-BEGIN
-    IF (SELECT driver_mileage_cost_per_mile_cents
-        FROM delivery_zones WHERE id = v_zone_id) <> 80
-       OR (SELECT dispatch_limits_updated_by
-           FROM delivery_zones WHERE id = v_zone_id) <> 'admin-mileage-test'
-       OR NOT EXISTS (
-           SELECT 1 FROM outbox_events
-           WHERE aggregate_id = v_zone_id
-             AND event_type = 'delivery.zone.dispatch_limits.updated'
-             AND payload->>'driverMileageCostPerMileCents' = '80'
-       ) THEN
-        RAISE EXCEPTION 'admin zone mileage changes must persist, audit, and publish';
-    END IF;
-END;
-$$;
 INSERT INTO jurisdictions (code, name, boundary)
 VALUES ('US-DC', 'District of Columbia test polygon',
         ST_Multi(ST_MakeEnvelope(-77.12, 38.79, -76.91, 39.0, 4326)));

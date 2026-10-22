@@ -800,7 +800,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/DeliveryZone'
         '400':
-          description: Invalid zone ID or dispatch limit
+          description: Invalid zone ID, dispatch limit, or mileage rate
         '403':
           description: Admin role required
         '404':
