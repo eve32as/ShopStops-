@@ -746,10 +746,9 @@ func TestCreateUnifiedRouteRoutesAndPersistsBothLegs(t *testing.T) {
 
 func TestCreateUnifiedRouteRetrySkipsOSRM(t *testing.T) {
 	repo := &fakeRepository{existingRouteID: "route-existing", existingRouteFound: true}
-	calls := &atomic.Int32{}
 	handler := NewWithRouting(
 		repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil)),
-		fakeOSRMRouter{calls: calls},
+		nil,
 	)
 	request := httptest.NewRequest(http.MethodPost,
 		"/checkouts/00000000-0000-0000-0000-000000000001/route", nil)
@@ -759,9 +758,9 @@ func TestCreateUnifiedRouteRetrySkipsOSRM(t *testing.T) {
 	request.Header.Set("Idempotency-Key", "route-request-1")
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK || calls.Load() != 0 ||
+	if recorder.Code != http.StatusOK ||
 		!strings.Contains(recorder.Body.String(), `"routeId":"route-existing"`) {
-		t.Fatalf("status=%d calls=%d body=%s", recorder.Code, calls.Load(), recorder.Body.String())
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 

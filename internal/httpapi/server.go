@@ -730,10 +730,6 @@ func (s *Server) createUnifiedRoute(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "valid Idempotency-Key header is required")
 		return
 	}
-	if s.router == nil {
-		writeError(w, http.StatusServiceUnavailable, "OSRM routing is unavailable")
-		return
-	}
 	repository, ok := s.repo.(UnifiedRouteRepository)
 	if !ok {
 		writeError(w, http.StatusServiceUnavailable, "route creation is unavailable")
@@ -754,6 +750,10 @@ func (s *Server) createUnifiedRoute(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{
 			"routeId": routeID, "checkoutId": checkoutID, "routingProvider": "osrm",
 		})
+		return
+	}
+	if s.router == nil {
+		writeError(w, http.StatusServiceUnavailable, "OSRM routing is unavailable")
 		return
 	}
 
