@@ -55,12 +55,12 @@ func NewOSRMClient(baseURL string) (*OSRMClient, error) {
 		return nil, errors.New("OSRM URL must be an HTTP(S) origin without credentials or query")
 	}
 	if parsed.Scheme == "http" {
-		host := parsed.Hostname()
+		host := strings.ToLower(parsed.Hostname())
 		ip := net.ParseIP(host)
 		isPrivateIP := ip != nil &&
 			(ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast())
-		isPrivateName := host == "localhost" || strings.HasSuffix(host, ".internal") ||
-			!strings.Contains(host, ".")
+		isPrivateName := host == "localhost" || host == "osrm-router" ||
+			strings.HasSuffix(host, ".internal")
 		if !isPrivateIP && !isPrivateName {
 			return nil, errors.New("unencrypted OSRM URLs must use a private or loopback host")
 		}

@@ -115,8 +115,12 @@ func TestOSRMClientRejectsInvalidURL(t *testing.T) {
 	if _, err := NewOSRMClient("https://router.example.com/"); err != nil {
 		t.Fatalf("expected a URL with a trailing origin slash to be accepted: %v", err)
 	}
+	if _, err := NewOSRMClient("http://osrm-router:5000"); err != nil {
+		t.Fatalf("expected the private Compose router hostname to be accepted: %v", err)
+	}
 	for _, baseURL := range []string{
 		"http://router.example.com",
+		"http://untrusted",
 		"http://router.internal?token=example",
 		"http://router.internal/path",
 		"http://router.example.com/path",
