@@ -6,6 +6,7 @@
 .brand-sub { display: block; color: #91a99d; font-family: 'DM Sans', sans-serif; font-size: 8px; font-weight: 700; letter-spacing: 1.4px; margin-top: 1px; }
 .rail-label { color: #80998d; font-size: 9px; font-weight: 700; letter-spacing: 1.5px; padding: 48px 11px 13px; }
 .nav-item { display: flex; gap: 12px; align-items: center; border-radius: 9px; font-size: 12px; padding: 11px; margin: 2px 0; }
+.nav-item { width: 100%; border: 0; text-align: left; font-family: inherit; cursor: pointer; }
 .nav-active { color: white; background: #2c4b40; font-weight: 700; }
 .nav-muted { color: #a4b7ad; }
 .nav-icon { width: 17px; text-align: center; font-size: 15px; }
@@ -79,5 +80,33 @@ label small { color: #9aa59f; font-size: 9px; font-weight: 400; }
 .policy-divider { border-top: 1px solid #f1e3d9; margin: 13px 0 9px; }
 .policy-card > span { color: #987d6e; font-size: 9px; line-height: 14px; }
 .page-footer { display: flex; justify-content: space-between; color: #a1aaa4; font-size: 8px; font-weight: 700; letter-spacing: .7px; margin-top: 25px; }
+.alert-toolbar { display: flex; align-items: end; gap: 12px; margin-bottom: 18px; }
+.alert-toolbar label { flex: 1; max-width: 260px; }
+.alert-load { padding: 0 18px; }
+.empty-alerts { color: #84928a; font-size: 12px; padding: 22px 0; }
+.fraud-alert-list { display: grid; gap: 12px; }
+.fraud-alert { border: 1px solid #e8ece8; border-radius: 10px; padding: 16px; }
+.fraud-alert-heading, .fraud-alert-heading > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.fraud-alert-heading > div { justify-content: flex-start; }
+.fraud-alert h3 { font-size: 14px; }
+.severity-badge, .alert-state { border-radius: 20px; padding: 5px 8px; font-size: 9px; font-weight: 800; text-transform: uppercase; }
+.severity-high { color: #a33b32; background: #fff0ef; }
+.severity-medium { color: #8b611e; background: #fff5dc; }
+.alert-state { color: #56675e; background: #eef2ef; }
+.state-open { color: #993f36; background: #fff0ef; }
+.state-reviewed { color: #2b6947; background: #eaf5ee; }
+.fraud-details { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 15px 0; }
+.fraud-details div { min-width: 0; }
+.fraud-details dt { color: #89958e; font-size: 9px; font-weight: 700; text-transform: uppercase; }
+.fraud-details dd { color: #364e44; font-size: 11px; overflow-wrap: anywhere; margin: 4px 0 0; }
+.fraud-alert details { color: #52675d; font-size: 10px; }
+.fraud-alert summary { cursor: pointer; font-weight: 700; }
+.fraud-alert pre { overflow: auto; border-radius: 7px; background: #f5f7f5; padding: 10px; font-size: 10px; }
+.fraud-actions { display: flex; gap: 8px; margin-top: 14px; }
+.fraud-actions button { border: 1px solid #dfe6e1; border-radius: 7px; padding: 8px 11px; color: #305d4b; background: white; font: inherit; font-size: 10px; font-weight: 700; cursor: pointer; }
+.fraud-actions button:hover:not(:disabled) { background: #f2f6f3; }
+.fraud-actions .dismiss-button { color: #993f36; }
+.fraud-actions button:disabled { opacity: .6; cursor: wait; }
+.resolved-note { color: #89958e; font-size: 10px; margin-top: 12px; }
 @media (max-width: 850px) { .rail { width: 66px; flex-basis: 66px; padding: 20px 9px; } .brand { padding: 0; } .brand > span:last-child, .rail-label, .nav-item:not(.nav-active), .nav-active { font-size: 0; } .nav-active { justify-content: center; } .nav-icon { font-size: 16px; } .rail-bottom span { display: none; } .overview-grid { grid-template-columns: 1fr 1fr; } .overview-dark { grid-column: 1 / -1; } }
-@media (max-width: 620px) { .rail { display: none; } .topbar { padding: 0 18px; height: 58px; } .breadcrumbs { font-size: 8px; } .page { padding: 27px 16px; } .page-heading { align-items: flex-start; flex-direction: column; } .status-pill { align-self: flex-start; } .overview-grid { grid-template-columns: 1fr; } .overview-dark { grid-column: auto; } .content-grid { grid-template-columns: 1fr; } .panel { padding: 18px; } .page-footer { gap: 12px; flex-direction: column; } }
+@media (max-width: 620px) { .rail { display: none; } .topbar { padding: 0 18px; height: 58px; } .breadcrumbs { font-size: 8px; } .page { padding: 27px 16px; } .page-heading { align-items: flex-start; flex-direction: column; } .status-pill { align-self: flex-start; } .overview-grid { grid-template-columns: 1fr; } .overview-dark { grid-column: auto; } .content-grid { grid-template-columns: 1fr; } .panel { padding: 18px; } .page-footer { gap: 12px; flex-direction: column; } .alert-toolbar { align-items: stretch; flex-direction: column; } .alert-toolbar label { max-width: none; } .alert-load { min-height: 40px; } .fraud-details { grid-template-columns: 1fr; } .fraud-alert-heading { align-items: flex-start; } }

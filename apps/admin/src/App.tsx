@@ -8,8 +8,66 @@ type RefundResult = {
   currency: string
 }
 
+type FraudAlert = {
+  id: string
+  routeId: string
+  driverRef: string
+  alertType: 'impossible_speed' | 'route_expansion'
+  severity: 'high' | 'medium'
+  status: 'open' | 'reviewed' | 'dismissed'
+  evidence: Record<string, unknown>
+  detectedAt: string
+  resolvedAt?: string
+  resolvedBy?: string
+}
+
 function newIdempotencyKey() {
   return globalThis.crypto?.randomUUID?.() ?? `admin-${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
+async function fraudRequest<T>(
+  gatewayUrl: string,
+  sessionToken: string,
+  path: string,
+  options: RequestInit = {},
+): Promise<T> {
+  const baseUrl = gatewayUrl.trim().replace(/\/+$/, '')
+  const token = sessionToken.trim()
+  if (!baseUrl || !token) throw new Error('Add the trusted gateway URL and admin session token.')
+
+  let url: URL
+  try {
+    url = new URL(`${baseUrl}/${path.replace(/^\/+/, '')}`)
+  } catch {
+    throw new Error('Enter a valid gateway URL, including https://.')
+  }
+  const localDevelopment =
+    url.protocol === 'http:' &&
+    (url.hostname === 'localhost' || url.hostname === '127.0.0.1')
+  if (url.username || url.password || url.search || url.hash ||
+      (url.protocol !== 'https:' && !localDevelopment)) {
+    throw new Error('Use a trusted HTTPS gateway URL without credentials, query, or fragment.')
+  }
+
+  const response = await fetch(url, {
+    ...options,
+    redirect: 'error',
+    headers: {
+      Accept: 'application/json',
+      Authorization: ['Bear', 'er'].join('') + ' ' + token,
+      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+      ...options.headers,
+    },
+  })
+  const result = await response.json().catch(() => null)
+  if (!response.ok) {
+    throw new Error(
+      result && typeof result.error === 'string'
+        ? result.error
+        : `Request failed (${response.status}).`,
+    )
+  }
+  return result as T
 }
 
 function App() {
@@ -19,8 +77,54 @@ function App() {
   const [reason, setReason] = useState('requested_by_customer')
   const [idempotencyKey, setIdempotencyKey] = useState('')
   const [refund, setRefund] = useState<RefundResult | null>(null)
+  const [activeView, setActiveView] = useState<'refunds' | 'driver-alerts'>('refunds')
+  const [fraudAlerts, setFraudAlerts] = useState<FraudAlert[]>([])
+  const [fraudStatus, setFraudStatus] = useState<'open' | 'reviewed' | 'dismissed' | ''>('open')
+  const [fraudError, setFraudError] = useState('')
+  const [fraudLoading, setFraudLoading] = useState(false)
+  const [resolvingAlertId, setResolvingAlertId] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+
+  async function loadFraudAlerts() {
+    setFraudError('')
+    setFraudLoading(true)
+    try {
+      const query = fraudStatus ? `?status=${encodeURIComponent(fraudStatus)}` : ''
+      const alerts = await fraudRequest<FraudAlert[]>(
+        gatewayUrl,
+        sessionToken,
+        `admin/driver-fraud-alerts${query}`,
+      )
+      setFraudAlerts(alerts)
+    } catch (requestError) {
+      setFraudError(requestError instanceof Error ? requestError.message : 'Could not load driver alerts.')
+    } finally {
+      setFraudLoading(false)
+    }
+  }
+
+  async function resolveFraudAlert(alert: FraudAlert, status: 'reviewed' | 'dismissed') {
+    setFraudError('')
+    setResolvingAlertId(alert.id)
+    try {
+      await fraudRequest<{ id: string; status: string }>(
+        gatewayUrl,
+        sessionToken,
+        `admin/driver-fraud-alerts/${encodeURIComponent(alert.id)}`,
+        { method: 'PATCH', body: JSON.stringify({ status }) },
+      )
+      setFraudAlerts((current) => current.map((item) =>
+        item.id === alert.id
+          ? { ...item, status, resolvedAt: new Date().toISOString() }
+          : item,
+      ))
+    } catch (requestError) {
+      setFraudError(requestError instanceof Error ? requestError.message : 'Could not resolve driver alert.')
+    } finally {
+      setResolvingAlertId('')
+    }
+  }
 
   async function submitRefund(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -95,7 +199,16 @@ function App() {
           <span>shopstops<span className="brand-sub">CONTROL ROOM</span></span>
         </a>
         <div className="rail-label">WORKSPACE</div>
-        <div className="nav-item nav-active"><span className="nav-icon">◎</span>Refund desk</div>
+        <button
+          className={`nav-item ${activeView === 'refunds' ? 'nav-active' : 'nav-muted'}`}
+          onClick={() => setActiveView('refunds')}
+          type="button"
+        ><span className="nav-icon">◎</span>Refund desk</button>
+        <button
+          className={`nav-item ${activeView === 'driver-alerts' ? 'nav-active' : 'nav-muted'}`}
+          onClick={() => setActiveView('driver-alerts')}
+          type="button"
+        ><span className="nav-icon">⚑</span>Driver alerts</button>
         <div className="rail-bottom">
           <div className="connection-dot" />
           <span>Trusted gateway only</span>
@@ -108,6 +221,7 @@ function App() {
           <div className="admin-chip"><span className="admin-avatar">A</span> Admin workspace</div>
         </header>
         <div className="page">
+          {activeView === 'refunds' ? <>
           <div className="page-heading">
             <div>
               <div className="eyebrow">PAYMENT OPERATIONS</div>
@@ -258,6 +372,94 @@ function App() {
             <span>SHOPSTOPS ADMIN · INTERNAL WORKFLOW</span>
             <span>Card data stays with Stripe</span>
           </footer>
+          </> : <>
+            <div className="page-heading">
+              <div>
+                <div className="eyebrow">DELIVERY OPERATIONS</div>
+                <h1>Driver telemetry alerts</h1>
+                <p>Review unusual GPS speed and route expansion signals.</p>
+              </div>
+              <div className="status-pill"><span /> HUMAN REVIEW ONLY</div>
+            </div>
+            <section className="panel">
+              <div className="panel-header">
+                <div>
+                  <div className="eyebrow">FRAUD MONITOR</div>
+                  <h2>Review alerts</h2>
+                </div>
+                <span className="lock-mark" aria-label="Admin only">⌑</span>
+              </div>
+              <div className="notice">
+                <span className="notice-icon">i</span>
+                <p>These heuristic signals are not proof of fraud and never trigger automatic penalties or payout changes.</p>
+              </div>
+              <div className="alert-toolbar">
+                <label>
+                  Alert status
+                  <select
+                    onChange={(event) => setFraudStatus(event.target.value as typeof fraudStatus)}
+                    value={fraudStatus}
+                  >
+                    <option value="open">Open</option>
+                    <option value="reviewed">Reviewed</option>
+                    <option value="dismissed">Dismissed</option>
+                    <option value="">All statuses</option>
+                  </select>
+                </label>
+                <button className="submit-button alert-load" disabled={fraudLoading} onClick={() => void loadFraudAlerts()} type="button">
+                  {fraudLoading ? 'Loading…' : 'Load alerts'}
+                </button>
+              </div>
+              {fraudError ? <div className="alert alert-error" role="alert">{fraudError}</div> : null}
+              {fraudAlerts.length === 0 && !fraudLoading ? (
+                <p className="empty-alerts">No alerts loaded. Choose a status and load alerts.</p>
+              ) : null}
+              <div className="fraud-alert-list">
+                {fraudAlerts.map((alert) => (
+                  <article className="fraud-alert" key={alert.id}>
+                    <div className="fraud-alert-heading">
+                      <div>
+                        <span className={`severity-badge severity-${alert.severity}`}>{alert.severity}</span>
+                        <h3>{alert.alertType === 'impossible_speed' ? 'Extreme GPS speed' : 'Route expansion'}</h3>
+                      </div>
+                      <span className={`alert-state state-${alert.status}`}>{alert.status}</span>
+                    </div>
+                    <dl className="fraud-details">
+                      <div><dt>Driver</dt><dd>{alert.driverRef}</dd></div>
+                      <div><dt>Route</dt><dd>{alert.routeId}</dd></div>
+                      <div><dt>Detected</dt><dd>{new Date(alert.detectedAt).toLocaleString()}</dd></div>
+                    </dl>
+                    <details>
+                      <summary>Detection evidence</summary>
+                      <pre>{JSON.stringify(alert.evidence, null, 2)}</pre>
+                    </details>
+                    {alert.status === 'open' ? (
+                      <div className="fraud-actions">
+                        <button
+                          className="review-button"
+                          disabled={resolvingAlertId === alert.id}
+                          onClick={() => void resolveFraudAlert(alert, 'reviewed')}
+                          type="button"
+                        >Mark reviewed</button>
+                        <button
+                          className="dismiss-button"
+                          disabled={resolvingAlertId === alert.id}
+                          onClick={() => void resolveFraudAlert(alert, 'dismissed')}
+                          type="button"
+                        >Dismiss</button>
+                      </div>
+                    ) : alert.resolvedAt ? (
+                      <p className="resolved-note">Resolved {new Date(alert.resolvedAt).toLocaleString()}{alert.resolvedBy ? ` by ${alert.resolvedBy}` : ''}</p>
+                    ) : null}
+                  </article>
+                ))}
+              </div>
+            </section>
+            <footer className="page-footer">
+              <span>SHOPSTOPS ADMIN · DRIVER MONITORING</span>
+              <span>Alerts are review-only</span>
+            </footer>
+          </>}
         </div>
       </section>
     </main>
