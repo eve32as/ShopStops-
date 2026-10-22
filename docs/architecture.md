@@ -254,7 +254,8 @@ original checkout; a different request using that key is rejected. Along-route
 bonus pricing is supported by the financial calculator but remains zero for
 ordinary checkout quotes until route-pickup offers are implemented. Migration
 `013_zone_mileage_rates.sql` adds a configurable per-zone driver mileage rate,
-defaulting to $0.65 per mile, with an $0.80 North Logistics Hub override.
+defaulting to $0.65 per mile, with an $0.80 override for an existing North
+Logistics Hub zone.
 `finance.CalculateMileage` computes the driver cost and a 15%-margin customer
 surcharge in cents when given a trusted route distance. Checkout does not yet
 apply mileage charges because route distances are not available until after

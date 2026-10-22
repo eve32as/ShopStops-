@@ -101,10 +101,14 @@ PGDATABASE="$upgrade_db" SHOPSTOPS_MIGRATIONS_DIR="$upgrade_migrations" \
 
 PGDATABASE="$upgrade_db" psql --no-psqlrc --set=ON_ERROR_STOP=1 \
   --command="INSERT INTO delivery_zones (name, boundary) VALUES ('upgrade preservation', ST_Multi(ST_MakeEnvelope(-74.1, 40.6, -73.8, 40.9, 4326)))"
+PGDATABASE="$upgrade_db" psql --no-psqlrc --set=ON_ERROR_STOP=1 \
+  --command="INSERT INTO delivery_zones (name, boundary) VALUES ('Metro Downtown Sector', ST_Multi(ST_MakeEnvelope(-74.1, 40.6, -73.8, 40.9, 4326))), ('North Logistics Hub', ST_Multi(ST_MakeEnvelope(-74.1, 40.6, -73.8, 40.9, 4326)))"
 PGDATABASE="$upgrade_db" SHOPSTOPS_MIGRATIONS_DIR="$migrations_dir" \
   "$repo_root/scripts/db-migrate.sh"
 PGDATABASE="$upgrade_db" psql --no-psqlrc --set=ON_ERROR_STOP=1 \
   --command="SELECT 1 FROM delivery_zones WHERE name = 'upgrade preservation'"
+PGDATABASE="$upgrade_db" psql --no-psqlrc --set=ON_ERROR_STOP=1 \
+  --command="SELECT 1 WHERE (SELECT driver_mileage_cost_per_mile_cents FROM delivery_zones WHERE name = 'Metro Downtown Sector') = 65 AND (SELECT driver_mileage_cost_per_mile_cents FROM delivery_zones WHERE name = 'North Logistics Hub') = 80"
 PGDATABASE="$upgrade_db" psql --no-psqlrc --set=ON_ERROR_STOP=1 \
   --command="SELECT 1 FROM shopstops_meta.schema_migrations HAVING count(*) = 13"
 

@@ -161,9 +161,9 @@ fees are calculated to target a 15% platform contribution margin after estimated
 Stripe costs, driver base payout, and fixed order costs. Rates and costs are
 defined in `internal/finance/pricing.go`; client-supplied amounts are never used.
 Per-zone driver mileage rates are stored in `delivery_zones` and default to
-$0.65 per mile; the North Logistics Hub is seeded at $0.80. The D.C. surcharge
-remains a pass-through tax line. Mileage is not added to checkout charges until
-a trusted route distance is available.
+$0.65 per mile; an existing North Logistics Hub zone is set to $0.80 by the
+migration. The D.C. surcharge remains a pass-through tax line. Mileage is not
+added to checkout charges until a trusted route distance is available.
 
 The payment endpoint creates one idempotent PaymentIntent from the persisted
 invoice. Configure Stripe to send `payment_intent.succeeded`,
