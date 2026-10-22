@@ -223,9 +223,12 @@ Stripe Price in addition to the Stripe API and webhook secrets. It requires
 `DATABASE_URL` and a 32-character `SHOPSTOPS_INTERNAL_API_TOKEN`; the shared token is an internal service
 credential, not end-user authentication. Keep the API behind an identity-aware
 gateway that authenticates client sessions and enforces roles, and do not ship
-the internal token to applications. The gateway must strip any incoming
-`X-ShopStops-Actor` value and inject the authenticated actor identity; driver
-route handlers trust this internal header for assignment checks.
+the internal token to applications. The gateway must strip incoming
+`X-ShopStops-Actor` and `X-ShopStops-Actor-Role` values, then inject both from
+the authenticated session. The API checks the required customer, driver,
+dispatch, merchant, or admin role before sensitive operations; database
+assignment and ownership checks remain authoritative. Do not expose the API
+directly to clients or treat identity headers as authentication.
 
 Migration `008_driver_fraud_monitor.sql` creates review-only alerts from driver
 GPS samples. A segment above 55 m/s creates a high-severity impossible-speed

@@ -414,17 +414,30 @@ func (s *Server) refundCheckout(w http.ResponseWriter, r *http.Request) {
 func (s *Server) authorizedActorRole(
 	w http.ResponseWriter, r *http.Request, requiredRole string,
 ) (string, bool) {
+	return s.authorizedActorRoles(w, r, requiredRole)
+}
+
+func (s *Server) authorizedActorRoles(
+	w http.ResponseWriter, r *http.Request, allowedRoles ...string,
+) (string, bool) {
 	actor := strings.TrimSpace(r.Header.Get("X-ShopStops-Actor"))
 	role := strings.TrimSpace(r.Header.Get("X-ShopStops-Actor-Role"))
 	if actor == "" || len(actor) > 200 {
 		writeError(w, http.StatusBadRequest, "authenticated actor identity is required")
 		return "", false
 	}
-	if role != requiredRole {
+	roleAllowed := false
+	for _, allowedRole := range allowedRoles {
+		if role == allowedRole {
+			roleAllowed = true
+			break
+		}
+	}
+	if !roleAllowed {
 		writeError(w, http.StatusForbidden, "required actor role is missing")
 		return "", false
 	}
-	if requiredRole == "merchant" && !isUUID(actor) {
+	if len(allowedRoles) == 1 && allowedRoles[0] == "merchant" && !isUUID(actor) {
 		writeError(w, http.StatusBadRequest, "valid merchant identity is required")
 		return "", false
 	}

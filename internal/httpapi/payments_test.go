@@ -299,6 +299,7 @@ func TestCreateCheckoutPaymentUsesPersistedInvoiceAndIdempotency(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/checkouts/"+checkoutID+"/payment", nil)
 	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
 	request.Header.Set("X-ShopStops-Actor", "customer-1")
+	request.Header.Set("X-ShopStops-Actor-Role", "customer")
 	recorder := httptest.NewRecorder()
 	paymentTestHandler(repo, gateway).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK || gateway.createKey != "shopstops-checkout-"+checkoutID ||
@@ -324,6 +325,7 @@ func TestCreateCheckoutPaymentRejectsOtherCustomer(t *testing.T) {
 	)
 	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
 	request.Header.Set("X-ShopStops-Actor", "another-customer")
+	request.Header.Set("X-ShopStops-Actor-Role", "customer")
 	recorder := httptest.NewRecorder()
 	paymentTestHandler(repo, &fakePaymentGateway{}).ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusNotFound {

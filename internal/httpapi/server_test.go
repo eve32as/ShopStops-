@@ -181,6 +181,39 @@ func TestProtectedEndpointsRequireBearerToken(t *testing.T) {
 	}
 }
 
+func TestSensitiveEndpointsRequireMatchingActorRole(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		path   string
+		role   string
+	}{
+		{name: "customer order", method: http.MethodPost, path: "/orders", role: "driver"},
+		{name: "customer checkout", method: http.MethodPost, path: "/checkouts", role: "driver"},
+		{name: "checkout payment", method: http.MethodPost, path: "/checkouts/00000000-0000-0000-0000-000000000001/payment", role: "driver"},
+		{name: "driver route", method: http.MethodGet, path: "/driver/routes/00000000-0000-0000-0000-000000000010", role: "customer"},
+		{name: "driver location", method: http.MethodPost, path: "/driver/routes/00000000-0000-0000-0000-000000000010/location", role: "customer"},
+		{name: "driver stop event", method: http.MethodPost, path: "/driver/routes/00000000-0000-0000-0000-000000000010/stops/00000000-0000-0000-0000-000000000011/events", role: "customer"},
+		{name: "dispatch bundle", method: http.MethodPost, path: "/dispatch/bundles", role: "customer"},
+		{name: "missing customer role", method: http.MethodPost, path: "/orders", role: ""},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(test.method, test.path, nil)
+			request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+			request.Header.Set("X-ShopStops-Actor", "actor-123")
+			if test.role != "" {
+				request.Header.Set("X-ShopStops-Actor-Role", test.role)
+			}
+			recorder := httptest.NewRecorder()
+			testServer().ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d", recorder.Code, http.StatusForbidden)
+			}
+		})
+	}
+}
+
 func TestNearbyPassesValidatedRadiusToRepository(t *testing.T) {
 	repo := &fakeRepository{nearby: []NearbyMerchant{{MerchantID: "merchant"}}}
 	request := httptest.NewRequest(http.MethodGet,
@@ -315,6 +348,7 @@ func TestCreateCustomerOrderUsesAuthenticatedActorAndIdempotency(t *testing.T) {
 	)))
 	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
 	request.Header.Set("X-ShopStops-Actor", "customer-123")
+	request.Header.Set("X-ShopStops-Actor-Role", "customer")
 	request.Header.Set("Idempotency-Key", "order-attempt-1")
 	recorder := httptest.NewRecorder()
 	New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
@@ -332,6 +366,7 @@ func TestCreateCustomerOrderRejectsDuplicateCatalogItems(t *testing.T) {
 		`{"storeLocationId":"00000000-0000-0000-0000-000000000001","dropoff":{"latitude":38.91,"longitude":-76.99},"deliveryWindowStart":"2099-01-01T10:00:00Z","deliveryWindowEnd":"2099-01-01T12:00:00Z","items":[{"catalogItemId":"00000000-0000-0000-0000-000000000002","quantity":1},{"catalogItemId":"00000000-0000-0000-0000-000000000002","quantity":2}]}`))
 	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
 	request.Header.Set("X-ShopStops-Actor", "customer-123")
+	request.Header.Set("X-ShopStops-Actor-Role", "customer")
 	request.Header.Set("Idempotency-Key", "order-attempt-duplicate")
 	recorder := httptest.NewRecorder()
 	repo := &fakeRepository{}
@@ -359,6 +394,8 @@ func TestCreateBundleAppliesDefaultsAndUsesIdempotencyKey(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/dispatch/bundles", strings.NewReader(
 		`{"seedOrderId":"00000000-0000-0000-0000-000000000001","capacityLiters":10}`))
 	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "dispatch-123")
+	request.Header.Set("X-ShopStops-Actor-Role", "dispatch")
 	request.Header.Set("Idempotency-Key", "client-request-1")
 	recorder := httptest.NewRecorder()
 	New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
@@ -379,6 +416,8 @@ func TestCreateBundleAllowsExplicitZeroRadius(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/dispatch/bundles", strings.NewReader(
 		`{"seedOrderId":"00000000-0000-0000-0000-000000000001","capacityLiters":10,"pickupRadiusMeters":0,"dropoffRadiusMeters":0}`))
 	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "dispatch-123")
+	request.Header.Set("X-ShopStops-Actor-Role", "dispatch")
 	request.Header.Set("Idempotency-Key", "client-request-3")
 	recorder := httptest.NewRecorder()
 	New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
@@ -395,6 +434,8 @@ func TestCreateBundleMapsIneligibleSeedToConflict(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/dispatch/bundles", strings.NewReader(
 		`{"seedOrderId":"00000000-0000-0000-0000-000000000001","capacityLiters":10}`))
 	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "dispatch-123")
+	request.Header.Set("X-ShopStops-Actor-Role", "dispatch")
 	request.Header.Set("Idempotency-Key", "client-request-2")
 	recorder := httptest.NewRecorder()
 	New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
@@ -414,6 +455,7 @@ func TestDriverCanReadAssignedRoute(t *testing.T) {
 		"/driver/routes/00000000-0000-0000-0000-000000000010", nil)
 	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
 	request.Header.Set("X-ShopStops-Actor", "driver-123")
+	request.Header.Set("X-ShopStops-Actor-Role", "driver")
 	recorder := httptest.NewRecorder()
 	New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
 		ServeHTTP(recorder, request)
@@ -430,6 +472,7 @@ func TestDriverLocationValidatesCoordinatesAndRecordsEvent(t *testing.T) {
 		strings.NewReader(`{"eventId":"event-1","observedAt":"2026-10-19T08:00:00Z","location":{"latitude":38.91,"longitude":-76.99}}`))
 	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
 	request.Header.Set("X-ShopStops-Actor", "driver-123")
+	request.Header.Set("X-ShopStops-Actor-Role", "driver")
 	recorder := httptest.NewRecorder()
 	New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
 		ServeHTTP(recorder, request)
@@ -446,6 +489,7 @@ func TestDriverLocationRejectsOutOfRangeCoordinate(t *testing.T) {
 		strings.NewReader(`{"eventId":"event-1","observedAt":"2026-10-19T08:00:00Z","location":{"latitude":91,"longitude":0}}`))
 	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
 	request.Header.Set("X-ShopStops-Actor", "driver-123")
+	request.Header.Set("X-ShopStops-Actor-Role", "driver")
 	recorder := httptest.NewRecorder()
 	New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
 		ServeHTTP(recorder, request)
@@ -461,6 +505,7 @@ func TestDriverLocationMapsTooFrequentSampleToConflict(t *testing.T) {
 		strings.NewReader(`{"eventId":"event-1","observedAt":"2026-10-19T08:00:00Z","location":{"latitude":38.91,"longitude":-76.99}}`))
 	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
 	request.Header.Set("X-ShopStops-Actor", "driver-123")
+	request.Header.Set("X-ShopStops-Actor-Role", "driver")
 	recorder := httptest.NewRecorder()
 	New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
 		ServeHTTP(recorder, request)
@@ -479,6 +524,7 @@ func TestDriverCanAdvanceAssignedRouteStop(t *testing.T) {
 		strings.NewReader(`{"eventId":"stop-event-1","type":"arrive","observedAt":"2026-10-19T08:00:00Z"}`))
 	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
 	request.Header.Set("X-ShopStops-Actor", "driver-123")
+	request.Header.Set("X-ShopStops-Actor-Role", "driver")
 	recorder := httptest.NewRecorder()
 	New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
 		ServeHTTP(recorder, request)
@@ -579,6 +625,7 @@ func TestCreateCheckoutUsesAuthenticatedCustomerAndIdempotency(t *testing.T) {
 		`{"anchorStoreLocationId":"00000000-0000-0000-0000-000000000001","orderIds":["00000000-0000-0000-0000-000000000002"],"dropoff":{"latitude":38.91,"longitude":-76.99},"deliveryWindowStart":"2026-10-19T09:00:00Z","deliveryWindowEnd":"2026-10-19T11:00:00Z"}`))
 	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
 	request.Header.Set("X-ShopStops-Actor", "customer-123")
+	request.Header.Set("X-ShopStops-Actor-Role", "customer")
 	request.Header.Set("Idempotency-Key", "checkout-request-1")
 	recorder := httptest.NewRecorder()
 	New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
@@ -596,6 +643,7 @@ func TestCreateCheckoutRejectsDuplicateOrderIDs(t *testing.T) {
 		`{"anchorStoreLocationId":"00000000-0000-0000-0000-000000000001","orderIds":["00000000-0000-0000-0000-000000000002","00000000-0000-0000-0000-000000000002"],"dropoff":{"latitude":38.91,"longitude":-76.99},"deliveryWindowStart":"2026-10-19T09:00:00Z","deliveryWindowEnd":"2026-10-19T11:00:00Z"}`))
 	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
 	request.Header.Set("X-ShopStops-Actor", "customer-123")
+	request.Header.Set("X-ShopStops-Actor-Role", "customer")
 	request.Header.Set("Idempotency-Key", "checkout-request-2")
 	recorder := httptest.NewRecorder()
 	New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
@@ -620,6 +668,8 @@ func TestBundleRejectsUnknownJSONFields(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/dispatch/bundles",
 		strings.NewReader(`{"seedOrderId":"00000000-0000-0000-0000-000000000001","capacityLiters":10,"unexpected":true}`))
 	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "dispatch-123")
+	request.Header.Set("X-ShopStops-Actor-Role", "dispatch")
 	request.Header.Set("Idempotency-Key", "test-key")
 	recorder := httptest.NewRecorder()
 	testServer().ServeHTTP(recorder, request)

@@ -76,7 +76,7 @@ paths:
     post:
       operationId: createCustomerOrder
       summary: Create an authenticated customer's order from one store catalog
-      description: Prices, volume, customer identity, and delivery-zone membership are resolved server-side. The request is idempotent.
+      description: Requires the trusted gateway to inject the authenticated customer identity and customer role. Prices, volume, and delivery-zone membership are resolved server-side. The request is idempotent.
       parameters:
         - in: header
           name: Idempotency-Key
@@ -111,6 +111,8 @@ paths:
                     minimum: 1
         '400':
           description: Invalid order details or authenticated customer identity is missing
+        '403':
+          description: Authenticated actor does not have the customer role
         '404':
           description: Storefront, catalog item, or delivery zone unavailable
         '409':
@@ -226,7 +228,7 @@ paths:
     post:
       operationId: createUnifiedCheckout
       summary: Create a unified basket with one anchor and at most one adjacent merchant
-      description: The trusted gateway injects X-ShopStops-Actor from the authenticated customer identity. Delivery and service fees are configured by the platform, not accepted from clients.
+      description: Requires the trusted gateway to inject the authenticated customer identity and customer role. Delivery and service fees are configured by the platform, not accepted from clients.
       parameters:
         - in: header
           name: Idempotency-Key
@@ -258,10 +260,13 @@ paths:
           description: Invalid basket or delivery location
         '409':
           description: More than two merchants or an ineligible merchant
+        '403':
+          description: Authenticated actor does not have the customer role
   /checkouts/{checkoutId}/payment:
     post:
       operationId: createCheckoutPayment
       summary: Create a Stripe PaymentIntent for the itemized checkout
+      description: Requires the trusted gateway to inject the authenticated customer identity and customer role.
       parameters:
         - $ref: '#/components/parameters/CheckoutId'
       responses:
@@ -286,6 +291,8 @@ paths:
                     enum: [usd]
         '401':
           description: Internal API authentication required
+        '403':
+          description: Authenticated actor does not have the customer role
         '404':
           description: Checkout not found for the authenticated customer
         '409':
@@ -296,21 +303,21 @@ paths:
     get:
       operationId: getDriverRoute
       summary: Get the assigned immutable route and routing legs
-      description: The trusted API gateway injects X-ShopStops-Actor from the authenticated driver identity.
+      description: Requires the trusted gateway to inject the authenticated driver identity and driver role.
       parameters:
         - $ref: '#/components/parameters/RouteId'
       responses:
         '200':
           description: Ordered route waypoints and route matrix data
         '403':
-          description: Route is not assigned to this driver
+          description: Driver role is missing or route is not assigned to this driver
         '404':
           description: Route not found
   /driver/routes/{routeId}/location:
     post:
       operationId: recordDriverLocation
       summary: Record driver location during an active route
-      description: Driver clients should send samples every five seconds while active.
+      description: Requires the trusted gateway to inject the authenticated driver identity and driver role. Driver clients should send samples every five seconds while active.
       parameters:
         - $ref: '#/components/parameters/RouteId'
       requestBody:
@@ -325,12 +332,12 @@ paths:
         '400':
           description: Invalid or too-frequent location sample
         '403':
-          description: Route is not assigned to this driver
+          description: Driver role is missing or route is not assigned to this driver
   /driver/routes/{routeId}/stops/{stopId}/events:
     post:
       operationId: recordUnifiedRouteStopEvent
       summary: Confirm arrival or completion of the current assigned route stop
-      description: Requires the assigned driver identity. Stop events are idempotent and the API enforces the server-defined stop sequence. Use arrive before complete for each stop.
+      description: Requires the authenticated driver identity and role, and assignment to this route. Stop events are idempotent and the API enforces the server-defined stop sequence. Use arrive before complete for each stop.
       parameters:
         - $ref: '#/components/parameters/RouteId'
         - in: path
@@ -366,7 +373,7 @@ paths:
         '400':
           description: Invalid stop event
         '403':
-          description: Route is not assigned to this driver
+          description: Driver role is missing or route is not assigned to this driver
         '404':
           description: Route or stop not found
         '409':
@@ -540,7 +547,7 @@ paths:
     post:
       operationId: createDeliveryBundle
       summary: Bundle eligible nearby orders and create an ordered stop queue
-      description: Requires a dispatch or admin role. The request is idempotent.
+      description: Requires the trusted gateway to inject an authenticated dispatch or admin identity and role. The request is idempotent.
       parameters:
         - in: header
           name: Idempotency-Key

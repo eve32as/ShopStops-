@@ -501,9 +501,8 @@ func validCatalogItemFields(name, description string, price int, volume float64)
 }
 
 func (s *Server) createCustomerOrder(w http.ResponseWriter, r *http.Request) {
-	customerRef := strings.TrimSpace(r.Header.Get("X-ShopStops-Actor"))
-	if customerRef == "" || len(customerRef) > 200 {
-		writeError(w, http.StatusBadRequest, "authenticated customer identity is required")
+	customerRef, ok := s.authorizedActorRole(w, r, "customer")
+	if !ok {
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 32*1024)
@@ -574,6 +573,9 @@ func (s *Server) createCustomerOrder(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) createBundle(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.authorizedActorRoles(w, r, "dispatch", "admin"); !ok {
+		return
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, 16*1024)
 	var request bundleRequest
 	decoder := json.NewDecoder(r.Body)
@@ -620,9 +622,8 @@ func (s *Server) createBundle(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) createCheckout(w http.ResponseWriter, r *http.Request) {
-	customerRef := strings.TrimSpace(r.Header.Get("X-ShopStops-Actor"))
-	if customerRef == "" || len(customerRef) > 200 {
-		writeError(w, http.StatusBadRequest, "authenticated customer identity is required")
+	customerRef, ok := s.authorizedActorRole(w, r, "customer")
+	if !ok {
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 32*1024)
@@ -681,8 +682,11 @@ func (s *Server) createCheckout(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) getDriverRoute(w http.ResponseWriter, r *http.Request) {
 	routeID := r.PathValue("routeId")
-	driverRef := strings.TrimSpace(r.Header.Get("X-ShopStops-Actor"))
-	if !isUUID(routeID) || driverRef == "" || len(driverRef) > 200 {
+	driverRef, ok := s.authorizedActorRole(w, r, "driver")
+	if !ok {
+		return
+	}
+	if !isUUID(routeID) {
 		writeError(w, http.StatusBadRequest, "valid route and authenticated driver are required")
 		return
 	}
@@ -706,8 +710,11 @@ func (s *Server) getDriverRoute(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) recordDriverLocation(w http.ResponseWriter, r *http.Request) {
 	routeID := r.PathValue("routeId")
-	driverRef := strings.TrimSpace(r.Header.Get("X-ShopStops-Actor"))
-	if !isUUID(routeID) || driverRef == "" || len(driverRef) > 200 {
+	driverRef, ok := s.authorizedActorRole(w, r, "driver")
+	if !ok {
+		return
+	}
+	if !isUUID(routeID) {
 		writeError(w, http.StatusBadRequest, "valid route and authenticated driver are required")
 		return
 	}
@@ -751,8 +758,11 @@ func (s *Server) recordDriverLocation(w http.ResponseWriter, r *http.Request) {
 func (s *Server) recordDriverStopEvent(w http.ResponseWriter, r *http.Request) {
 	routeID := r.PathValue("routeId")
 	stopID := r.PathValue("stopId")
-	driverRef := strings.TrimSpace(r.Header.Get("X-ShopStops-Actor"))
-	if !isUUID(routeID) || !isUUID(stopID) || driverRef == "" || len(driverRef) > 200 {
+	driverRef, ok := s.authorizedActorRole(w, r, "driver")
+	if !ok {
+		return
+	}
+	if !isUUID(routeID) || !isUUID(stopID) {
 		writeError(w, http.StatusBadRequest, "valid route, stop, and authenticated driver are required")
 		return
 	}

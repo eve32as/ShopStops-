@@ -375,8 +375,11 @@ func paymentIntentFromStripe(intent *stripe.PaymentIntent) PaymentIntent {
 
 func (s *Server) createCheckoutPayment(w http.ResponseWriter, r *http.Request) {
 	checkoutID := r.PathValue("checkoutId")
-	customerRef := strings.TrimSpace(r.Header.Get("X-ShopStops-Actor"))
-	if !isUUID(checkoutID) || customerRef == "" || len(customerRef) > 200 {
+	customerRef, ok := s.authorizedActorRole(w, r, "customer")
+	if !ok {
+		return
+	}
+	if !isUUID(checkoutID) {
 		writeError(w, http.StatusBadRequest, "valid checkout and authenticated customer are required")
 		return
 	}
