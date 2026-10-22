@@ -252,9 +252,13 @@ validates the snapshots against the invoice, merchant tier, and pricing
 arithmetic. Repeating an idempotency key with the same request returns the
 original checkout; a different request using that key is rejected. Along-route
 bonus pricing is supported by the financial calculator but remains zero for
-ordinary checkout quotes until route-pickup offers are implemented. No dynamic
-mileage payout is calculated because the baseline assumptions do not specify a
-per-mile rate.
+ordinary checkout quotes until route-pickup offers are implemented. Migration
+`013_zone_mileage_rates.sql` adds a configurable per-zone driver mileage rate,
+defaulting to $0.65 per mile, with an $0.80 North Logistics Hub override.
+`finance.CalculateMileage` computes the driver cost and a 15%-margin customer
+surcharge in cents when given a trusted route distance. Checkout does not yet
+apply mileage charges because route distances are not available until after
+checkout; client-provided distances are not trusted for billing.
 
 `create_unified_route` requires a paid basket containing an anchor restaurant
 order and exactly one partner merchant. It persists the mandatory immutable
@@ -291,9 +295,8 @@ account eligibility and bank processing; this implementation does not promise
 instant bank settlement.
 
 Along-route offers remain disabled: the repository has no live road-routing
-integration or configured per-mile rate, so a 1.5-mile detour and mileage
-payment cannot yet be validated or priced safely. Checkout pricing continues to
-snapshot only the configured $4.50 pickup bonus.
+integration to provide a trusted route distance before checkout. Checkout
+pricing continues to snapshot only the configured $4.50 pickup bonus.
 
 Migration `003_stripe_checkout_payments.sql` records verified Stripe checkout
 events and transfer source charges. The Go API's authenticated

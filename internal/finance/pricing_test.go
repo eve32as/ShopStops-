@@ -2,6 +2,63 @@ package finance
 
 import "testing"
 
+func TestCalculateMileage(t *testing.T) {
+	tests := []struct {
+		name             string
+		rateCentsPerMile int64
+		distanceMiles    float64
+		driverCostCents  int64
+		surchargeCents   int64
+	}{
+		{
+			name: "one mile at default zone rate", rateCentsPerMile: 65,
+			distanceMiles: 1, driverCostCents: 65, surchargeCents: 76,
+		},
+		{
+			name: "fractional miles round to cents", rateCentsPerMile: 65,
+			distanceMiles: 1.5, driverCostCents: 98, surchargeCents: 115,
+		},
+		{
+			name: "sparse zone rate", rateCentsPerMile: 80,
+			distanceMiles: 2, driverCostCents: 160, surchargeCents: 188,
+		},
+		{
+			name: "zero distance", rateCentsPerMile: 65,
+			distanceMiles: 0,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			bill, err := CalculateMileage(test.rateCentsPerMile, test.distanceMiles)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bill.DriverMileageCostCents != test.driverCostCents ||
+				bill.CustomerSurchargeCents != test.surchargeCents {
+				t.Fatalf("mileage bill = %+v, want driver cost %d and surcharge %d",
+					bill, test.driverCostCents, test.surchargeCents)
+			}
+		})
+	}
+}
+
+func TestCalculateMileageRejectsInvalidInputs(t *testing.T) {
+	for _, test := range []struct {
+		rateCentsPerMile int64
+		distanceMiles    float64
+	}{
+		{rateCentsPerMile: -1, distanceMiles: 1},
+		{rateCentsPerMile: 100001, distanceMiles: 1},
+		{rateCentsPerMile: 65, distanceMiles: -1},
+		{rateCentsPerMile: 65, distanceMiles: 1e100},
+	} {
+		if _, err := CalculateMileage(test.rateCentsPerMile, test.distanceMiles); err == nil {
+			t.Errorf("CalculateMileage(%d, %g) unexpectedly succeeded",
+				test.rateCentsPerMile, test.distanceMiles)
+		}
+	}
+}
+
 func TestCalculateBaselineMerchantTiers(t *testing.T) {
 	tests := []struct {
 		name              string

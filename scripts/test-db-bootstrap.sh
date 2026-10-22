@@ -34,7 +34,7 @@ PGDATABASE="$fresh_db" SHOPSTOPS_MIGRATIONS_DIR="$migrations_dir" \
   "$repo_root/scripts/db-migrate.sh"
 
 PGDATABASE="$fresh_db" psql --no-psqlrc --set=ON_ERROR_STOP=1 \
-  --command="SELECT 1 FROM shopstops_meta.schema_migrations HAVING count(*) = 12"
+  --command="SELECT 1 FROM shopstops_meta.schema_migrations HAVING count(*) = 13"
 PGDATABASE="$fresh_db" psql --no-psqlrc --set=ON_ERROR_STOP=1 \
   --command="SELECT 1 FROM pg_roles WHERE rolname = 'shopstops_app' AND NOT rolsuper AND NOT rolcreatedb AND NOT rolcreaterole"
 PGDATABASE="$fresh_db" psql --no-psqlrc --set=ON_ERROR_STOP=1 \
@@ -106,7 +106,7 @@ PGDATABASE="$upgrade_db" SHOPSTOPS_MIGRATIONS_DIR="$migrations_dir" \
 PGDATABASE="$upgrade_db" psql --no-psqlrc --set=ON_ERROR_STOP=1 \
   --command="SELECT 1 FROM delivery_zones WHERE name = 'upgrade preservation'"
 PGDATABASE="$upgrade_db" psql --no-psqlrc --set=ON_ERROR_STOP=1 \
-  --command="SELECT 1 FROM shopstops_meta.schema_migrations HAVING count(*) = 12"
+  --command="SELECT 1 FROM shopstops_meta.schema_migrations HAVING count(*) = 13"
 
 printf '\n-- checksum drift must fail closed\n' >> "$upgrade_migrations/008_merchant_order_fulfillment.sql"
 if PGDATABASE="$upgrade_db" SHOPSTOPS_MIGRATIONS_DIR="$upgrade_migrations" \
@@ -115,4 +115,4 @@ if PGDATABASE="$upgrade_db" SHOPSTOPS_MIGRATIONS_DIR="$upgrade_migrations" \
   exit 1
 fi
 
-printf 'Database bootstrap, fresh migration, permissions, idempotent rerun, and 008-to-012 upgrade passed.\n'
+printf 'Database bootstrap, fresh migration, permissions, idempotent rerun, and 008-to-013 upgrade passed.\n'

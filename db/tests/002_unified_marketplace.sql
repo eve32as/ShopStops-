@@ -6,6 +6,24 @@ INSERT INTO delivery_zones (name, boundary)
 VALUES ('Union Market test zone',
         ST_Multi(ST_MakeEnvelope(-77.05, 38.85, -76.95, 38.95, 4326)))
 RETURNING id AS zone_id \gset
+INSERT INTO delivery_zones (name, boundary)
+VALUES
+    ('Metro Downtown Sector',
+     ST_Multi(ST_MakeEnvelope(-77.05, 38.85, -76.95, 38.95, 4326))),
+    ('North Logistics Hub',
+     ST_Multi(ST_MakeEnvelope(-77.05, 38.85, -76.95, 38.95, 4326)));
+DO $$
+BEGIN
+    IF (SELECT driver_mileage_cost_per_mile_cents
+        FROM delivery_zones WHERE name = 'Union Market test zone') <> 65
+       OR (SELECT driver_mileage_cost_per_mile_cents
+           FROM delivery_zones WHERE name = 'Metro Downtown Sector') <> 65
+       OR (SELECT driver_mileage_cost_per_mile_cents
+           FROM delivery_zones WHERE name = 'North Logistics Hub') <> 80 THEN
+        RAISE EXCEPTION 'zone mileage rates did not use the configured defaults and overrides';
+    END IF;
+END;
+$$;
 INSERT INTO jurisdictions (code, name, boundary)
 VALUES ('US-DC', 'District of Columbia test polygon',
         ST_Multi(ST_MakeEnvelope(-77.12, 38.79, -76.91, 39.0, 4326)));

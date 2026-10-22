@@ -68,6 +68,33 @@ type Quote struct {
 	PassThroughCents        int64
 }
 
+type MileageBill struct {
+	DriverMileageCostCents int64
+	CustomerSurchargeCents int64
+}
+
+func CalculateMileage(rateCentsPerMile int64, distanceMiles float64) (MileageBill, error) {
+	if rateCentsPerMile < 0 || rateCentsPerMile > 100000 ||
+		math.IsNaN(distanceMiles) || math.IsInf(distanceMiles, 0) ||
+		distanceMiles < 0 {
+		return MileageBill{}, errors.New("invalid mileage pricing inputs")
+	}
+
+	costCents := distanceMiles * float64(rateCentsPerMile)
+	if costCents > float64(maxInvoiceLineCents)+0.5 {
+		return MileageBill{}, errors.New("driver mileage cost exceeds supported invoice amount")
+	}
+	costCents = math.Round(costCents)
+	surchargeCents := (int64(costCents)*100 + 42) / 85
+	if surchargeCents > maxInvoiceLineCents {
+		return MileageBill{}, errors.New("customer mileage surcharge exceeds supported invoice amount")
+	}
+	return MileageBill{
+		DriverMileageCostCents: int64(costCents),
+		CustomerSurchargeCents: surchargeCents,
+	}, nil
+}
+
 func Calculate(assumptions Assumptions, request Request) (Quote, error) {
 	if err := validateAssumptions(assumptions); err != nil {
 		return Quote{}, err

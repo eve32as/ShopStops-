@@ -160,7 +160,10 @@ commission, the $199/month premium tier pays 5%, and customer delivery/service
 fees are calculated to target a 15% platform contribution margin after estimated
 Stripe costs, driver base payout, and fixed order costs. Rates and costs are
 defined in `internal/finance/pricing.go`; client-supplied amounts are never used.
-The D.C. surcharge remains a pass-through tax line.
+Per-zone driver mileage rates are stored in `delivery_zones` and default to
+$0.65 per mile; the North Logistics Hub is seeded at $0.80. The D.C. surcharge
+remains a pass-through tax line. Mileage is not added to checkout charges until
+a trusted route distance is available.
 
 The payment endpoint creates one idempotent PaymentIntent from the persisted
 invoice. Configure Stripe to send `payment_intent.succeeded`,
