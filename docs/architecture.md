@@ -267,13 +267,26 @@ delivery-zone outbox event.
 `create_unified_route` requires a paid basket containing an anchor restaurant
 order and exactly one partner merchant. It persists the mandatory immutable
 sequence: restaurant pickup, adjacent merchant pickup, customer drop-off.
-`unified_route_legs` stores road-network distance/duration returned by an OSRM
-or Google Maps matrix integration; this repository does not call either vendor
-or provide turn-by-turn navigation. Driver clients should sample GPS about every five
-seconds; mobile background location updates are best-effort and subject to OS
-scheduling and permissions. `record_driver_location` enforces assigned active
-routes, idempotency, and no more than one sample per five seconds. Route/authenticated API processes
-must reject client attempts to reorder stops.
+`unified_route_legs` stores OSRM road-network distance/duration when the
+optional private router is configured. The Compose `routing` profile runs an
+OSRM container on the internal data network; operators must provision its named
+volume with a compatible regional map dataset. When enabled, assigning a route
+calculates and persists missing legs within the database transaction, with a
+500 ms HTTP timeout; a routing failure rolls back assignment. No map data is
+downloaded automatically.
+
+The Expo app can use Google Places API (New) to resolve a shopper's selected
+address to coordinates and Google Routes API traffic-aware estimates for an
+open driver route. The app key is client-visible, so configure a restricted key,
+API quotas, and billing alerts. Driver ETAs refresh every two minutes when
+enabled and fall back to stored OSRM leg estimates when Google is unavailable.
+Neither provider offers turn-by-turn navigation in this client. Trusted
+pre-checkout route distances are still unavailable, so checkout mileage charges
+remain disabled. Driver clients should sample GPS about every five seconds;
+mobile background location updates are best-effort and subject to OS scheduling
+and permissions. `record_driver_location` enforces assigned active routes,
+idempotency, and no more than one sample per five seconds. Route/authenticated
+API processes must reject client attempts to reorder stops.
 
 Migration `012_hybrid_driver_cashout.sql` lets a separately authorized `shopper`
 claim a paid, ready order and mark it packed. Packing returns a four-digit,

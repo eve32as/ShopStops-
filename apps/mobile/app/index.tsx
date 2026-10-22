@@ -280,6 +280,9 @@ export default function HomeScreen() {
       setTrafficETAUpdatedAt("");
       return;
     }
+    setTrafficETAs([]);
+    setTrafficETAError("");
+    setTrafficETAUpdatedAt("");
     let active = true;
     let requestController: AbortController | null = null;
     const coordinates = route.stops
@@ -291,17 +294,18 @@ export default function HomeScreen() {
       }));
     const refresh = async () => {
       requestController?.abort();
-      requestController = new AbortController();
+      const controller = new AbortController();
+      requestController = controller;
       try {
         const estimates = await getTrafficAwareETAs(
-          googleMapsApiKey, coordinates, requestController.signal,
+          googleMapsApiKey, coordinates, controller.signal,
         );
         if (!active) return;
         setTrafficETAs(estimates);
         setTrafficETAError("");
         setTrafficETAUpdatedAt(new Date().toISOString());
       } catch (error) {
-        if (!active || requestController.signal.aborted) return;
+        if (!active || controller.signal.aborted) return;
         setTrafficETAError(error instanceof Error ? error.message : "Traffic ETA is unavailable.");
       }
     };
@@ -1512,8 +1516,8 @@ export default function HomeScreen() {
               />
               {dropoffAddress ? <Text style={styles.tinyNote}>Selected address · {dropoffAddress}</Text> : null}
               <View style={styles.fieldGrid}>
-                <Field editable={!checkout && !orderIds.trim()} label="Drop-off latitude" keyboardType="decimal-pad" onChangeText={setLatitude} value={latitude} />
-                <Field editable={!checkout && !orderIds.trim()} label="Drop-off longitude" keyboardType="decimal-pad" onChangeText={setLongitude} value={longitude} />
+                <Field editable={!checkout && !orderIds.trim()} label="Drop-off latitude" keyboardType="decimal-pad" onChangeText={(value) => { setLatitude(value); setDropoffAddress(""); }} value={latitude} />
+                <Field editable={!checkout && !orderIds.trim()} label="Drop-off longitude" keyboardType="decimal-pad" onChangeText={(value) => { setLongitude(value); setDropoffAddress(""); }} value={longitude} />
               </View>
               <ActionButton
                 disabled={busy || Boolean(checkout) || catalog.length === 0}
@@ -1722,6 +1726,16 @@ export default function HomeScreen() {
                         </Text>
                       </View>
                     ))}
+                    {trafficETAs.length === 0 ? route.legs?.map((leg) => (
+                      <View key={`${leg.fromSequence}-${leg.toSequence}`} style={styles.invoiceRow}>
+                        <Text style={styles.invoiceLabel}>
+                          Stop {leg.fromSequence} → {leg.toSequence} · road estimate
+                        </Text>
+                        <Text style={styles.invoiceAmount}>
+                          ~{Math.ceil(leg.durationSeconds / 60)} min · {(leg.distanceMeters / 1000).toFixed(1)} km
+                        </Text>
+                      </View>
+                    )) : null}
                     {trafficETAUpdatedAt ? (
                       <Text style={styles.tinyNote}>
                         Updated {new Date(trafficETAUpdatedAt).toLocaleTimeString()} · refreshes every 2 minutes
@@ -1737,9 +1751,21 @@ export default function HomeScreen() {
                     ) : null}
                   </View>
                 ) : (
-                  <Text style={styles.tinyNote}>
-                    Configure EXPO_PUBLIC_GOOGLE_MAPS_API_KEY to enable traffic-aware arrival estimates.
-                  </Text>
+                  <View style={styles.checkoutBox}>
+                    <Text style={styles.tinyNote}>
+                      Configure EXPO_PUBLIC_GOOGLE_MAPS_API_KEY to enable traffic-aware arrival estimates.
+                    </Text>
+                    {route.legs?.map((leg) => (
+                      <View key={`${leg.fromSequence}-${leg.toSequence}`} style={styles.invoiceRow}>
+                        <Text style={styles.invoiceLabel}>
+                          Stop {leg.fromSequence} → {leg.toSequence} · road estimate
+                        </Text>
+                        <Text style={styles.invoiceAmount}>
+                          ~{Math.ceil(leg.durationSeconds / 60)} min · {(leg.distanceMeters / 1000).toFixed(1)} km
+                        </Text>
+                      </View>
+                    ))}
+                  </View>
                 )}
                 {route.stops
                   .slice()

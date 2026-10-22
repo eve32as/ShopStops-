@@ -130,6 +130,30 @@ docker compose up --build -d
 docker compose ps
 ```
 
+### Optional routing services
+
+The API can populate ordered route-leg distances and durations from a private
+OSRM container. The router is opt-in and has no published host port. Before
+starting it, provision the named `osrm-data` volume with a compatible,
+preprocessed regional OSRM dataset whose main file is
+`region-latest.osrm`; the repository does not download or build map data.
+Configure `SHOPSTOPS_OSRM_URL=http://osrm-router:5000` in `.env`, then start the
+stack with `docker compose --profile routing up --build -d`. Without the
+environment setting, the API does not call OSRM. When enabled, route assignment
+requests missing route legs with a 500 ms client timeout; routing errors fail
+the assignment transaction rather than persisting an incomplete route.
+
+The Expo app optionally supports Google Places address search and Google Routes
+traffic-aware driver ETAs. Set `EXPO_PUBLIC_GOOGLE_MAPS_API_KEY` when building
+the app and enable Places API (New) and Routes API in the Google Cloud project.
+This key is embedded in the client and is not a secret: restrict it to the
+required APIs and the applicable app identifiers where supported, and set
+quotas and billing alerts. Avoid using a broadly unrestricted key. Traffic ETAs
+refresh every two minutes while a driver route is open. Google integration is
+disabled when the setting is absent; shoppers can still enter coordinates
+manually. These route estimates do not enable mileage charges at checkout:
+trusted pre-checkout route distances are still unavailable.
+
 The example issuer is a placeholder. The gateway must be able to reach the real
 OIDC discovery/JWKS endpoints at startup. Keep `.env` private; Compose passes
 these settings as container environment variables, so use the deployment
