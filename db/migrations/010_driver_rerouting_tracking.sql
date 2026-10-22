@@ -1,3 +1,10 @@
+ALTER TABLE unified_route_legs
+    ADD COLUMN geometry jsonb CHECK (
+        geometry IS NULL OR (
+            jsonb_typeof(geometry) = 'array' AND jsonb_array_length(geometry) BETWEEN 2 AND 10000
+        )
+    );
+
 CREATE TABLE driver_route_reroutes (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     route_id uuid NOT NULL REFERENCES unified_delivery_routes(id) ON DELETE CASCADE,

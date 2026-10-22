@@ -81,7 +81,6 @@ type fakeRepository struct {
 	reroutePlan           driverReroutePlan
 	reroutePlanErr        error
 	savedRerouteKey       string
-	savedRerouteID        string
 	savedRerouteDeviation float64
 	savedRerouteRoute     routing.Route
 	savedRerouteGeometry  []dispatch.LocationCoordinate
@@ -754,9 +753,15 @@ func TestCreateUnifiedRouteRoutesAndPersistsBothLegs(t *testing.T) {
 		createdRouteID: "route-123",
 	}
 	calls := &atomic.Int32{}
+	geometry := []routing.Coordinate{
+		{Latitude: 38.9, Longitude: -77},
+		{Latitude: 38.91, Longitude: -76.99},
+	}
 	handler := NewWithRouting(
 		repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil)),
-		fakeOSRMRouter{route: routing.Route{DistanceMeters: 1234.5, DurationSeconds: 321.25}, calls: calls},
+		fakeOSRMRouter{route: routing.Route{
+			DistanceMeters: 1234.5, DurationSeconds: 321.25, Coordinates: geometry,
+		}, calls: calls},
 	)
 	request := httptest.NewRequest(http.MethodPost,
 		"/checkouts/00000000-0000-0000-0000-000000000001/route", nil)

@@ -157,7 +157,7 @@ order and exactly one partner merchant. It persists the mandatory immutable
 sequence: restaurant pickup, adjacent merchant pickup, customer drop-off.
 `POST /checkouts/{checkoutId}/route` reads these stop coordinates from the
 database, calculates both legs with the OSRM client, and persists the route and
-measurements atomically. Each OSRM request has a 450 ms deadline and propagates
+measurements and GeoJSON path geometry atomically. Each OSRM request has a 450 ms deadline and propagates
 caller cancellation. Set `SHOPSTOPS_OSRM_BASE_URL` to enable this endpoint; it
 returns service unavailable when no router is configured and gateway timeout
 when OSRM exceeds its deadline. Route creation is idempotent by

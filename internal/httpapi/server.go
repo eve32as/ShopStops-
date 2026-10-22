@@ -1747,17 +1747,23 @@ func (p *PostgresRepository) CreateUnifiedRoute(
 	}
 	for i, leg := range legs {
 		if !validPersistedRouteMeasurement(leg.DistanceMeters) ||
-			!validPersistedRouteMeasurement(leg.DurationSeconds) {
+			!validPersistedRouteMeasurement(leg.DurationSeconds) ||
+			len(leg.Coordinates) < 2 {
 			return "", ErrConflict
 		}
-		_, err := tx.ExecContext(ctx, `
+		geometry, err := json.Marshal(leg.Coordinates)
+		if err != nil {
+			return "", err
+		}
+		_, err = tx.ExecContext(ctx, `
 			INSERT INTO unified_route_legs (
 				route_id, from_sequence, to_sequence, distance_meters,
-				duration_seconds, provider
-			) VALUES ($1, $2, $3, $4, $5, 'osrm')
+				duration_seconds, provider, geometry
+			) VALUES ($1, $2, $3, $4, $5, 'osrm', $6::jsonb)
 			ON CONFLICT (route_id, from_sequence) DO NOTHING`,
 			routeID, i+1, i+2,
 			int(math.Round(leg.DistanceMeters)), int(math.Round(leg.DurationSeconds)),
+			string(geometry),
 		)
 		if err != nil {
 			return "", err
@@ -1819,6 +1825,7 @@ func (p *PostgresRepository) DriverReroutePlan(
 			FROM driver_location_samples
 			WHERE route_id = route.id AND driver_ref = route.driver_ref
 			  AND observed_at >= now() - interval '60 seconds'
+			  AND observed_at <= now() + interval '1 minute'
 			ORDER BY observed_at DESC, id DESC LIMIT 1
 		) sample ON true
 		WHERE route.id = $1 AND route.driver_ref = $2
@@ -1868,13 +1875,16 @@ func (p *PostgresRepository) SaveDriverReroute(
 	if assignedDriver != driverRef {
 		return ErrForbidden
 	}
-	var existingRouteID string
+	var existingRouteID, existingDriverRef string
+	var existingSampleID int64
 	err = tx.QueryRowContext(ctx, `
-		SELECT route_id FROM driver_route_reroutes WHERE idempotency_key = $1`,
+		SELECT route_id, driver_ref, sample_id
+		FROM driver_route_reroutes WHERE idempotency_key = $1`,
 		idempotencyKey,
-	).Scan(&existingRouteID)
+	).Scan(&existingRouteID, &existingDriverRef, &existingSampleID)
 	if err == nil {
-		if existingRouteID == routeID {
+		if existingRouteID == routeID && existingDriverRef == driverRef &&
+			existingSampleID == plan.SampleID {
 			return nil
 		}
 		return ErrConflict
@@ -1916,10 +1926,12 @@ func (p *PostgresRepository) SaveDriverReroute(
 	}
 	result, err := tx.ExecContext(ctx, `
 		UPDATE unified_route_legs
-		SET distance_meters = $3, duration_seconds = $4, provider = 'osrm'
+		SET distance_meters = $3, duration_seconds = $4, provider = 'osrm',
+		    geometry = $5::jsonb
 		WHERE route_id = $1 AND from_sequence = $2`,
 		routeID, plan.ToSequence-1,
 		int(math.Round(route.DistanceMeters)), int(math.Round(route.DurationSeconds)),
+		string(geometry),
 	)
 	if err != nil {
 		return err
@@ -1947,6 +1959,10 @@ func (p *PostgresRepository) SaveDriverReroute(
 		int(math.Round(route.DurationSeconds)), string(geometry),
 	).Scan(&rerouteID)
 	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return ErrConflict
+		}
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -1980,7 +1996,7 @@ func (p *PostgresRepository) ShopperOrderTracking(
 		            WHEN route.id IS NULL THEN NULL
 		            ELSE ceil(COALESCE(sum(leg.duration_seconds), 0) / 60.0)::bigint
 		       END,
-		       reroute.geometry::text
+		       COALESCE(reroute.geometry, planned_path.geometry)::text
 		FROM orders order_record
 		LEFT JOIN checkout_orders co ON co.order_id = order_record.id
 		LEFT JOIN unified_delivery_routes route ON route.checkout_id = co.checkout_id
@@ -2004,9 +2020,15 @@ func (p *PostgresRepository) ShopperOrderTracking(
 			WHERE route_id = route.id AND to_sequence > completed.sequence
 			ORDER BY created_at DESC LIMIT 1
 		) reroute ON true
+		LEFT JOIN LATERAL (
+			SELECT geometry
+			FROM unified_route_legs
+			WHERE route_id = route.id AND from_sequence >= completed.sequence
+			ORDER BY from_sequence LIMIT 1
+		) planned_path ON true
 		WHERE order_record.id = $1 AND order_record.customer_ref = $2
 		GROUP BY route.id, route.status, sample.location, sample.observed_at,
-		         reroute.geometry`,
+		         reroute.geometry, planned_path.geometry`,
 		orderID, customerRef,
 	).Scan(
 		&response.Status, &latitude, &longitude, &observedAt,
