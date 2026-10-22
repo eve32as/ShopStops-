@@ -48,8 +48,9 @@ implements health checks, nearby subscribed-merchant discovery, atomic
 dispatch, checkout creation/payment, Stripe webhooks, driver route reads,
 catalog discovery, order creation, ordered stop arrival/completion, and GPS
 ingestion with review-only fraud alerts for extreme GPS speeds and sustained
-route expansion. Admins can list and resolve these alerts. Merchant catalog endpoints let authenticated merchants manage item
-names, descriptions, prices, delivery volumes, and customer-facing availability.
+route expansion. Admins can list and resolve these alerts in the control room.
+Merchant catalog endpoints let authenticated merchants manage item names,
+descriptions, prices, delivery volumes, and customer-facing availability.
 Protected endpoints use a shared internal bearer token and must be placed
 behind a gateway that authenticates users, enforces roles, strips client-supplied
 `X-ShopStops-Actor` headers, and injects the authenticated actor
@@ -58,6 +59,15 @@ Delivery/service fee configuration is in integer cents and defaults to zero if
 unset. The checkout endpoint builds the merchant item lines from each order's
 `item_subtotal_cents` snapshot and applies the D.C. surcharge from the configured
 jurisdiction polygon.
+
+The standalone `finance` Go package implements the supplied driver base pay,
+mileage recovery, processing fee, merchant surcharge, and platform-share
+equations. Callers must provide a non-negative zone rate in cents per mile and
+the mileage to price. It is not yet connected to checkout creation: existing
+checkout invoices continue to use the delivery/service fees above. The
+`NetPlatformMargin` value follows the supplied equation and is not a complete
+accounting measure of realized margin because it does not deduct every listed
+cost.
 
 The payment endpoint creates one idempotent PaymentIntent from the persisted
 invoice. Configure Stripe to send `payment_intent.succeeded`,

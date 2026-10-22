@@ -236,12 +236,23 @@ conservative heuristics are signals for human review, not proof of fraud; they
 do not affect driver assignment, route status, or earnings. Admins can list
 alerts with `GET /admin/driver-fraud-alerts` and mark them reviewed or dismissed
 with `PATCH /admin/driver-fraud-alerts/{alertId}`. Alert-resolution actor and
-time are retained for audit.
+time are retained for audit. The admin control room exposes this queue with
+status filtering and review/dismiss actions.
+
+The standalone Go `finance` package implements the supplied $7 standard driver
+base pay, $4.50 along-route bonus, zone-rate mileage cost, 15% mileage recovery
+equation, 2.9% plus $0.30 processing fee, $1.20 protection allocation, and
+5% merchant surcharge when unsubscribed. Callers must pass the zone rate in
+cents per mile and the distance to price. It validates invalid inputs and
+integer overflow. This is not yet wired into checkout creation or persisted
+invoices; the current checkout continues to use configured delivery and
+service fees. `NetPlatformMargin` is the value from the supplied formula, not
+a fully reconciled accounting margin, as it does not deduct every listed cost.
 
 The OpenAPI contract describes subscription, refund, and webhook flows. The
 `apps/mobile` Expo client targets iOS and Android and exposes current shopper,
-driver, and merchant billing API flows; `apps/admin` provides the current
-full-refund operation. Both expect an external trusted identity gateway and
+driver, and merchant billing API flows; `apps/admin` provides the full-refund
+operation and driver-alert review queue. Both expect an external trusted identity gateway and
 Stripe publishable key configuration. The clients are API-backed MVP
 foundations, not complete consumer, driver, merchant, or admin products.
 Native identity, background location, admin search/zone/reporting controls,

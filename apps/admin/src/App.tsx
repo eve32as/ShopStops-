@@ -271,6 +271,8 @@ function App() {
                     onChange={(event) => {
                       setGatewayUrl(event.target.value)
                       setIdempotencyKey('')
+                      setFraudAlerts([])
+                      setFraudError('')
                     }}
                     placeholder="https://api.shopstops.example/v1"
                     value={gatewayUrl}
@@ -285,6 +287,8 @@ function App() {
                     onChange={(event) => {
                       setSessionToken(event.target.value)
                       setIdempotencyKey('')
+                      setFraudAlerts([])
+                      setFraudError('')
                     }}
                     placeholder="Paste your user access token"
                     type="password"
