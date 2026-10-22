@@ -165,8 +165,18 @@ when OSRM exceeds its deadline. Route creation is idempotent by
 repository does not provide turn-by-turn navigation. Driver clients should
 sample GPS every five seconds;
 `record_driver_location` enforces assigned active routes, idempotency, and no
-more than one sample per five seconds. Route/authenticated API processes must
-reject client attempts to reorder stops.
+more than one sample per five seconds. Drivers can request
+`POST /driver/routes/{routeId}/reroute` after a fresh GPS sample; it is separate
+from paid route creation, which remains dispatch/admin-only. The reroute
+operation compares the OSRM distance from the latest driver location to the
+next eligible stop against that stored leg, and persists a replacement only
+when it is more than 0.2 miles longer. The update is audited, updates the
+remaining leg's ETA, and publishes `delivery.route.rerouted`. Customers can poll
+`GET /shopper/orders/{orderId}/track`; ownership is checked against the order's
+customer reference, stale driver locations are hidden after 60 seconds, and the
+response omits driver identity. The mobile shopper screen polls every four
+seconds while open. Route/authenticated API processes must reject client
+attempts to reorder stops.
 
 Migration `003_stripe_checkout_payments.sql` records verified Stripe checkout
 events and transfer source charges. The Go API's authenticated

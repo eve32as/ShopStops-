@@ -21,10 +21,11 @@ func TestOSRMRouteReturnsMeasurements(t *testing.T) {
 		if r.URL.Path != "/route/v1/driving/-77,38.9;-76.99,38.91" {
 			t.Errorf("request path = %q", r.URL.Path)
 		}
-		if r.URL.Query().Get("overview") != "false" {
-			t.Errorf("overview = %q, want false", r.URL.Query().Get("overview"))
+		if r.URL.Query().Get("overview") != "full" ||
+			r.URL.Query().Get("geometries") != "geojson" {
+			t.Errorf("geometry options = %q/%q", r.URL.Query().Get("overview"), r.URL.Query().Get("geometries"))
 		}
-		fmt.Fprint(w, `{"code":"Ok","routes":[{"distance":1234.5,"duration":321.25}]}`)
+		fmt.Fprint(w, `{"code":"Ok","routes":[{"distance":1234.5,"duration":321.25,"geometry":{"coordinates":[[-77,38.9],[-76.99,38.91]]}}]}`)
 	}))
 	defer server.Close()
 	client, err := NewOSRMClient(server.URL)
@@ -36,7 +37,8 @@ func TestOSRMRouteReturnsMeasurements(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if route.DistanceMeters != 1234.5 || route.DurationSeconds != 321.25 {
+	if route.DistanceMeters != 1234.5 || route.DurationSeconds != 321.25 ||
+		len(route.Coordinates) != 2 || route.Coordinates[0].Longitude != -77 {
 		t.Fatalf("route = %+v", route)
 	}
 }

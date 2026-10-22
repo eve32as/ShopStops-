@@ -76,6 +76,20 @@ type StopEvent = {
   stopStatus: string;
   routeStatus: string;
 };
+type ShopperTracking = {
+  status: string;
+  driverLocation?: { latitude: number; longitude: number };
+  etaMinutes?: number;
+  lastUpdatedAt?: string;
+  routeCoordinates?: { latitude: number; longitude: number }[];
+};
+type RerouteResult = {
+  rerouted: boolean;
+  deviationMiles: number;
+  distanceMeters?: number;
+  durationSeconds?: number;
+  routeCoordinates?: { latitude: number; longitude: number }[];
+};
 type Subscription = {
   status: string;
   monthlyAmountCents: number;
@@ -119,6 +133,14 @@ export default function HomeScreen() {
   const [longitude, setLongitude] = useState("");
   const [routeId, setRouteId] = useState("");
   const [tracking, setTracking] = useState(false);
+  const [trackingOrderID, setTrackingOrderID] = useState("");
+  const [shopperTracking, setShopperTracking] = useState<ShopperTracking | null>(null);
+  const [shopperTrackingEnabled, setShopperTrackingEnabled] = useState(false);
+  const [shopperTrackingError, setShopperTrackingError] = useState("");
+  const [trackingMapSize, setTrackingMapSize] = useState({ width: 0, height: 0 });
+  const [reroutedCoordinates, setReroutedCoordinates] = useState<
+    { latitude: number; longitude: number }[]
+  >([]);
   const [deliveryWindow] = useState(() => {
     const start = new Date(Date.now() + 15 * 60 * 1000);
     return {
@@ -190,6 +212,9 @@ export default function HomeScreen() {
       setOrderIds("");
       setCheckout(null);
       setRoute(null);
+      setShopperTracking(null);
+      setShopperTrackingEnabled(false);
+      setTrackingOrderID("");
       setSubscription(null);
       setMerchantCatalog([]);
       setMerchantCatalogDrafts({});
@@ -224,6 +249,45 @@ export default function HomeScreen() {
     }, 5000);
     return () => clearInterval(timer);
   }, [routeId, settings, tracking]);
+
+  useEffect(() => {
+    if (
+      role !== "Shopper" ||
+      !shopperTrackingEnabled ||
+      !trackingOrderID.trim() ||
+      !settings.sessionToken.trim()
+    ) {
+      return;
+    }
+    let active = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    async function pollTracking() {
+      try {
+        const snapshot = await apiRequest<ShopperTracking>(
+          settings,
+          `shopper/orders/${encodeURIComponent(trackingOrderID.trim())}/track`,
+        );
+        if (active) {
+          setShopperTracking(snapshot);
+          setShopperTrackingError("");
+        }
+      } catch (error) {
+        if (active) {
+          setShopperTrackingError(
+            error instanceof Error ? error.message : "Tracking update failed.",
+          );
+        }
+      } finally {
+        if (active) timer = setTimeout(() => void pollTracking(), 4000);
+      }
+    }
+    setShopperTracking(null);
+    void pollTracking();
+    return () => {
+      active = false;
+      if (timer) clearTimeout(timer);
+    };
+  }, [role, settings, shopperTrackingEnabled, trackingOrderID]);
 
   async function findNearby() {
     const results = await run(() =>
@@ -301,6 +365,7 @@ export default function HomeScreen() {
       if (!currentIDs.includes(result.id)) {
         setOrderIds([...currentIDs, result.id].join(", "));
       }
+      setTrackingOrderID(result.id);
       setQuantities({});
       setMessage(`Order created · $${(result.itemSubtotalCents / 100).toFixed(2)} items.`);
     }
@@ -405,6 +470,25 @@ export default function HomeScreen() {
             }
           : current,
       );
+    }
+  }
+
+  async function checkDriverRoute() {
+    const routeKey = routeId.trim();
+    if (!routeKey) return;
+    const result = await run(() =>
+      apiRequest<RerouteResult>(
+        settings,
+        `driver/routes/${encodeURIComponent(routeKey)}/reroute`,
+        { method: "POST", headers: { "Idempotency-Key": idempotencyKey() } },
+      ),
+    );
+    if (!result) return;
+    if (result.rerouted) {
+      setReroutedCoordinates(result.routeCoordinates ?? []);
+      setMessage(`Route updated · ${result.deviationMiles.toFixed(2)} miles off plan.`);
+    } else {
+      setMessage(`Route is within the 0.2-mile deviation threshold.`);
     }
   }
 
@@ -655,6 +739,53 @@ export default function HomeScreen() {
     .slice()
     .sort((a, b) => a.sequence - b.sequence)
     .find((stop) => stop.status !== "completed");
+  const liveMapCoordinates = shopperTracking?.routeCoordinates ?? [];
+  const sampledMapCoordinates = liveMapCoordinates.length > 100
+    ? liveMapCoordinates.filter((_, index) =>
+        index % Math.ceil(liveMapCoordinates.length / 100) === 0)
+    : liveMapCoordinates;
+  const mapCoordinates = shopperTracking?.driverLocation
+    ? [shopperTracking.driverLocation, ...sampledMapCoordinates]
+    : sampledMapCoordinates;
+  const mapBounds = mapCoordinates.reduce(
+    (bounds, point) => ({
+      minLatitude: Math.min(bounds.minLatitude, point.latitude),
+      maxLatitude: Math.max(bounds.maxLatitude, point.latitude),
+      minLongitude: Math.min(bounds.minLongitude, point.longitude),
+      maxLongitude: Math.max(bounds.maxLongitude, point.longitude),
+    }),
+    {
+      minLatitude: Number.POSITIVE_INFINITY,
+      maxLatitude: Number.NEGATIVE_INFINITY,
+      minLongitude: Number.POSITIVE_INFINITY,
+      maxLongitude: Number.NEGATIVE_INFINITY,
+    },
+  );
+  const mapPositions = mapCoordinates.map((point) => {
+    const longitudeSpan = mapBounds.maxLongitude - mapBounds.minLongitude || 0.001;
+    const latitudeSpan = mapBounds.maxLatitude - mapBounds.minLatitude || 0.001;
+    return {
+      x: 14 + ((point.longitude - mapBounds.minLongitude) / longitudeSpan) * 72,
+      y: 14 + (1 - (point.latitude - mapBounds.minLatitude) / latitudeSpan) * 72,
+    };
+  });
+  const routeSegments = mapPositions.slice(1).map((point, index) => {
+    const previous = mapPositions[index];
+    const x1 = (previous.x / 100) * trackingMapSize.width;
+    const y1 = (previous.y / 100) * trackingMapSize.height;
+    const x2 = (point.x / 100) * trackingMapSize.width;
+    const y2 = (point.y / 100) * trackingMapSize.height;
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const length = Math.hypot(dx, dy);
+    return {
+      key: `segment-${index}`,
+      left: (x1 + x2 - length) / 2,
+      top: (y1 + y2) / 2,
+      width: length,
+      angle: Math.atan2(dy, dx),
+    };
+  });
 
   return (
     <KeyboardAvoidingView
@@ -894,6 +1025,100 @@ export default function HomeScreen() {
                 </View>
               ) : null}
             </View>
+            <View style={styles.card}>
+              <Text style={styles.sectionEyebrow}>04 / LIVE TRACKING</Text>
+              <Text style={styles.sectionTitle}>Follow your delivery.</Text>
+              <Text style={styles.helpText}>
+                Updates every four seconds while this screen is open. Only the customer who owns
+                the order can see its active driver location.
+              </Text>
+              <Field
+                label="Your order ID"
+                onChangeText={(value) => {
+                  setTrackingOrderID(value);
+                  setShopperTracking(null);
+                  setShopperTrackingEnabled(false);
+                  setShopperTrackingError("");
+                }}
+                value={trackingOrderID}
+              />
+              <ActionButton
+                disabled={!trackingOrderID.trim() || busy}
+                label={shopperTrackingEnabled ? "Stop live updates" : "Track this order"}
+                onPress={() => setShopperTrackingEnabled((enabled) => !enabled)}
+                secondary={shopperTrackingEnabled}
+              />
+              {shopperTrackingError ? (
+                <Text style={styles.trackingError}>{shopperTrackingError}</Text>
+              ) : null}
+              {shopperTracking ? (
+                <View style={styles.trackingCard} accessibilityLiveRegion="polite">
+                  <Text style={styles.checkoutLabel}>
+                    DELIVERY · {shopperTracking.status.replaceAll("_", " ").toUpperCase()}
+                  </Text>
+                  {shopperTracking.etaMinutes !== undefined ? (
+                    <Text style={styles.trackingEta}>
+                      {shopperTracking.etaMinutes === 0
+                        ? "Delivered"
+                        : `${shopperTracking.etaMinutes} min estimated`}
+                    </Text>
+                  ) : (
+                    <Text style={styles.resultSub}>Driver location is not available yet.</Text>
+                  )}
+                  {shopperTracking.driverLocation ? (
+                    <Text style={styles.resultSub}>
+                      Driver · {shopperTracking.driverLocation.latitude.toFixed(5)},{" "}
+                      {shopperTracking.driverLocation.longitude.toFixed(5)}
+                    </Text>
+                  ) : null}
+                  {shopperTracking.driverLocation ? (
+                    <View
+                      accessibilityLabel="Approximate delivery route map"
+                      onLayout={(event) => setTrackingMapSize({
+                        width: event.nativeEvent.layout.width,
+                        height: event.nativeEvent.layout.height,
+                      })}
+                      style={styles.trackingMap}
+                    >
+                      {routeSegments.map((segment) => (
+                        <View
+                          key={segment.key}
+                          style={[
+                            styles.trackingMapLine,
+                            {
+                              left: segment.left,
+                              top: segment.top,
+                              width: segment.width,
+                              transform: [{ rotate: `${segment.angle}rad` }],
+                            },
+                          ]}
+                        />
+                      ))}
+                      {mapPositions.map((point, index) => (
+                        <View
+                          key={`point-${index}`}
+                          style={[
+                            styles.trackingMapPoint,
+                            index === 0 && styles.trackingMapDriver,
+                            { left: `${point.x}%`, top: `${point.y}%` },
+                          ]}
+                        />
+                      ))}
+                    </View>
+                  ) : null}
+                  {shopperTracking.lastUpdatedAt ? (
+                    <Text style={styles.tinyNote}>
+                      Location updated {new Date(shopperTracking.lastUpdatedAt).toLocaleTimeString()}
+                    </Text>
+                  ) : null}
+                  {shopperTracking.routeCoordinates?.length ? (
+                    <Text style={styles.tinyNote}>
+                      Route path refreshed · {shopperTracking.routeCoordinates.length} points
+                    </Text>
+                  ) : null}
+                </View>
+              ) : null}
+            </View>
           </>
         ) : null}
 
@@ -952,6 +1177,19 @@ export default function HomeScreen() {
               onPress={() => void beginTracking()}
             />
             {tracking ? <ActionButton label="End location sharing" onPress={endTracking} secondary /> : null}
+            {route?.status === "in_progress" ? (
+              <ActionButton
+                disabled={busy || !tracking}
+                label="Check for route detour"
+                onPress={() => void checkDriverRoute()}
+                secondary
+              />
+            ) : null}
+            {reroutedCoordinates.length > 0 ? (
+              <Text style={styles.tinyNote}>
+                Updated route received · {reroutedCoordinates.length} path points
+              </Text>
+            ) : null}
           </View>
         ) : null}
 
@@ -1223,6 +1461,13 @@ const styles = StyleSheet.create({
   quantityButtonText: { color: "#24443b", fontSize: 17, fontWeight: "800" },
   quantityText: { minWidth: 16, color: "#213b34", textAlign: "center", fontWeight: "800" },
   checkoutBox: { backgroundColor: "#f8f9f7", borderRadius: 13, padding: 14, marginTop: 16 },
+  trackingCard: { backgroundColor: "#f8f9f7", borderRadius: 13, padding: 14, marginTop: 16 },
+  trackingEta: { color: "#19352f", fontSize: 22, fontWeight: "900", marginBottom: 7 },
+  trackingError: { color: "#a13c2a", fontSize: 12, lineHeight: 17, marginTop: 10 },
+  trackingMap: { height: 190, backgroundColor: "#e8eee9", borderRadius: 12, marginTop: 12, overflow: "hidden" },
+  trackingMapLine: { position: "absolute", height: 3, backgroundColor: "#397457", borderRadius: 2 },
+  trackingMapPoint: { position: "absolute", width: 8, height: 8, marginLeft: -4, marginTop: -4, borderRadius: 4, backgroundColor: "#e5653d", borderWidth: 1, borderColor: "#fff" },
+  trackingMapDriver: { width: 14, height: 14, marginLeft: -7, marginTop: -7, borderRadius: 7, backgroundColor: "#19352f", borderWidth: 2, borderColor: "#fff" },
   routeBox: { backgroundColor: "#f8f9f7", borderRadius: 13, padding: 14, marginTop: 14 },
   stopActions: { marginTop: 3 },
   checkoutLabel: { color: "#77857f", fontSize: 9, fontWeight: "800", letterSpacing: 1.2, marginBottom: 11 },

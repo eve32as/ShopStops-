@@ -26,6 +26,7 @@ type Coordinate struct {
 type Route struct {
 	DistanceMeters  float64
 	DurationSeconds float64
+	Coordinates     []Coordinate
 }
 
 type OSRMClient struct {
@@ -66,7 +67,7 @@ func (c *OSRMClient) Route(ctx context.Context, coordinates []Coordinate) (Route
 	defer cancel()
 	request, err := http.NewRequestWithContext(
 		requestCtx, http.MethodGet,
-		c.baseURL+"/route/v1/driving/"+strings.Join(parts, ";")+"?overview=false",
+		c.baseURL+"/route/v1/driving/"+strings.Join(parts, ";")+"?overview=full&geometries=geojson",
 		nil,
 	)
 	if err != nil {
@@ -93,6 +94,9 @@ func (c *OSRMClient) Route(ctx context.Context, coordinates []Coordinate) (Route
 		Routes []struct {
 			Distance float64 `json:"distance"`
 			Duration float64 `json:"duration"`
+			Geometry struct {
+				Coordinates [][]float64 `json:"coordinates"`
+			} `json:"geometry"`
 		} `json:"routes"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
@@ -109,6 +113,21 @@ func (c *OSRMClient) Route(ctx context.Context, coordinates []Coordinate) (Route
 		math.IsNaN(result.DurationSeconds) || math.IsInf(result.DurationSeconds, 0) ||
 		result.DistanceMeters < 0 || result.DurationSeconds < 0 {
 		return Route{}, errors.New("OSRM returned invalid route measurements")
+	}
+	geometry := payload.Routes[0].Geometry.Coordinates
+	if len(geometry) > 10_000 {
+		return Route{}, errors.New("OSRM route geometry exceeds 10000 coordinates")
+	}
+	result.Coordinates = make([]Coordinate, 0, len(geometry))
+	for _, point := range geometry {
+		if len(point) != 2 || math.IsNaN(point[0]) || math.IsInf(point[0], 0) ||
+			math.IsNaN(point[1]) || math.IsInf(point[1], 0) ||
+			point[0] < -180 || point[0] > 180 || point[1] < -90 || point[1] > 90 {
+			return Route{}, errors.New("OSRM returned invalid route geometry")
+		}
+		result.Coordinates = append(result.Coordinates, Coordinate{
+			Longitude: point[0], Latitude: point[1],
+		})
 	}
 	return result, nil
 }

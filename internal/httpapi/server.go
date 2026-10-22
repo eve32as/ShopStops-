@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/eve32as/ShopStops-/internal/dispatch"
 	"github.com/eve32as/ShopStops-/internal/routing"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -35,6 +36,7 @@ type Server struct {
 	webhookSecret   string
 	merchantPriceID string
 	router          OSRMRouter
+	rerouter        *dispatch.ReRouter
 }
 
 type OSRMRouter interface {
@@ -74,6 +76,34 @@ type UnifiedRouteRepository interface {
 	FindUnifiedRoute(context.Context, string, string) (string, bool, error)
 	UnifiedRouteCoordinates(context.Context, string) ([]routing.Coordinate, error)
 	CreateUnifiedRoute(context.Context, string, string, []routing.Route) (string, error)
+}
+
+type DriverRerouteRepository interface {
+	DriverReroutePlan(context.Context, string, string) (driverReroutePlan, error)
+	SaveDriverReroute(
+		context.Context, string, string, driverReroutePlan, string,
+		float64, routing.Route, []dispatch.LocationCoordinate,
+	) error
+}
+
+type ShopperTrackingRepository interface {
+	ShopperOrderTracking(context.Context, string, string) (ShopperTrackingResponse, error)
+}
+
+type driverReroutePlan struct {
+	Current              geoPoint
+	Target               geoPoint
+	PlannedDistanceMiles float64
+	ToSequence           int
+	SampleID             int64
+}
+
+type ShopperTrackingResponse struct {
+	Status           string                        `json:"status"`
+	DriverLocation   *geoPoint                     `json:"driverLocation,omitempty"`
+	ETAMinutes       *int                          `json:"etaMinutes,omitempty"`
+	LastUpdatedAt    *time.Time                    `json:"lastUpdatedAt,omitempty"`
+	RouteCoordinates []dispatch.LocationCoordinate `json:"routeCoordinates,omitempty"`
 }
 
 type DriverFraudAlert struct {
@@ -274,7 +304,10 @@ func NewWithPayments(
 func NewWithRouting(
 	repo Repository, token string, logger *slog.Logger, router OSRMRouter,
 ) http.Handler {
-	s := &Server{repo: repo, token: token, log: logger, router: router}
+	s := &Server{
+		repo: repo, token: token, log: logger, router: router,
+		rerouter: dispatch.NewReRouter(router),
+	}
 	return s.handler()
 }
 
@@ -286,6 +319,7 @@ func NewWithPaymentsAndRouting(
 	s := &Server{
 		repo: repo, token: token, log: logger,
 		payments: payments, webhookSecret: webhookSecret, router: router,
+		rerouter: dispatch.NewReRouter(router),
 	}
 	if len(merchantPriceIDs) > 0 {
 		s.merchantPriceID = merchantPriceIDs[0]
@@ -307,6 +341,8 @@ func (s *Server) handler() http.Handler {
 	mux.Handle("GET /driver/routes/{routeId}", s.authorized(http.HandlerFunc(s.getDriverRoute)))
 	mux.Handle("POST /driver/routes/{routeId}/location", s.authorized(http.HandlerFunc(s.recordDriverLocation)))
 	mux.Handle("POST /driver/routes/{routeId}/stops/{stopId}/events", s.authorized(http.HandlerFunc(s.recordDriverStopEvent)))
+	mux.Handle("POST /driver/routes/{routeId}/reroute", s.authorized(http.HandlerFunc(s.rerouteDriver)))
+	mux.Handle("GET /shopper/orders/{orderId}/track", s.authorized(http.HandlerFunc(s.trackShopperOrder)))
 	mux.Handle("GET /admin/driver-fraud-alerts", s.authorized(http.HandlerFunc(s.listDriverFraudAlerts)))
 	mux.Handle("PATCH /admin/driver-fraud-alerts/{alertId}", s.authorized(http.HandlerFunc(s.resolveDriverFraudAlert)))
 	mux.Handle("POST /checkouts", s.authorized(http.HandlerFunc(s.createCheckout)))
@@ -833,6 +869,125 @@ func (s *Server) createUnifiedRoute(w http.ResponseWriter, r *http.Request) {
 func validPersistedRouteMeasurement(value float64) bool {
 	return !math.IsNaN(value) && !math.IsInf(value, 0) &&
 		value >= 0 && value <= math.MaxInt32
+}
+
+func (s *Server) rerouteDriver(w http.ResponseWriter, r *http.Request) {
+	driverRef, ok := s.authorizedActorRole(w, r, "driver")
+	if !ok {
+		return
+	}
+	routeID := r.PathValue("routeId")
+	if !isUUID(routeID) {
+		writeError(w, http.StatusBadRequest, "valid route ID is required")
+		return
+	}
+	idempotencyKey := r.Header.Get("Idempotency-Key")
+	if idempotencyKey == "" || len(idempotencyKey) > 200 ||
+		strings.TrimSpace(idempotencyKey) != idempotencyKey {
+		writeError(w, http.StatusBadRequest, "valid Idempotency-Key header is required")
+		return
+	}
+	repository, ok := s.repo.(DriverRerouteRepository)
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "driver rerouting is unavailable")
+		return
+	}
+	if s.rerouter == nil {
+		writeError(w, http.StatusServiceUnavailable, "OSRM routing is unavailable")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	plan, err := repository.DriverReroutePlan(ctx, routeID, driverRef)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		writeError(w, http.StatusNotFound, "route not found")
+		return
+	case errors.Is(err, ErrForbidden):
+		writeError(w, http.StatusForbidden, "route is not assigned to this driver")
+		return
+	case errors.Is(err, ErrConflict):
+		writeError(w, http.StatusConflict, "route needs an active stop and a fresh GPS sample to reroute")
+		return
+	case err != nil:
+		s.databaseError(w, err)
+		return
+	}
+	rerouted, coordinates, deviationMiles, route, err :=
+		s.rerouter.EvaluateCourseCorrectionDetails(
+			ctx, routeID,
+			plan.Current.Longitude, plan.Current.Latitude,
+			plan.Target.Longitude, plan.Target.Latitude,
+			plan.PlannedDistanceMiles,
+		)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			writeError(w, http.StatusGatewayTimeout, "OSRM rerouting timed out")
+		} else {
+			s.log.Error("OSRM reroute request failed", "error", err)
+			writeError(w, http.StatusBadGateway, "route could not be recalculated")
+		}
+		return
+	}
+	if !rerouted {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"routeId": routeID, "rerouted": false, "deviationMiles": deviationMiles,
+		})
+		return
+	}
+	if len(coordinates) < 2 || !validPersistedRouteMeasurement(route.DistanceMeters) ||
+		!validPersistedRouteMeasurement(route.DurationSeconds) {
+		writeError(w, http.StatusBadGateway, "OSRM returned invalid route geometry or measurements")
+		return
+	}
+	if err := repository.SaveDriverReroute(
+		ctx, routeID, driverRef, plan, idempotencyKey,
+		deviationMiles, route, coordinates,
+	); err != nil {
+		switch {
+		case errors.Is(err, ErrForbidden):
+			writeError(w, http.StatusForbidden, "route is not assigned to this driver")
+		case errors.Is(err, ErrConflict):
+			writeError(w, http.StatusConflict, "route or GPS sample changed during rerouting")
+		default:
+			s.databaseError(w, err)
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"routeId": routeID, "rerouted": true, "deviationMiles": deviationMiles,
+		"distanceMeters":   int(math.Round(route.DistanceMeters)),
+		"durationSeconds":  int(math.Round(route.DurationSeconds)),
+		"routeCoordinates": coordinates,
+	})
+}
+
+func (s *Server) trackShopperOrder(w http.ResponseWriter, r *http.Request) {
+	customerRef, ok := s.authorizedActorRole(w, r, "customer")
+	if !ok {
+		return
+	}
+	orderID := r.PathValue("orderId")
+	if !isUUID(orderID) {
+		writeError(w, http.StatusBadRequest, "valid order ID is required")
+		return
+	}
+	repository, ok := s.repo.(ShopperTrackingRepository)
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "shopper tracking is unavailable")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	tracking, err := repository.ShopperOrderTracking(ctx, orderID, customerRef)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		writeError(w, http.StatusNotFound, "order not found")
+	case err != nil:
+		s.databaseError(w, err)
+	default:
+		writeJSON(w, http.StatusOK, tracking)
+	}
 }
 
 func (s *Server) getDriverRoute(w http.ResponseWriter, r *http.Request) {
@@ -1617,6 +1772,271 @@ func (p *PostgresRepository) CreateUnifiedRoute(
 		return "", err
 	}
 	return routeID, nil
+}
+
+func (p *PostgresRepository) DriverReroutePlan(
+	ctx context.Context, routeID, driverRef string,
+) (driverReroutePlan, error) {
+	var exists bool
+	if err := p.db.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM unified_delivery_routes WHERE id = $1)`, routeID,
+	).Scan(&exists); err != nil {
+		return driverReroutePlan{}, err
+	}
+	if !exists {
+		return driverReroutePlan{}, ErrNotFound
+	}
+	if err := p.db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM unified_delivery_routes
+			WHERE id = $1 AND driver_ref = $2
+		)`, routeID, driverRef,
+	).Scan(&exists); err != nil {
+		return driverReroutePlan{}, err
+	}
+	if !exists {
+		return driverReroutePlan{}, ErrForbidden
+	}
+
+	var plan driverReroutePlan
+	err := p.db.QueryRowContext(ctx, `
+		SELECT ST_Y(sample.location::geometry), ST_X(sample.location::geometry),
+		       sample.id, stop.sequence,
+		       ST_Y(stop.location::geometry), ST_X(stop.location::geometry),
+		       leg.distance_meters / 1609.344
+		FROM unified_delivery_routes route
+		JOIN LATERAL (
+			SELECT id, sequence, status, location
+			FROM unified_route_stops
+			WHERE route_id = route.id AND status <> 'completed'
+			ORDER BY sequence LIMIT 1
+		) stop ON true
+		JOIN unified_route_legs leg
+		  ON leg.route_id = route.id AND leg.to_sequence = stop.sequence
+		 AND leg.from_sequence = stop.sequence - 1
+		JOIN LATERAL (
+			SELECT id, location, observed_at
+			FROM driver_location_samples
+			WHERE route_id = route.id AND driver_ref = route.driver_ref
+			  AND observed_at >= now() - interval '60 seconds'
+			ORDER BY observed_at DESC, id DESC LIMIT 1
+		) sample ON true
+		WHERE route.id = $1 AND route.driver_ref = $2
+		  AND route.status = 'in_progress'
+		  AND stop.status = 'pending' AND stop.sequence > 1`,
+		routeID, driverRef,
+	).Scan(
+		&plan.Current.Latitude, &plan.Current.Longitude, &plan.SampleID,
+		&plan.ToSequence, &plan.Target.Latitude, &plan.Target.Longitude,
+		&plan.PlannedDistanceMiles,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return driverReroutePlan{}, ErrConflict
+	}
+	if err != nil {
+		return driverReroutePlan{}, err
+	}
+	return plan, nil
+}
+
+func (p *PostgresRepository) SaveDriverReroute(
+	ctx context.Context, routeID, driverRef string, plan driverReroutePlan,
+	idempotencyKey string, deviationMiles float64, route routing.Route,
+	coordinates []dispatch.LocationCoordinate,
+) error {
+	geometry, err := json.Marshal(coordinates)
+	if err != nil {
+		return err
+	}
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var assignedDriver, routeStatus string
+	err = tx.QueryRowContext(ctx, `
+		SELECT driver_ref, status
+		FROM unified_delivery_routes WHERE id = $1 FOR UPDATE`, routeID,
+	).Scan(&assignedDriver, &routeStatus)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if assignedDriver != driverRef {
+		return ErrForbidden
+	}
+	var existingRouteID string
+	err = tx.QueryRowContext(ctx, `
+		SELECT route_id FROM driver_route_reroutes WHERE idempotency_key = $1`,
+		idempotencyKey,
+	).Scan(&existingRouteID)
+	if err == nil {
+		if existingRouteID == routeID {
+			return nil
+		}
+		return ErrConflict
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if routeStatus != "in_progress" {
+		return ErrConflict
+	}
+	var latestSampleID int64
+	err = tx.QueryRowContext(ctx, `
+		SELECT id FROM driver_location_samples
+		WHERE route_id = $1 AND driver_ref = $2
+		  AND observed_at >= now() - interval '60 seconds'
+		ORDER BY observed_at DESC, id DESC LIMIT 1`,
+		routeID, driverRef,
+	).Scan(&latestSampleID)
+	if err != nil || latestSampleID != plan.SampleID {
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		return ErrConflict
+	}
+	var activeSequence int
+	var activeStatus string
+	err = tx.QueryRowContext(ctx, `
+		SELECT sequence, status
+		FROM unified_route_stops
+		WHERE route_id = $1 AND status <> 'completed'
+		ORDER BY sequence LIMIT 1`,
+		routeID,
+	).Scan(&activeSequence, &activeStatus)
+	if err != nil || activeSequence != plan.ToSequence || activeStatus != "pending" {
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		return ErrConflict
+	}
+	result, err := tx.ExecContext(ctx, `
+		UPDATE unified_route_legs
+		SET distance_meters = $3, duration_seconds = $4, provider = 'osrm'
+		WHERE route_id = $1 AND from_sequence = $2`,
+		routeID, plan.ToSequence-1,
+		int(math.Round(route.DistanceMeters)), int(math.Round(route.DurationSeconds)),
+	)
+	if err != nil {
+		return err
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if updated != 1 {
+		return ErrConflict
+	}
+	var rerouteID string
+	err = tx.QueryRowContext(ctx, `
+		INSERT INTO driver_route_reroutes (
+			route_id, driver_ref, sample_id, to_sequence, idempotency_key,
+			driver_location, deviation_miles, distance_meters, duration_seconds, geometry
+		)
+		SELECT $1, $2, sample.id, $4, $5, sample.location,
+		       $6, $7, $8, $9::jsonb
+		FROM driver_location_samples sample
+		WHERE sample.id = $3 AND sample.route_id = $1 AND sample.driver_ref = $2
+		RETURNING id`,
+		routeID, driverRef, plan.SampleID, plan.ToSequence, idempotencyKey,
+		deviationMiles, int(math.Round(route.DistanceMeters)),
+		int(math.Round(route.DurationSeconds)), string(geometry),
+	).Scan(&rerouteID)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload)
+		VALUES ('unified_delivery_route', $1, 'delivery.route.rerouted',
+		        jsonb_build_object(
+		          'routeId', $1, 'rerouteId', $2, 'toSequence', $3,
+		          'distanceMeters', $4, 'durationSeconds', $5
+		        ))`,
+		routeID, rerouteID, plan.ToSequence,
+		int(math.Round(route.DistanceMeters)), int(math.Round(route.DurationSeconds)),
+	); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (p *PostgresRepository) ShopperOrderTracking(
+	ctx context.Context, orderID, customerRef string,
+) (ShopperTrackingResponse, error) {
+	var response ShopperTrackingResponse
+	var latitude, longitude sql.NullFloat64
+	var observedAt sql.NullTime
+	var etaMinutes sql.NullInt64
+	var geometry sql.NullString
+	err := p.db.QueryRowContext(ctx, `
+		SELECT COALESCE(route.status, 'awaiting_route'),
+		       ST_Y(sample.location::geometry), ST_X(sample.location::geometry),
+		       sample.observed_at,
+		       CASE WHEN route.status = 'completed' THEN 0
+		            WHEN route.id IS NULL THEN NULL
+		            ELSE ceil(COALESCE(sum(leg.duration_seconds), 0) / 60.0)::bigint
+		       END,
+		       reroute.geometry::text
+		FROM orders order_record
+		LEFT JOIN checkout_orders co ON co.order_id = order_record.id
+		LEFT JOIN unified_delivery_routes route ON route.checkout_id = co.checkout_id
+		LEFT JOIN LATERAL (
+			SELECT location, observed_at
+			FROM driver_location_samples
+			WHERE route_id = route.id AND route.status = 'in_progress'
+			  AND observed_at >= now() - interval '60 seconds'
+			ORDER BY observed_at DESC, id DESC LIMIT 1
+		) sample ON true
+		LEFT JOIN LATERAL (
+			SELECT COALESCE(max(sequence), 0) AS sequence
+			FROM unified_route_stops
+			WHERE route_id = route.id AND status = 'completed'
+		) completed ON true
+		LEFT JOIN unified_route_legs leg
+		  ON leg.route_id = route.id AND leg.from_sequence >= completed.sequence
+		LEFT JOIN LATERAL (
+			SELECT geometry
+			FROM driver_route_reroutes
+			WHERE route_id = route.id AND to_sequence > completed.sequence
+			ORDER BY created_at DESC LIMIT 1
+		) reroute ON true
+		WHERE order_record.id = $1 AND order_record.customer_ref = $2
+		GROUP BY route.id, route.status, sample.location, sample.observed_at,
+		         reroute.geometry`,
+		orderID, customerRef,
+	).Scan(
+		&response.Status, &latitude, &longitude, &observedAt,
+		&etaMinutes, &geometry,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ShopperTrackingResponse{}, ErrNotFound
+	}
+	if err != nil {
+		return ShopperTrackingResponse{}, err
+	}
+	if latitude.Valid && longitude.Valid {
+		response.DriverLocation = &geoPoint{Latitude: latitude.Float64, Longitude: longitude.Float64}
+	}
+	if observedAt.Valid {
+		response.LastUpdatedAt = &observedAt.Time
+	}
+	if etaMinutes.Valid {
+		value := int(etaMinutes.Int64)
+		response.ETAMinutes = &value
+	}
+	if geometry.Valid {
+		if err := json.Unmarshal([]byte(geometry.String), &response.RouteCoordinates); err != nil {
+			return ShopperTrackingResponse{}, err
+		}
+	}
+	if response.RouteCoordinates == nil {
+		response.RouteCoordinates = []dispatch.LocationCoordinate{}
+	}
+	return response, nil
 }
 
 func (p *PostgresRepository) DriverRoute(

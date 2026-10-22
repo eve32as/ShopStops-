@@ -12,71 +12,82 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eve32as/ShopStops-/internal/dispatch"
 	"github.com/eve32as/ShopStops-/internal/routing"
 )
 
 type fakeRepository struct {
-	pingErr              error
-	nearby               []NearbyMerchant
-	nearbyErr            error
-	nearbyStoreID        string
-	nearbyRadius         int
-	catalog              []CatalogItem
-	catalogErr           error
-	catalogStoreID       string
-	merchantLocations    []MerchantStoreLocation
-	merchantLocationsErr error
-	merchantCatalog      []MerchantCatalogItem
-	merchantCatalogErr   error
-	merchantCatalogID    string
-	merchantItem         MerchantCatalogItem
-	merchantItemErr      error
-	merchantRequest      merchantCatalogItemRequest
-	merchantUpdate       merchantCatalogItemUpdateRequest
-	merchantKey          string
-	merchantFingerprint  string
-	order                customerOrderResponse
-	orderErr             error
-	orderReq             customerOrderRequest
-	orderCustomer        string
-	orderKey             string
-	orderFingerprint     string
-	bundle               bundleResponse
-	bundleErr            error
-	bundleRequest        bundleRequest
-	bundleKey            string
-	route                routeResponse
-	routeErr             error
-	routeID              string
-	driverRef            string
-	locationID           int64
-	locationErr          error
-	location             driverLocationRequest
-	stopEvent            driverStopEventResponse
-	stopEventErr         error
-	stopID               string
-	stopEventReq         driverStopEventRequest
-	fraudAlerts          []DriverFraudAlert
-	fraudAlertsErr       error
-	fraudStatus          string
-	fraudLimit           int
-	resolvedAlertID      string
-	resolvedAlertActor   string
-	resolvedAlertStatus  string
-	resolveFraudAlertErr error
-	checkout             checkoutResponse
-	checkoutErr          error
-	checkoutReq          checkoutRequest
-	customerRef          string
-	checkoutKey          string
-	routeCoordinates     []routing.Coordinate
-	routeCoordinatesErr  error
-	createdRouteID       string
-	createdRouteErr      error
-	routeLegs            []routing.Route
-	existingRouteID      string
-	existingRouteFound   bool
-	existingRouteErr     error
+	pingErr               error
+	nearby                []NearbyMerchant
+	nearbyErr             error
+	nearbyStoreID         string
+	nearbyRadius          int
+	catalog               []CatalogItem
+	catalogErr            error
+	catalogStoreID        string
+	merchantLocations     []MerchantStoreLocation
+	merchantLocationsErr  error
+	merchantCatalog       []MerchantCatalogItem
+	merchantCatalogErr    error
+	merchantCatalogID     string
+	merchantItem          MerchantCatalogItem
+	merchantItemErr       error
+	merchantRequest       merchantCatalogItemRequest
+	merchantUpdate        merchantCatalogItemUpdateRequest
+	merchantKey           string
+	merchantFingerprint   string
+	order                 customerOrderResponse
+	orderErr              error
+	orderReq              customerOrderRequest
+	orderCustomer         string
+	orderKey              string
+	orderFingerprint      string
+	bundle                bundleResponse
+	bundleErr             error
+	bundleRequest         bundleRequest
+	bundleKey             string
+	route                 routeResponse
+	routeErr              error
+	routeID               string
+	driverRef             string
+	locationID            int64
+	locationErr           error
+	location              driverLocationRequest
+	stopEvent             driverStopEventResponse
+	stopEventErr          error
+	stopID                string
+	stopEventReq          driverStopEventRequest
+	fraudAlerts           []DriverFraudAlert
+	fraudAlertsErr        error
+	fraudStatus           string
+	fraudLimit            int
+	resolvedAlertID       string
+	resolvedAlertActor    string
+	resolvedAlertStatus   string
+	resolveFraudAlertErr  error
+	checkout              checkoutResponse
+	checkoutErr           error
+	checkoutReq           checkoutRequest
+	customerRef           string
+	checkoutKey           string
+	routeCoordinates      []routing.Coordinate
+	routeCoordinatesErr   error
+	createdRouteID        string
+	createdRouteErr       error
+	routeLegs             []routing.Route
+	existingRouteID       string
+	existingRouteFound    bool
+	existingRouteErr      error
+	reroutePlan           driverReroutePlan
+	reroutePlanErr        error
+	savedRerouteKey       string
+	savedRerouteID        string
+	savedRerouteDeviation float64
+	savedRerouteRoute     routing.Route
+	savedRerouteGeometry  []dispatch.LocationCoordinate
+	savedRerouteErr       error
+	shopperTracking       ShopperTrackingResponse
+	shopperTrackingErr    error
 }
 
 type fakeOSRMRouter struct {
@@ -166,6 +177,26 @@ func (f *fakeRepository) CreateUnifiedRoute(
 	f.routeLegs = legs
 	return f.createdRouteID, f.createdRouteErr
 }
+func (f *fakeRepository) DriverReroutePlan(
+	_ context.Context, _, _ string,
+) (driverReroutePlan, error) {
+	return f.reroutePlan, f.reroutePlanErr
+}
+func (f *fakeRepository) SaveDriverReroute(
+	_ context.Context, _, _ string, _ driverReroutePlan, key string,
+	deviation float64, route routing.Route, coordinates []dispatch.LocationCoordinate,
+) error {
+	f.savedRerouteKey = key
+	f.savedRerouteDeviation = deviation
+	f.savedRerouteRoute = route
+	f.savedRerouteGeometry = coordinates
+	return f.savedRerouteErr
+}
+func (f *fakeRepository) ShopperOrderTracking(
+	_ context.Context, _, _ string,
+) (ShopperTrackingResponse, error) {
+	return f.shopperTracking, f.shopperTrackingErr
+}
 func (f *fakeRepository) DriverRoute(
 	_ context.Context, routeID, driverRef string,
 ) (routeResponse, error) {
@@ -234,6 +265,8 @@ func TestSensitiveEndpointsRequireMatchingActorRole(t *testing.T) {
 		{name: "driver route", method: http.MethodGet, path: "/driver/routes/00000000-0000-0000-0000-000000000010", role: "customer"},
 		{name: "driver location", method: http.MethodPost, path: "/driver/routes/00000000-0000-0000-0000-000000000010/location", role: "customer"},
 		{name: "driver stop event", method: http.MethodPost, path: "/driver/routes/00000000-0000-0000-0000-000000000010/stops/00000000-0000-0000-0000-000000000011/events", role: "customer"},
+		{name: "driver reroute", method: http.MethodPost, path: "/driver/routes/00000000-0000-0000-0000-000000000010/reroute", role: "customer"},
+		{name: "shopper track", method: http.MethodGet, path: "/shopper/orders/00000000-0000-0000-0000-000000000001/track", role: "driver"},
 		{name: "dispatch bundle", method: http.MethodPost, path: "/dispatch/bundles", role: "customer"},
 		{name: "route creation", method: http.MethodPost, path: "/checkouts/00000000-0000-0000-0000-000000000001/route", role: "customer"},
 		{name: "missing customer role", method: http.MethodPost, path: "/orders", role: ""},
@@ -782,6 +815,86 @@ func TestCreateUnifiedRouteMapsRouterTimeoutToGatewayTimeout(t *testing.T) {
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusGatewayTimeout || len(repo.routeLegs) != 0 {
 		t.Fatalf("status=%d legs=%+v body=%s", recorder.Code, repo.routeLegs, recorder.Body.String())
+	}
+}
+
+func TestDriverReroutePersistsCourseCorrection(t *testing.T) {
+	routeID := "00000000-0000-0000-0000-000000000010"
+	repo := &fakeRepository{reroutePlan: driverReroutePlan{
+		Current:              geoPoint{Latitude: 38.9, Longitude: -77},
+		Target:               geoPoint{Latitude: 38.91, Longitude: -76.99},
+		PlannedDistanceMiles: 1,
+		ToSequence:           2,
+		SampleID:             42,
+	}}
+	geometry := []routing.Coordinate{
+		{Latitude: 38.9, Longitude: -77},
+		{Latitude: 38.91, Longitude: -76.99},
+	}
+	handler := NewWithRouting(
+		repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil)),
+		fakeOSRMRouter{route: routing.Route{
+			DistanceMeters: 2000, DurationSeconds: 300, Coordinates: geometry,
+		}},
+	)
+	request := httptest.NewRequest(http.MethodPost, "/driver/routes/"+routeID+"/reroute", nil)
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "driver-123")
+	request.Header.Set("X-ShopStops-Actor-Role", "driver")
+	request.Header.Set("Idempotency-Key", "reroute-attempt-1")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || repo.savedRerouteKey != "reroute-attempt-1" ||
+		repo.savedRerouteRoute.DistanceMeters != 2000 || len(repo.savedRerouteGeometry) != 2 ||
+		!strings.Contains(recorder.Body.String(), `"rerouted":true`) {
+		t.Fatalf("status=%d saved=%+v geometry=%+v body=%s",
+			recorder.Code, repo.savedRerouteRoute, repo.savedRerouteGeometry, recorder.Body.String())
+	}
+}
+
+func TestDriverRerouteDoesNotPersistBelowThreshold(t *testing.T) {
+	repo := &fakeRepository{reroutePlan: driverReroutePlan{
+		Current:              geoPoint{Latitude: 38.9, Longitude: -77},
+		Target:               geoPoint{Latitude: 38.91, Longitude: -76.99},
+		PlannedDistanceMiles: 1,
+		ToSequence:           2,
+		SampleID:             42,
+	}}
+	handler := NewWithRouting(
+		repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil)),
+		fakeOSRMRouter{route: routing.Route{DistanceMeters: 1800, DurationSeconds: 300}},
+	)
+	request := httptest.NewRequest(http.MethodPost, "/driver/routes/00000000-0000-0000-0000-000000000010/reroute", nil)
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "driver-123")
+	request.Header.Set("X-ShopStops-Actor-Role", "driver")
+	request.Header.Set("Idempotency-Key", "reroute-no-change")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || repo.savedRerouteKey != "" ||
+		!strings.Contains(recorder.Body.String(), `"rerouted":false`) {
+		t.Fatalf("status=%d savedKey=%q body=%s", recorder.Code, repo.savedRerouteKey, recorder.Body.String())
+	}
+}
+
+func TestShopperTrackingRequiresOwnedOrder(t *testing.T) {
+	expected := ShopperTrackingResponse{
+		Status: "in_progress", ETAMinutes: intPointer(8),
+		DriverLocation: &geoPoint{Latitude: 38.9, Longitude: -77},
+	}
+	repo := &fakeRepository{shopperTracking: expected}
+	request := httptest.NewRequest(http.MethodGet,
+		"/shopper/orders/00000000-0000-0000-0000-000000000001/track", nil)
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "customer-123")
+	request.Header.Set("X-ShopStops-Actor-Role", "customer")
+	recorder := httptest.NewRecorder()
+	New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
+		ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK ||
+		!strings.Contains(recorder.Body.String(), `"etaMinutes":8`) ||
+		!strings.Contains(recorder.Body.String(), `"driverLocation":{"latitude":38.9`) {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 

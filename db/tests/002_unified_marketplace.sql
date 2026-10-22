@@ -561,6 +561,20 @@ SELECT record_driver_location(
     ST_SetSRID(ST_MakePoint(-76.8, 38.91), 4326)::geography,
     now() + interval '10 seconds', 'gps-event-3'
 );
+INSERT INTO driver_route_reroutes (
+    route_id, driver_ref, sample_id, to_sequence, idempotency_key,
+    driver_location, deviation_miles, distance_meters, duration_seconds, geometry
+)
+SELECT :'route_id', 'driver-test', sample.id, 2, 'reroute-test-key',
+       sample.location, 0.35, 2000, 300,
+       '[{"latitude":38.91,"longitude":-76.8},{"latitude":38.91,"longitude":-76.99}]'::jsonb
+FROM driver_location_samples sample
+WHERE sample.event_id = 'gps-event-3';
+INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload)
+VALUES (
+    'unified_delivery_route', :'route_id', 'delivery.route.rerouted',
+    jsonb_build_object('routeId', :'route_id', 'toSequence', 2, 'distanceMeters', 2000)
+);
 
 DO $$
 DECLARE
@@ -592,6 +606,15 @@ BEGIN
         WHERE route_id = v_route_id AND alert_type = 'route_expansion'
           AND status = 'open') <> 1 THEN
         RAISE EXCEPTION 'large telemetry route expansion should create one review alert';
+    END IF;
+    IF (SELECT count(*) FROM driver_route_reroutes
+        WHERE route_id = v_route_id AND driver_ref = 'driver-test'
+          AND to_sequence = 2 AND deviation_miles > 0.2) <> 1
+       OR NOT EXISTS (
+           SELECT 1 FROM outbox_events
+           WHERE aggregate_id = v_route_id AND event_type = 'delivery.route.rerouted'
+       ) THEN
+        RAISE EXCEPTION 'driver reroute audit and outbox event must persist';
     END IF;
 
     BEGIN

@@ -411,6 +411,86 @@ paths:
           description: Route or stop not found
         '409':
           description: Event conflicts with stop state or mandatory route order
+  /driver/routes/{routeId}/reroute:
+    post:
+      operationId: rerouteDriverRoute
+      summary: Check for a significant driver course deviation and persist a new route
+      description: Driver-only. Uses the driver's latest GPS sample (no older than 60 seconds), the active stop, and OSRM. A reroute is persisted only when the recalculated route is more than 0.2 miles longer than the planned leg.
+      parameters:
+        - $ref: '#/components/parameters/RouteId'
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+      responses:
+        '200':
+          description: Route checked, and rerouted when deviation exceeded threshold
+        '400':
+          description: Invalid route ID or idempotency key
+        '403':
+          description: Driver role is missing or route is not assigned to this driver
+        '404':
+          description: Route not found
+        '409':
+          description: No eligible active stop or the location changed during recalculation
+        '502':
+          description: OSRM could not calculate the route
+        '503':
+          description: OSRM rerouting is not configured
+        '504':
+          description: OSRM request timed out
+  /shopper/orders/{orderId}/track:
+    get:
+      operationId: trackShopperOrder
+      summary: Read the latest active delivery location and ETA for an owned order
+      description: Customer-only. The order must belong to the authenticated customer. The latest driver location is returned only while fresh (within 60 seconds) and on an active route. Poll for updates.
+      parameters:
+        - in: path
+          name: orderId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Current delivery progress; location and ETA can be absent before route activation or when GPS is stale
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                  driverLocation:
+                    type: object
+                    properties:
+                      latitude:
+                        type: number
+                      longitude:
+                        type: number
+                  etaMinutes:
+                    type: integer
+                  lastUpdatedAt:
+                    type: string
+                    format: date-time
+                  routeCoordinates:
+                    type: array
+                    items:
+                      type: object
+                      required: [latitude, longitude]
+                      properties:
+                        latitude:
+                          type: number
+                        longitude:
+                          type: number
+        '403':
+          description: Authenticated actor does not have the customer role
+        '404':
+          description: Order not found for the authenticated customer
   /admin/driver-fraud-alerts:
     get:
       operationId: listDriverFraudAlerts

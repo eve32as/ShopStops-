@@ -13,7 +13,8 @@ Apply `db/migrations/001_delivery_foundation.sql`,
 `db/migrations/005_driver_stop_progress.sql`, and
 `db/migrations/006_catalog_orders.sql`, and
 `db/migrations/007_merchant_catalog_management.sql`, and
-`db/migrations/008_driver_fraud_monitor.sql` on PostgreSQL 14+ with PostGIS 3.x
+`db/migrations/008_driver_fraud_monitor.sql`, and
+`db/migrations/010_driver_rerouting_tracking.sql` on PostgreSQL 14+ with PostGIS 3.x
 installed. The migrations create dispatch, unified-basket, catalog, and order
 models; spatial queries; transaction-safe order/merchant limits; immutable
 multi-stop routes; payment/tax ledger records; and outbox events.
@@ -48,7 +49,7 @@ go run ./cmd/shopstops-api
 The service listens on `:8080` by default; set `HTTP_ADDR` to override it. It
 implements health checks, nearby subscribed-merchant discovery, atomic
 dispatch, checkout creation/payment, OSRM-backed paid-checkout route creation,
-Stripe webhooks, driver route reads,
+driver-triggered OSRM rerouting, customer-owned shopper tracking, Stripe webhooks, driver route reads,
 catalog discovery, order creation, ordered stop arrival/completion, and GPS
 ingestion with review-only fraud alerts for extreme GPS speeds and sustained
 route expansion. Admins can list and resolve these alerts in the control room.
