@@ -371,6 +371,67 @@ paths:
           description: Route or stop not found
         '409':
           description: Event conflicts with stop state or mandatory route order
+  /admin/driver-fraud-alerts:
+    get:
+      operationId: listDriverFraudAlerts
+      summary: List driver telemetry anomaly alerts for manual review
+      description: Admin-only. Alerts are heuristic signals and never trigger automatic driver penalties.
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [open, reviewed, dismissed]
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        '200':
+          description: Alerts ordered newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/DriverFraudAlert'
+        '403':
+          description: Admin role required
+        '503':
+          description: Fraud monitoring is unavailable
+  /admin/driver-fraud-alerts/{alertId}:
+    patch:
+      operationId: resolveDriverFraudAlert
+      summary: Mark a driver telemetry alert reviewed or dismissed
+      description: Admin-only; resolution is audited and does not modify driver routes, payouts, or accounts.
+      parameters:
+        - $ref: '#/components/parameters/AlertId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [reviewed, dismissed]
+      responses:
+        '200':
+          description: Alert resolved
+        '400':
+          description: Invalid alert ID or status
+        '403':
+          description: Admin role required
+        '404':
+          description: Alert not found
+        '409':
+          description: Alert is already resolved
   /merchant/subscription/setup-intent:
     post:
       operationId: createMerchantBillingSetupIntent
@@ -588,6 +649,13 @@ components:
     BundleId:
       in: path
       name: bundleId
+      required: true
+      schema:
+        type: string
+        format: uuid
+    AlertId:
+      in: path
+      name: alertId
       required: true
       schema:
         type: string
@@ -815,6 +883,38 @@ components:
         observedAt:
           type: string
           format: date-time
+    DriverFraudAlert:
+      type: object
+      required: [id, routeId, driverRef, alertType, severity, status, evidence, detectedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        routeId:
+          type: string
+          format: uuid
+        driverRef:
+          type: string
+        alertType:
+          type: string
+          enum: [impossible_speed, route_expansion]
+        severity:
+          type: string
+          enum: [high, medium]
+        status:
+          type: string
+          enum: [open, reviewed, dismissed]
+        evidence:
+          type: object
+          additionalProperties: true
+        detectedAt:
+          type: string
+          format: date-time
+        resolvedAt:
+          type: string
+          format: date-time
+        resolvedBy:
+          type: string
     CreateBundleRequest:
       type: object
       additionalProperties: false

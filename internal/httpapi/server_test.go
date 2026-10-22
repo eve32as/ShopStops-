@@ -53,6 +53,14 @@ type fakeRepository struct {
 	stopEventErr         error
 	stopID               string
 	stopEventReq         driverStopEventRequest
+	fraudAlerts          []DriverFraudAlert
+	fraudAlertsErr       error
+	fraudStatus          string
+	fraudLimit           int
+	resolvedAlertID      string
+	resolvedAlertActor   string
+	resolvedAlertStatus  string
+	resolveFraudAlertErr error
 	checkout             checkoutResponse
 	checkoutErr          error
 	checkoutReq          checkoutRequest
@@ -135,6 +143,19 @@ func (f *fakeRepository) RecordDriverStopEvent(
 ) (driverStopEventResponse, error) {
 	f.routeID, f.stopID, f.driverRef, f.stopEventReq = routeID, stopID, driverRef, request
 	return f.stopEvent, f.stopEventErr
+}
+func (f *fakeRepository) ListDriverFraudAlerts(
+	_ context.Context, status string, limit int,
+) ([]DriverFraudAlert, error) {
+	f.fraudStatus, f.fraudLimit = status, limit
+	return f.fraudAlerts, f.fraudAlertsErr
+}
+func (f *fakeRepository) ResolveDriverFraudAlert(
+	_ context.Context, alertID, actor, status string,
+) error {
+	f.resolvedAlertID, f.resolvedAlertActor, f.resolvedAlertStatus =
+		alertID, actor, status
+	return f.resolveFraudAlertErr
 }
 
 func testServer() http.Handler {
@@ -480,6 +501,71 @@ func TestDriverStopEventRejectsInvalidType(t *testing.T) {
 	testServer().ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
+	}
+}
+
+func TestAdminCanListDriverFraudAlerts(t *testing.T) {
+	repo := &fakeRepository{fraudAlerts: []DriverFraudAlert{{
+		ID:        "00000000-0000-0000-0000-000000000012",
+		AlertType: "impossible_speed", Status: "open",
+	}}}
+	request := httptest.NewRequest(http.MethodGet,
+		"/admin/driver-fraud-alerts?status=open&limit=20", nil)
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "admin-123")
+	request.Header.Set("X-ShopStops-Actor-Role", "admin")
+	recorder := httptest.NewRecorder()
+	New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
+		ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || repo.fraudStatus != "open" ||
+		repo.fraudLimit != 20 || !strings.Contains(recorder.Body.String(), "impossible_speed") {
+		t.Fatalf("status=%d filters=%s/%d body=%s",
+			recorder.Code, repo.fraudStatus, repo.fraudLimit, recorder.Body.String())
+	}
+}
+
+func TestDriverFraudAlertsRequireAdminRole(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/admin/driver-fraud-alerts", nil)
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "driver-123")
+	request.Header.Set("X-ShopStops-Actor-Role", "driver")
+	recorder := httptest.NewRecorder()
+	New(&fakeRepository{}, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
+		ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusForbidden)
+	}
+}
+
+func TestDriverFraudAlertLimitIsBounded(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/admin/driver-fraud-alerts?limit=101", nil)
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "admin-123")
+	request.Header.Set("X-ShopStops-Actor-Role", "admin")
+	recorder := httptest.NewRecorder()
+	New(&fakeRepository{}, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
+		ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
+	}
+}
+
+func TestAdminCanResolveDriverFraudAlert(t *testing.T) {
+	const alertID = "00000000-0000-0000-0000-000000000012"
+	repo := &fakeRepository{}
+	request := httptest.NewRequest(http.MethodPatch, "/admin/driver-fraud-alerts/"+alertID,
+		strings.NewReader(`{"status":"dismissed"}`))
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "admin-123")
+	request.Header.Set("X-ShopStops-Actor-Role", "admin")
+	recorder := httptest.NewRecorder()
+	New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
+		ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || repo.resolvedAlertID != alertID ||
+		repo.resolvedAlertActor != "admin-123" || repo.resolvedAlertStatus != "dismissed" {
+		t.Fatalf("status=%d resolution=%s/%s/%s body=%s",
+			recorder.Code, repo.resolvedAlertID, repo.resolvedAlertActor,
+			repo.resolvedAlertStatus, recorder.Body.String())
 	}
 }
 

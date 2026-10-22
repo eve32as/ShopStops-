@@ -12,7 +12,8 @@ Apply `db/migrations/001_delivery_foundation.sql`,
 `db/migrations/004_billing_refunds_disputes.sql`, and
 `db/migrations/005_driver_stop_progress.sql`, and
 `db/migrations/006_catalog_orders.sql`, and
-`db/migrations/007_merchant_catalog_management.sql` on PostgreSQL 14+ with PostGIS 3.x
+`db/migrations/007_merchant_catalog_management.sql`, and
+`db/migrations/008_driver_fraud_monitor.sql` on PostgreSQL 14+ with PostGIS 3.x
 installed. The migrations create dispatch, unified-basket, catalog, and order
 models; spatial queries; transaction-safe order/merchant limits; immutable
 multi-stop routes; payment/tax ledger records; and outbox events.
@@ -46,7 +47,8 @@ The service listens on `:8080` by default; set `HTTP_ADDR` to override it. It
 implements health checks, nearby subscribed-merchant discovery, atomic
 dispatch, checkout creation/payment, Stripe webhooks, driver route reads,
 catalog discovery, order creation, ordered stop arrival/completion, and GPS
-ingestion. Merchant catalog endpoints let authenticated merchants manage item
+ingestion with review-only fraud alerts for extreme GPS speeds and sustained
+route expansion. Admins can list and resolve these alerts. Merchant catalog endpoints let authenticated merchants manage item
 names, descriptions, prices, delivery volumes, and customer-facing availability.
 Protected endpoints use a shared internal bearer token and must be placed
 behind a gateway that authenticates users, enforces roles, strips client-supplied

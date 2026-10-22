@@ -227,6 +227,17 @@ the internal token to applications. The gateway must strip any incoming
 `X-ShopStops-Actor` value and inject the authenticated actor identity; driver
 route handlers trust this internal header for assignment checks.
 
+Migration `008_driver_fraud_monitor.sql` creates review-only alerts from driver
+GPS samples. A segment above 55 m/s creates a high-severity impossible-speed
+alert; at least three samples whose accumulated straight-line travel exceeds
+2.5 times planned route-leg distance plus 1 km creates a medium-severity route
+expansion alert. At most one alert of each type is created per route. These
+conservative heuristics are signals for human review, not proof of fraud; they
+do not affect driver assignment, route status, or earnings. Admins can list
+alerts with `GET /admin/driver-fraud-alerts` and mark them reviewed or dismissed
+with `PATCH /admin/driver-fraud-alerts/{alertId}`. Alert-resolution actor and
+time are retained for audit.
+
 The OpenAPI contract describes subscription, refund, and webhook flows. The
 `apps/mobile` Expo client targets iOS and Android and exposes current shopper,
 driver, and merchant billing API flows; `apps/admin` provides the current

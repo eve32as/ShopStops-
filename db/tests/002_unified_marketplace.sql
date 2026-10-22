@@ -479,6 +479,12 @@ SELECT id AS route_stop_2 FROM unified_route_stops
 WHERE route_id = :'route_id' AND sequence = 2 \gset
 SELECT id AS route_stop_3 FROM unified_route_stops
 WHERE route_id = :'route_id' AND sequence = 3 \gset
+INSERT INTO unified_route_legs (
+    route_id, from_sequence, to_sequence, distance_meters, duration_seconds, provider
+)
+VALUES
+    (:'route_id', 1, 2, 250, 60, 'osrm'),
+    (:'route_id', 2, 3, 250, 60, 'osrm');
 SELECT create_merchant_catalog_item(
     :'partner_merchant_id', :'partner_store_id',
     'Merchant-created item', 'Created through merchant workflow', 375, 0.75,
@@ -550,6 +556,11 @@ SELECT record_driver_location(
     ST_SetSRID(ST_MakePoint(-76.989, 38.91), 4326)::geography,
     now() + interval '5 seconds', 'gps-event-2'
 );
+SELECT record_driver_location(
+    :'route_id', 'driver-test',
+    ST_SetSRID(ST_MakePoint(-76.8, 38.91), 4326)::geography,
+    now() + interval '10 seconds', 'gps-event-3'
+);
 
 DO $$
 DECLARE
@@ -569,8 +580,18 @@ BEGIN
         RAISE EXCEPTION 'unified route should lock anchor pickup, market pickup, dropoff';
     END IF;
     IF (SELECT count(*) FROM driver_location_samples
-        WHERE route_id = v_route_id) <> 2 THEN
+        WHERE route_id = v_route_id) <> 3 THEN
         RAISE EXCEPTION 'driver GPS samples were not recorded';
+    END IF;
+    IF (SELECT count(*) FROM driver_fraud_alerts
+        WHERE route_id = v_route_id AND alert_type = 'impossible_speed'
+          AND status = 'open') <> 1 THEN
+        RAISE EXCEPTION 'extreme GPS segment should create one review alert';
+    END IF;
+    IF (SELECT count(*) FROM driver_fraud_alerts
+        WHERE route_id = v_route_id AND alert_type = 'route_expansion'
+          AND status = 'open') <> 1 THEN
+        RAISE EXCEPTION 'large telemetry route expansion should create one review alert';
     END IF;
 
     BEGIN
