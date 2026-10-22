@@ -134,9 +134,23 @@ docker compose ps
 
 The API can populate ordered route-leg distances and durations from a private
 OSRM container. The router is opt-in and has no published host port. Before
-starting it, provision the named `osrm-data` volume with a compatible,
-preprocessed regional OSRM dataset whose main file is
-`region-latest.osrm`; the repository does not download or build map data.
+start it, prepare a regional OSRM dataset with:
+
+```sh
+scripts/prepare-osrm-data.sh north-america/us/new-york
+```
+
+The script downloads that Geofabrik region over HTTPS and runs the same pinned
+OSRM image and driving profile as the router (`osrm-extract`, then
+`osrm-contract` for Contraction Hierarchies). It installs the generated files
+in the `shopstops-osrm-data` Docker volume, which is mounted read-only by the
+router. Choose a region that covers the staging service area; extracts can be
+large and preprocessing needs substantial temporary disk space and memory. The
+script refuses to overwrite an existing prepared dataset. To use a different
+Docker volume name, set `SHOPSTOPS_OSRM_VOLUME` both when preparing the map and
+when running Compose. It requires `curl`, Docker Compose, and network access to
+Geofabrik and the container registry.
+
 Configure `SHOPSTOPS_OSRM_URL=http://osrm-router:5000` in `.env`, then start the
 stack with `docker compose --profile routing up --build -d`. Without the
 environment setting, the API does not call OSRM. When enabled, route assignment

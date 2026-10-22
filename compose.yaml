@@ -92,3 +92,4 @@ networks:
 volumes:
   shopstops-data:
   osrm-data:
+    name: ${SHOPSTOPS_OSRM_VOLUME:-shopstops-osrm-data}

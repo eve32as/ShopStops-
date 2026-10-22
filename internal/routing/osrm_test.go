@@ -2,9 +2,12 @@ package routing
 
 import (
 	"context"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestOSRMClientRouteReturnsLegs(t *testing.T) {
@@ -58,10 +61,48 @@ func TestOSRMClientRejectsInvalidCoordinate(t *testing.T) {
 	}
 }
 
+func TestOSRMClientTimesOutWhenRouterDoesNotRespond(t *testing.T) {
+	requestStarted := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		close(requestStarted)
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	client, err := NewOSRMClient(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.httpClient.Timeout != 500*time.Millisecond {
+		t.Fatalf("unexpected HTTP client timeout: %s", client.httpClient.Timeout)
+	}
+
+	started := time.Now()
+	_, err = client.Route(context.Background(), []Coordinate{
+		{Latitude: 40, Longitude: -73},
+		{Latitude: 41, Longitude: -72},
+	})
+	if err == nil {
+		t.Fatal("expected routing request to time out")
+	}
+	select {
+	case <-requestStarted:
+	default:
+		t.Fatal("request did not reach the test router")
+	}
+	var networkError net.Error
+	if !errors.As(err, &networkError) || !networkError.Timeout() {
+		t.Fatalf("expected timeout error, got %v", err)
+	}
+	if time.Since(started) > 2*time.Second {
+		t.Fatalf("client timeout took too long: %s", time.Since(started))
+	}
+}
+
 func TestOSRMClientRejectsInvalidURL(t *testing.T) {
 	for _, baseURL := range []string{
 		"http://router.example.com",
-		"******router.internal",
+		"http://router.internal?token=example",
 		"http://router.example.com/path",
 	} {
 		if _, err := NewOSRMClient(baseURL); err == nil {
