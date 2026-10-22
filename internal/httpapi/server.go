@@ -1900,6 +1900,7 @@ func (p *PostgresRepository) SaveDriverReroute(
 		SELECT id FROM driver_location_samples
 		WHERE route_id = $1 AND driver_ref = $2
 		  AND observed_at >= now() - interval '60 seconds'
+		  AND observed_at <= now() + interval '1 minute'
 		ORDER BY observed_at DESC, id DESC LIMIT 1`,
 		routeID, driverRef,
 	).Scan(&latestSampleID)
@@ -2005,6 +2006,7 @@ func (p *PostgresRepository) ShopperOrderTracking(
 			FROM driver_location_samples
 			WHERE route_id = route.id AND route.status = 'in_progress'
 			  AND observed_at >= now() - interval '60 seconds'
+			  AND observed_at <= now() + interval '1 minute'
 			ORDER BY observed_at DESC, id DESC LIMIT 1
 		) sample ON true
 		LEFT JOIN LATERAL (
