@@ -13,7 +13,7 @@ if ! printf '%s\n' "$region" | grep -Eq '^[a-z0-9-]+(/[a-z0-9-]+)*$'; then
   exit 2
 fi
 
-for command in curl docker grep; do
+for command in curl docker grep id; do
   if ! command -v "$command" >/dev/null 2>&1; then
     echo "Required command not found: $command" >&2
     exit 2
@@ -28,6 +28,8 @@ if ! printf '%s\n' "$volume" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9_.-]*$'; then
   exit 2
 fi
 export SHOPSTOPS_OSRM_VOLUME="$volume"
+host_uid=$(id -u)
+host_gid=$(id -g)
 
 work_dir=$(mktemp -d "${TMPDIR:-/tmp}/shopstops-osrm.XXXXXX")
 cleanup() {
@@ -43,8 +45,6 @@ echo "Downloading $map_url"
 curl --fail --location --proto '=https' --tlsv1.2 \
   --connect-timeout 30 --retry 3 --retry-delay 2 \
   --output "$map_file" "$map_url"
-chmod 1777 "$work_dir"
-chmod 644 "$map_file"
 
 compose() {
   docker compose --project-directory "$repo_root" -f "$repo_root/compose.yaml" "$@"
@@ -53,10 +53,12 @@ compose() {
 compose --profile routing pull osrm-router
 compose --profile routing run --rm --no-deps \
   --volume "$work_dir:/input" \
+  --user "$host_uid:$host_gid" \
   --entrypoint osrm-extract osrm-router \
   -p /opt/car.lua /input/region-latest.osm.pbf
 compose --profile routing run --rm --no-deps \
   --volume "$work_dir:/input" \
+  --user "$host_uid:$host_gid" \
   --entrypoint osrm-contract osrm-router \
   /input/region-latest.osrm
 
@@ -64,12 +66,33 @@ if [ ! -f "$work_dir/region-latest.osrm" ]; then
   echo "OSRM preprocessing did not produce region-latest.osrm." >&2
   exit 1
 fi
+for file in "$work_dir"/region-latest.osrm*; do
+  chmod 644 "$file"
+done
+
+# The volume stays private during preprocessing; 755/644 permissions let the
+# runtime router read the installed map files.
+# shellcheck disable=SC2016
+compose --profile routing run --rm --no-deps \
+  --volume "$volume:/target" \
+  --user 0:0 \
+  --entrypoint sh osrm-router -ec '
+    owner_uid=$1
+    owner_gid=$2
+    set -- /target/region-latest.osrm*
+    if [ -e "$1" ]; then
+      echo "The OSRM volume already contains region-latest.osrm; refusing to overwrite it." >&2
+      exit 1
+    fi
+    chown "$owner_uid:$owner_gid" /target
+    chmod 755 /target
+  ' sh "$host_uid" "$host_gid"
 
 # shellcheck disable=SC2016
 compose --profile routing run --rm --no-deps \
   --volume "$work_dir:/source:ro" \
   --volume "$volume:/target" \
-  --user 0:0 \
+  --user "$host_uid:$host_gid" \
   --entrypoint sh osrm-router -ec '
     set -- /target/region-latest.osrm*
     if [ -e "$1" ]; then

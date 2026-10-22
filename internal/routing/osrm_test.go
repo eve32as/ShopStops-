@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 )
@@ -63,8 +64,9 @@ func TestOSRMClientRejectsInvalidCoordinate(t *testing.T) {
 
 func TestOSRMClientTimesOutWhenRouterDoesNotRespond(t *testing.T) {
 	requestStarted := make(chan struct{})
+	var requestStartedOnce sync.Once
 	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		close(requestStarted)
+		requestStartedOnce.Do(func() { close(requestStarted) })
 		<-r.Context().Done()
 	}))
 	defer server.Close()
@@ -77,6 +79,7 @@ func TestOSRMClientTimesOutWhenRouterDoesNotRespond(t *testing.T) {
 		t.Fatalf("unexpected HTTP client timeout: %s", client.httpClient.Timeout)
 	}
 
+	started := time.Now()
 	result := make(chan error, 1)
 	go func() {
 		_, routeErr := client.Route(context.Background(), []Coordinate{
@@ -90,7 +93,6 @@ func TestOSRMClientTimesOutWhenRouterDoesNotRespond(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("request did not reach the test router")
 	}
-	started := time.Now()
 	var routeErr error
 	select {
 	case routeErr = <-result:
@@ -104,16 +106,21 @@ func TestOSRMClientTimesOutWhenRouterDoesNotRespond(t *testing.T) {
 	if !errors.As(routeErr, &networkError) || !networkError.Timeout() {
 		t.Fatalf("expected timeout error, got %v", routeErr)
 	}
-	if time.Since(started) > 2*time.Second {
+	if time.Since(started) > 1500*time.Millisecond {
 		t.Fatalf("client timeout took too long: %s", time.Since(started))
 	}
 }
 
 func TestOSRMClientRejectsInvalidURL(t *testing.T) {
+	if _, err := NewOSRMClient("https://router.example.com/"); err != nil {
+		t.Fatalf("expected a URL with a trailing origin slash to be accepted: %v", err)
+	}
 	for _, baseURL := range []string{
 		"http://router.example.com",
 		"http://router.internal?token=example",
+		"http://router.internal/path",
 		"http://router.example.com/path",
+		"https://router.example.com/path",
 	} {
 		if _, err := NewOSRMClient(baseURL); err == nil {
 			t.Errorf("expected URL %q to be rejected", baseURL)

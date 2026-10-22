@@ -50,6 +50,7 @@ func NewOSRMClient(baseURL string) (*OSRMClient, error) {
 	parsed, err := url.Parse(strings.TrimSpace(baseURL))
 	if err != nil || parsed.Host == "" || parsed.User != nil ||
 		(parsed.Scheme != "http" && parsed.Scheme != "https") ||
+		(parsed.Path != "" && parsed.Path != "/") ||
 		parsed.RawQuery != "" || parsed.Fragment != "" {
 		return nil, errors.New("OSRM URL must be an HTTP(S) origin without credentials or query")
 	}
