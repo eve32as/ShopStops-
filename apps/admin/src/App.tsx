@@ -49,16 +49,11 @@ async function fraudRequest<T>(
     throw new Error('Use a trusted HTTPS gateway URL without credentials, query, or fragment.')
   }
 
-  const response = await fetch(url, {
-    ...options,
-    redirect: 'error',
-    headers: {
-      Accept: 'application/json',
-      Authorization: ['Bear', 'er'].join('') + ' ' + token,
-      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
-      ...options.headers,
-    },
-  })
+  const headers = new Headers(options.headers)
+  headers.set('Accept', 'application/json')
+  headers.set('Authorization', ['Bear', 'er'].join('') + ' ' + token)
+  if (options.body) headers.set('Content-Type', 'application/json')
+  const response = await fetch(url, { ...options, redirect: 'error', headers })
   const result = await response.json().catch(() => null)
   if (!response.ok) {
     throw new Error(
@@ -116,7 +111,7 @@ function App() {
       )
       setFraudAlerts((current) => current.map((item) =>
         item.id === alert.id
-          ? { ...item, status, resolvedAt: new Date().toISOString() }
+          ? { ...item, status }
           : item,
       ))
     } catch (requestError) {
