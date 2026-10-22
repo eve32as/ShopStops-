@@ -622,6 +622,7 @@ func TestCreateBundleMapsIneligibleSeedToConflict(t *testing.T) {
 func TestAdminDeliveryZonesRequiresAdminAndListsZones(t *testing.T) {
 	repo := &fakeRepository{deliveryZones: []DeliveryZone{{
 		ID: "00000000-0000-0000-0000-000000000001", Name: "North", Enabled: true,
+		DriverMileageCostPerMileCents: 80,
 		Boundary: json.RawMessage(`{"type":"MultiPolygon","coordinates":[[[[-77.1,38.8],[-77.0,38.8],[-77.0,38.9],[-77.1,38.8]]]]}`),
 	}}}
 	handler := New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -645,6 +646,7 @@ func TestAdminDeliveryZonesRequiresAdminAndListsZones(t *testing.T) {
 	if recorder.Code != http.StatusOK ||
 		!strings.Contains(recorder.Body.String(), `"name":"North"`) ||
 		!strings.Contains(recorder.Body.String(), `"enabled":true`) ||
+		!strings.Contains(recorder.Body.String(), `"driverMileageCostPerMileCents":80`) ||
 		!strings.Contains(recorder.Body.String(), `"type":"MultiPolygon"`) {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
@@ -754,11 +756,12 @@ func TestAdminCanUpdateDeliveryZoneDispatchLimits(t *testing.T) {
 	repo := &fakeRepository{updateLimitsZone: DeliveryZone{
 		ID: zoneID, Name: "North", Enabled: true, MaxOrders: 5,
 		PickupRadiusMeters: 1500, DropoffRadiusMeters: 2500,
-		DispatchLimitsUpdatedBy: "admin-1",
+		DriverMileageCostPerMileCents: 80,
+		DispatchLimitsUpdatedBy:       "admin-1",
 	}}
 	request := httptest.NewRequest(http.MethodPatch,
 		"/admin/delivery-zones/"+zoneID+"/dispatch-limits",
-		strings.NewReader(`{"maxOrders":5,"pickupRadiusMeters":1500,"dropoffRadiusMeters":2500}`))
+		strings.NewReader(`{"maxOrders":5,"pickupRadiusMeters":1500,"dropoffRadiusMeters":2500,"driverMileageCostPerMileCents":80}`))
 	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
 	request.Header.Set("X-ShopStops-Actor", "admin-1")
 	request.Header.Set("X-ShopStops-Actor-Role", "admin")
@@ -769,10 +772,30 @@ func TestAdminCanUpdateDeliveryZoneDispatchLimits(t *testing.T) {
 		*repo.updatedDispatchLimits.MaxOrders != 5 ||
 		*repo.updatedDispatchLimits.PickupRadiusMeters != 1500 ||
 		*repo.updatedDispatchLimits.DropoffRadiusMeters != 2500 ||
+		repo.updatedDispatchLimits.DriverMileageCostPerMileCents == nil ||
+		*repo.updatedDispatchLimits.DriverMileageCostPerMileCents != 80 ||
 		repo.updatedDispatchActor != "admin-1" ||
-		!strings.Contains(recorder.Body.String(), `"maxOrders":5`) {
+		!strings.Contains(recorder.Body.String(), `"driverMileageCostPerMileCents":80`) {
 		t.Fatalf("status=%d limits=%+v actor=%s body=%s",
 			recorder.Code, repo.updatedDispatchLimits, repo.updatedDispatchActor, recorder.Body.String())
+	}
+}
+
+func TestAdminDispatchLimitUpdateAllowsOmittingMileageRate(t *testing.T) {
+	zoneID := "00000000-0000-0000-0000-000000000001"
+	repo := &fakeRepository{}
+	request := httptest.NewRequest(http.MethodPatch,
+		"/admin/delivery-zones/"+zoneID+"/dispatch-limits",
+		strings.NewReader(`{"maxOrders":5,"pickupRadiusMeters":1500,"dropoffRadiusMeters":2500}`))
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "admin-1")
+	request.Header.Set("X-ShopStops-Actor-Role", "admin")
+	recorder := httptest.NewRecorder()
+	New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
+		ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || repo.updatedDispatchLimits.DriverMileageCostPerMileCents != nil {
+		t.Fatalf("status=%d limits=%+v body=%s",
+			recorder.Code, repo.updatedDispatchLimits, recorder.Body.String())
 	}
 }
 
@@ -797,6 +820,8 @@ func TestAdminDispatchLimitUpdateRejectsUnauthorizedAndInvalidValues(t *testing.
 		`{"maxOrders":0,"pickupRadiusMeters":0,"dropoffRadiusMeters":0}`,
 		`{"maxOrders":3,"pickupRadiusMeters":100001,"dropoffRadiusMeters":0}`,
 		`{"maxOrders":3,"pickupRadiusMeters":0,"dropoffRadiusMeters":-1}`,
+		`{"maxOrders":3,"pickupRadiusMeters":0,"dropoffRadiusMeters":0,"driverMileageCostPerMileCents":-1}`,
+		`{"maxOrders":3,"pickupRadiusMeters":0,"dropoffRadiusMeters":0,"driverMileageCostPerMileCents":100001}`,
 		`{"maxOrders":3,"pickupRadiusMeters":0,"dropoffRadiusMeters":0,"unknown":true}`,
 	} {
 		request := httptest.NewRequest(http.MethodPatch,

@@ -260,6 +260,9 @@ Logistics Hub zone.
 surcharge in cents when given a trusted route distance. Checkout does not yet
 apply mileage charges because route distances are not available until after
 checkout; client-provided distances are not trusted for billing.
+Admins can adjust each sector's rate in Delivery Operations; the change is
+recorded with the dispatch-setting audit metadata and emitted through the
+delivery-zone outbox event.
 
 `create_unified_route` requires a paid basket containing an anchor restaurant
 order and exactly one partner merchant. It persists the mandatory immutable

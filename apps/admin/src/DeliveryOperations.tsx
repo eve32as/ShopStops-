@@ -11,6 +11,7 @@ type DeliveryZone = {
   maxOrders: number
   pickupRadiusMeters: number
   dropoffRadiusMeters: number
+  driverMileageCostPerMileCents: number
   dispatchLimitsUpdatedBy: string
   dispatchLimitsUpdatedAt: string
 }
@@ -44,6 +45,7 @@ type DispatchLimitDraft = {
   maxOrders: string
   pickupRadiusMeters: string
   dropoffRadiusMeters: string
+  driverMileageCostPerMile: string
 }
 
 type Bundle = {
@@ -71,6 +73,7 @@ type Props = {
 }
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+const mileageRatePattern = /^\d+(?:\.\d{1,2})?$/
 const operationsRefreshIntervalMs = 15_000
 const dispatchStreamSubprotocol = 'shopstops-admin-v1'
 
@@ -394,6 +397,7 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
         maxOrders: String(zone.maxOrders),
         pickupRadiusMeters: String(zone.pickupRadiusMeters),
         dropoffRadiusMeters: String(zone.dropoffRadiusMeters),
+        driverMileageCostPerMile: (zone.driverMileageCostPerMileCents / 100).toFixed(2),
       }])))
     } catch (error) {
       setZonesError(error instanceof Error ? error.message : 'Could not load delivery zones.')
@@ -443,10 +447,15 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
     const max = Number(draft?.maxOrders)
     const pickup = Number(draft?.pickupRadiusMeters)
     const dropoff = Number(draft?.dropoffRadiusMeters)
+    const mileageDollars = Number(draft?.driverMileageCostPerMile)
+    const mileageCents = Math.round(mileageDollars * 100)
     if (!draft || !Number.isInteger(max) || max < 1 || max > 100 ||
       !Number.isInteger(pickup) || pickup < 0 || pickup > 100000 ||
-      !Number.isInteger(dropoff) || dropoff < 0 || dropoff > 100000) {
-      setZonesError('Max orders must be 1–100 and each radius must be 0–100,000 meters.')
+      !Number.isInteger(dropoff) || dropoff < 0 || dropoff > 100000 ||
+      !mileageRatePattern.test(draft?.driverMileageCostPerMile ?? '') ||
+      !Number.isFinite(mileageDollars) ||
+      mileageCents < 0 || mileageCents > 100000) {
+      setZonesError('Max orders must be 1–100, each radius 0–100,000 meters, and mileage rate $0.00–$1,000.00 per mile in cent increments.')
       return
     }
     let url: URL
@@ -470,6 +479,7 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
           maxOrders: max,
           pickupRadiusMeters: pickup,
           dropoffRadiusMeters: dropoff,
+          driverMileageCostPerMileCents: mileageCents,
         }),
       })
       if (!response.ok) throw await requestError(response)
@@ -481,6 +491,7 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
           maxOrders: String(updated.maxOrders),
           pickupRadiusMeters: String(updated.pickupRadiusMeters),
           dropoffRadiusMeters: String(updated.dropoffRadiusMeters),
+          driverMileageCostPerMile: (updated.driverMileageCostPerMileCents / 100).toFixed(2),
         },
       }))
     } catch (error) {
@@ -793,6 +804,7 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
                               maxOrders: String(zone.maxOrders),
                               pickupRadiusMeters: String(zone.pickupRadiusMeters),
                               dropoffRadiusMeters: String(zone.dropoffRadiusMeters),
+                              driverMileageCostPerMile: (zone.driverMileageCostPerMileCents / 100).toFixed(2),
                             }),
                             maxOrders: event.target.value,
                           },
@@ -809,6 +821,7 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
                               maxOrders: String(zone.maxOrders),
                               pickupRadiusMeters: String(zone.pickupRadiusMeters),
                               dropoffRadiusMeters: String(zone.dropoffRadiusMeters),
+                              driverMileageCostPerMile: (zone.driverMileageCostPerMileCents / 100).toFixed(2),
                             }),
                             pickupRadiusMeters: event.target.value,
                           },
@@ -825,14 +838,32 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
                               maxOrders: String(zone.maxOrders),
                               pickupRadiusMeters: String(zone.pickupRadiusMeters),
                               dropoffRadiusMeters: String(zone.dropoffRadiusMeters),
+                              driverMileageCostPerMile: (zone.driverMileageCostPerMileCents / 100).toFixed(2),
                             }),
                             dropoffRadiusMeters: event.target.value,
                           },
                         }))} />
                     </label>
+                    <label>
+                      Driver mileage rate ($/mile)
+                      <input disabled={savingLimitsZone === zone.id} type="number" min="0" max="1000" step="0.01"
+                        value={zoneDrafts[zone.id]?.driverMileageCostPerMile ?? ''}
+                        onChange={(event) => setZoneDrafts((current) => ({
+                          ...current,
+                          [zone.id]: {
+                            ...(current[zone.id] ?? {
+                              maxOrders: String(zone.maxOrders),
+                              pickupRadiusMeters: String(zone.pickupRadiusMeters),
+                              dropoffRadiusMeters: String(zone.dropoffRadiusMeters),
+                              driverMileageCostPerMile: (zone.driverMileageCostPerMileCents / 100).toFixed(2),
+                            }),
+                            driverMileageCostPerMile: event.target.value,
+                          },
+                        }))} />
+                    </label>
                     <button className="select-checkout" disabled={savingLimitsZone === zone.id}
                       onClick={() => saveDispatchLimits(zone)} type="button">
-                      {savingLimitsZone === zone.id ? 'Saving…' : 'Save limits'}
+                      {savingLimitsZone === zone.id ? 'Saving…' : 'Save zone settings'}
                     </button>
                   </div>
                   <small className="zone-audit">Updated {new Date(zone.dispatchLimitsUpdatedAt).toLocaleString()} by {zone.dispatchLimitsUpdatedBy}</small>

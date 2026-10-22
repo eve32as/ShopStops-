@@ -69,15 +69,16 @@ type AdminCheckoutRepository interface {
 }
 
 type DeliveryZone struct {
-	ID                      string          `json:"id"`
-	Name                    string          `json:"name"`
-	Enabled                 bool            `json:"enabled"`
-	Boundary                json.RawMessage `json:"boundary"`
-	MaxOrders               int             `json:"maxOrders"`
-	PickupRadiusMeters      int             `json:"pickupRadiusMeters"`
-	DropoffRadiusMeters     int             `json:"dropoffRadiusMeters"`
-	DispatchLimitsUpdatedBy string          `json:"dispatchLimitsUpdatedBy"`
-	DispatchLimitsUpdatedAt time.Time       `json:"dispatchLimitsUpdatedAt"`
+	ID                            string          `json:"id"`
+	Name                          string          `json:"name"`
+	Enabled                       bool            `json:"enabled"`
+	Boundary                      json.RawMessage `json:"boundary"`
+	MaxOrders                     int             `json:"maxOrders"`
+	PickupRadiusMeters            int             `json:"pickupRadiusMeters"`
+	DropoffRadiusMeters           int             `json:"dropoffRadiusMeters"`
+	DriverMileageCostPerMileCents int             `json:"driverMileageCostPerMileCents"`
+	DispatchLimitsUpdatedBy       string          `json:"dispatchLimitsUpdatedBy"`
+	DispatchLimitsUpdatedAt       time.Time       `json:"dispatchLimitsUpdatedAt"`
 }
 
 type AdminDeliveryRepository interface {
@@ -119,9 +120,10 @@ type AdminDispatchRoute struct {
 }
 
 type dispatchLimitsRequest struct {
-	MaxOrders           *int `json:"maxOrders"`
-	PickupRadiusMeters  *int `json:"pickupRadiusMeters"`
-	DropoffRadiusMeters *int `json:"dropoffRadiusMeters"`
+	MaxOrders                     *int `json:"maxOrders"`
+	PickupRadiusMeters            *int `json:"pickupRadiusMeters"`
+	DropoffRadiusMeters           *int `json:"dropoffRadiusMeters"`
+	DriverMileageCostPerMileCents *int `json:"driverMileageCostPerMileCents"`
 }
 
 type LifecycleRepository interface {
@@ -641,7 +643,10 @@ func (s *Server) updateAdminDispatchLimits(w http.ResponseWriter, r *http.Reques
 		request.DropoffRadiusMeters == nil ||
 		*request.MaxOrders < 1 || *request.MaxOrders > 100 ||
 		*request.PickupRadiusMeters < 0 || *request.PickupRadiusMeters > 100000 ||
-		*request.DropoffRadiusMeters < 0 || *request.DropoffRadiusMeters > 100000 {
+		*request.DropoffRadiusMeters < 0 || *request.DropoffRadiusMeters > 100000 ||
+		(request.DriverMileageCostPerMileCents != nil &&
+			(*request.DriverMileageCostPerMileCents < 0 ||
+				*request.DriverMileageCostPerMileCents > 100000)) {
 		writeError(w, http.StatusBadRequest, "dispatch limits are outside allowed ranges")
 		return
 	}

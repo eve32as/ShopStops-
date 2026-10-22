@@ -759,7 +759,7 @@ paths:
     patch:
       operationId: updateAdminDeliveryZoneDispatchLimits
       summary: Save dispatch defaults for a delivery zone
-      description: Admin-only. Values are used when a dispatch request omits per-run order and radius limits. Vehicle capacity remains per run.
+      description: Admin-only. Values are used when a dispatch request omits per-run order and radius limits. The optional mileage rate updates the zone's driver cost per mile in cents. Vehicle capacity remains per run.
       parameters:
         - in: path
           name: zoneId
@@ -788,9 +788,13 @@ paths:
                   type: integer
                   minimum: 0
                   maximum: 100000
+                driverMileageCostPerMileCents:
+                  type: integer
+                  minimum: 0
+                  maximum: 100000
       responses:
         '200':
-          description: Saved dispatch limits with audit metadata
+          description: Saved zone dispatch and mileage settings with audit metadata
           content:
             application/json:
               schema:
@@ -1229,7 +1233,7 @@ components:
           maximum: 500
     DeliveryZone:
       type: object
-      required: [id, name, enabled, maxOrders, pickupRadiusMeters, dropoffRadiusMeters, dispatchLimitsUpdatedBy, dispatchLimitsUpdatedAt]
+      required: [id, name, enabled, maxOrders, pickupRadiusMeters, dropoffRadiusMeters, driverMileageCostPerMileCents, dispatchLimitsUpdatedBy, dispatchLimitsUpdatedAt]
       properties:
         id:
           type: string
@@ -1247,6 +1251,10 @@ components:
           minimum: 0
           maximum: 100000
         dropoffRadiusMeters:
+          type: integer
+          minimum: 0
+          maximum: 100000
+        driverMileageCostPerMileCents:
           type: integer
           minimum: 0
           maximum: 100000

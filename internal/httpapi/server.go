@@ -1445,6 +1445,7 @@ func (p *PostgresRepository) AdminDeliveryZones(ctx context.Context) ([]Delivery
 	rows, err := p.db.QueryContext(ctx, `
 		SELECT id, name, enabled, dispatch_max_orders,
 		       dispatch_pickup_radius_m, dispatch_dropoff_radius_m,
+		       driver_mileage_cost_per_mile_cents,
 		       dispatch_limits_updated_by, dispatch_limits_updated_at,
 		       ST_AsGeoJSON(boundary)::jsonb
 		FROM delivery_zones
@@ -1459,6 +1460,7 @@ func (p *PostgresRepository) AdminDeliveryZones(ctx context.Context) ([]Delivery
 		if err := rows.Scan(
 			&zone.ID, &zone.Name, &zone.Enabled, &zone.MaxOrders,
 			&zone.PickupRadiusMeters, &zone.DropoffRadiusMeters,
+			&zone.DriverMileageCostPerMileCents,
 			&zone.DispatchLimitsUpdatedBy, &zone.DispatchLimitsUpdatedAt, &zone.Boundary,
 		); err != nil {
 			return nil, err
@@ -1627,12 +1629,14 @@ func (p *PostgresRepository) UpdateAdminDeliveryZone(
 		WHERE id = $1::uuid
 		RETURNING id, name, enabled, dispatch_max_orders,
 		          dispatch_pickup_radius_m, dispatch_dropoff_radius_m,
+		          driver_mileage_cost_per_mile_cents,
 		          dispatch_limits_updated_by, dispatch_limits_updated_at,
 		          ST_AsGeoJSON(boundary)::jsonb`,
 		zoneID, enabled,
 	).Scan(
 		&zone.ID, &zone.Name, &zone.Enabled, &zone.MaxOrders,
 		&zone.PickupRadiusMeters, &zone.DropoffRadiusMeters,
+		&zone.DriverMileageCostPerMileCents,
 		&zone.DispatchLimitsUpdatedBy, &zone.DispatchLimitsUpdatedAt, &zone.Boundary,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -1650,23 +1654,31 @@ func (p *PostgresRepository) UpdateAdminDispatchLimits(
 	}
 	defer tx.Rollback()
 	var zone DeliveryZone
+	var mileageRate any
+	if request.DriverMileageCostPerMileCents != nil {
+		mileageRate = *request.DriverMileageCostPerMileCents
+	}
 	err = tx.QueryRowContext(ctx, `
 		UPDATE delivery_zones
 		SET dispatch_max_orders = $2,
 		    dispatch_pickup_radius_m = $3,
 		    dispatch_dropoff_radius_m = $4,
 		    dispatch_limits_updated_by = $5,
-		    dispatch_limits_updated_at = now()
+		    dispatch_limits_updated_at = now(),
+		    driver_mileage_cost_per_mile_cents =
+		        COALESCE($6::integer, driver_mileage_cost_per_mile_cents)
 		WHERE id = $1::uuid
 		RETURNING id, name, enabled, dispatch_max_orders,
 		          dispatch_pickup_radius_m, dispatch_dropoff_radius_m,
+		          driver_mileage_cost_per_mile_cents,
 		          dispatch_limits_updated_by, dispatch_limits_updated_at,
 		          ST_AsGeoJSON(boundary)::jsonb`,
 		zoneID, *request.MaxOrders, *request.PickupRadiusMeters,
-		*request.DropoffRadiusMeters, adminActor,
+		*request.DropoffRadiusMeters, adminActor, mileageRate,
 	).Scan(
 		&zone.ID, &zone.Name, &zone.Enabled, &zone.MaxOrders,
 		&zone.PickupRadiusMeters, &zone.DropoffRadiusMeters,
+		&zone.DriverMileageCostPerMileCents,
 		&zone.DispatchLimitsUpdatedBy, &zone.DispatchLimitsUpdatedAt, &zone.Boundary,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -1683,10 +1695,12 @@ func (p *PostgresRepository) UpdateAdminDispatchLimits(
 		            'maxOrders', $2::integer,
 		            'pickupRadiusMeters', $3::integer,
 		            'dropoffRadiusMeters', $4::integer,
-		            'updatedBy', $5::text
+		            'updatedBy', $5::text,
+		            'driverMileageCostPerMileCents',
+		                $6::integer
 		        ))`,
 		zoneID, zone.MaxOrders, zone.PickupRadiusMeters,
-		zone.DropoffRadiusMeters, adminActor,
+		zone.DropoffRadiusMeters, adminActor, zone.DriverMileageCostPerMileCents,
 	); err != nil {
 		return DeliveryZone{}, err
 	}
