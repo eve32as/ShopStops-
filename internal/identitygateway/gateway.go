@@ -295,6 +295,8 @@ func requiredRoles(method, path string) ([]string, bool) {
 		return []string{"customer"}, true
 	case strings.HasPrefix(path, "/merchant/"):
 		return methodRole(method, "merchant")
+	case strings.HasPrefix(path, "/shopper/"):
+		return methodRole(method, "shopper")
 	case strings.HasPrefix(path, "/driver/"):
 		return methodRole(method, "driver")
 	case strings.HasPrefix(path, "/dispatch/"):
