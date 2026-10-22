@@ -43,6 +43,8 @@ echo "Downloading $map_url"
 curl --fail --location --proto '=https' --tlsv1.2 \
   --connect-timeout 30 --retry 3 --retry-delay 2 \
   --output "$map_file" "$map_url"
+chmod 1777 "$work_dir"
+chmod 644 "$map_file"
 
 compose() {
   docker compose --project-directory "$repo_root" -f "$repo_root/compose.yaml" "$@"
@@ -67,6 +69,7 @@ fi
 compose --profile routing run --rm --no-deps \
   --volume "$work_dir:/source:ro" \
   --volume "$volume:/target" \
+  --user 0:0 \
   --entrypoint sh osrm-router -ec '
     set -- /target/region-latest.osrm*
     if [ -e "$1" ]; then
