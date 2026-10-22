@@ -159,14 +159,34 @@ the assignment transaction rather than persisting an incomplete route.
 
 The Expo app optionally supports Google Places address search and Google Routes
 traffic-aware driver ETAs. Set `EXPO_PUBLIC_GOOGLE_MAPS_API_KEY` when building
-the app and enable Places API (New) and Routes API in the Google Cloud project.
+the app and enable Places API (New), Routes API, and Maps SDK for Android in the
+Google Cloud project. Dynamic Expo config supplies the key to Android Maps;
+rebuild the native app after changing the key.
 This key is embedded in the client and is not a secret: restrict it to the
 required APIs and the applicable app identifiers where supported, and set
 quotas and billing alerts. Avoid using a broadly unrestricted key. Traffic ETAs
 refresh every two minutes while a driver route is open. Google integration is
 disabled when the setting is absent; shoppers can still enter coordinates
-manually. These route estimates do not enable mileage charges at checkout:
-trusted pre-checkout route distances are still unavailable.
+manually. Driver maps show stop markers and an interactive route line; Google
+road geometry is displayed when Routes API is configured, otherwise the line
+connects stops directly. These route estimates do not enable mileage charges at
+checkout: trusted pre-checkout route distances are still unavailable.
+
+The Go OSRM client includes an opt-in 1,000-request synchronized stress test.
+Run it only against an isolated staging OSRM instance from an environment with
+private-network access:
+
+```sh
+SHOPSTOPS_OSRM_STRESS_URL=http://osrm-router:5000 \
+  go test ./internal/routing -run '^TestOSRMClientStress1000Concurrent$' -count=1 -v
+```
+
+The default test coordinates are in New York; set
+`SHOPSTOPS_OSRM_STRESS_COORDINATES` to a semicolon-separated list of
+`latitude,longitude` pairs covered by the prepared map. The test reports
+latencies and fails if any request errors or exceeds the client's 500 ms
+timeout. Results depend on the staging hardware, map extract, and workload and
+are not a general performance guarantee.
 
 The example issuer is a placeholder. The gateway must be able to reach the real
 OIDC discovery/JWKS endpoints at startup. Keep `.env` private; Compose passes

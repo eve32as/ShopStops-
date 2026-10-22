@@ -6,6 +6,10 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -164,5 +168,107 @@ func TestOSRMClientRejectsInvalidResponses(t *testing.T) {
 				t.Fatalf("expected response failure, got %v", err)
 			}
 		})
+	}
+}
+
+func TestOSRMClientStress1000Concurrent(t *testing.T) {
+	baseURL := os.Getenv("SHOPSTOPS_OSRM_STRESS_URL")
+	if baseURL == "" {
+		t.Skip("set SHOPSTOPS_OSRM_STRESS_URL to run the opt-in 1,000-request OSRM stress test")
+	}
+	client, err := NewOSRMClient(baseURL)
+	if err != nil {
+		t.Fatalf("configure OSRM stress client: %v", err)
+	}
+
+	coordinates := []Coordinate{
+		{Latitude: 40.758, Longitude: -73.985},
+		{Latitude: 40.740, Longitude: -73.970},
+	}
+	if rawCoordinates := os.Getenv("SHOPSTOPS_OSRM_STRESS_COORDINATES"); rawCoordinates != "" {
+		parts := strings.Split(rawCoordinates, ";")
+		if len(parts) < 2 || len(parts) > 100 {
+			t.Fatal("SHOPSTOPS_OSRM_STRESS_COORDINATES must contain 2-100 lat,lon pairs separated by semicolons")
+		}
+		coordinates = make([]Coordinate, 0, len(parts))
+		for _, part := range parts {
+			values := strings.Split(part, ",")
+			if len(values) != 2 {
+				t.Fatalf("invalid stress coordinate %q; expected lat,lon", part)
+			}
+			latitude, latitudeErr := strconv.ParseFloat(strings.TrimSpace(values[0]), 64)
+			longitude, longitudeErr := strconv.ParseFloat(strings.TrimSpace(values[1]), 64)
+			if latitudeErr != nil || longitudeErr != nil {
+				t.Fatalf("invalid stress coordinate %q; expected numeric lat,lon", part)
+			}
+			coordinates = append(coordinates, Coordinate{
+				Latitude: latitude, Longitude: longitude,
+			})
+		}
+	}
+
+	const requestCount = 1000
+	start := make(chan struct{})
+	var ready sync.WaitGroup
+	ready.Add(requestCount)
+	type result struct {
+		duration time.Duration
+		err      error
+		legCount int
+	}
+	results := make(chan result, requestCount)
+	for range requestCount {
+		go func() {
+			ready.Done()
+			<-start
+			requestStarted := time.Now()
+			legs, routeErr := client.Route(context.Background(), coordinates)
+			results <- result{
+				duration: time.Since(requestStarted),
+				err:      routeErr,
+				legCount: len(legs),
+			}
+		}()
+	}
+	ready.Wait()
+	releasedAt := time.Now()
+	close(start)
+
+	durations := make([]time.Duration, 0, requestCount)
+	var failures []string
+	for range requestCount {
+		response := <-results
+		durations = append(durations, response.duration)
+		if response.err != nil {
+			failures = append(failures, response.err.Error())
+		} else if response.legCount != len(coordinates)-1 {
+			failures = append(failures, "OSRM response had an unexpected leg count")
+		}
+	}
+	sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
+	elapsed := time.Since(releasedAt)
+	t.Logf("OSRM 1,000-request stress results: elapsed=%s p50=%s p95=%s p99=%s max=%s failures=%d",
+		elapsed,
+		durations[requestCount*50/100],
+		durations[requestCount*95/100],
+		durations[requestCount*99/100],
+		durations[requestCount-1],
+		len(failures),
+	)
+	for index, failure := range failures {
+		if index == 5 {
+			t.Logf("additional failures omitted (%d total)", len(failures))
+			break
+		}
+		t.Errorf("OSRM stress request failed: %s", failure)
+	}
+	if len(failures) > 0 {
+		t.FailNow()
+	}
+	for index, duration := range durations {
+		if duration > 500*time.Millisecond {
+			t.Errorf("OSRM stress request %d exceeded 500 ms: %s", index+1, duration)
+			break
+		}
 	}
 }

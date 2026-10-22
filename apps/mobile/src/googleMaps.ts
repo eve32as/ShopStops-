@@ -9,7 +9,45 @@ export type TrafficETA = {
   distanceMeters: number;
   durationSeconds: number;
   staticDurationSeconds: number;
+  path: RouteCoordinate[];
 };
+
+function decodePolyline(encoded: string): RouteCoordinate[] {
+  if (encoded.length > 100_000) throw new Error("Google Routes returned an oversized route path.");
+  const coordinates: RouteCoordinate[] = [];
+  let index = 0;
+  let latitude = 0;
+  let longitude = 0;
+  const decodeValue = () => {
+    let result = 0;
+    let shift = 0;
+    let byte: number;
+    do {
+      if (index >= encoded.length || shift > 30) {
+        throw new Error("Google Routes returned an invalid route path.");
+      }
+      byte = encoded.charCodeAt(index++) - 63;
+      if (byte < 0 || byte > 63) throw new Error("Google Routes returned an invalid route path.");
+      result |= (byte & 0x1f) << shift;
+      shift += 5;
+    } while (byte >= 0x20);
+    return (result & 1) ? ~(result >> 1) : (result >> 1);
+  };
+
+  while (index < encoded.length) {
+    latitude += decodeValue();
+    longitude += decodeValue();
+    const coordinate = { latitude: latitude / 1e5, longitude: longitude / 1e5 };
+    if (
+      coordinate.latitude < -90 || coordinate.latitude > 90 ||
+      coordinate.longitude < -180 || coordinate.longitude > 180
+    ) {
+      throw new Error("Google Routes returned out-of-range route coordinates.");
+    }
+    coordinates.push(coordinate);
+  }
+  return coordinates;
+}
 
 function parseDurationSeconds(value: string) {
   const match = /^(\d+(?:\.\d+)?)s$/.exec(value);
@@ -38,7 +76,7 @@ export async function getTrafficAwareETAs(
     headers: {
       "Content-Type": "application/json",
       "X-Goog-Api-Key": apiKey,
-      "X-Goog-FieldMask": "routes.legs.duration,routes.legs.staticDuration,routes.legs.distanceMeters",
+      "X-Goog-FieldMask": "routes.legs.duration,routes.legs.staticDuration,routes.legs.distanceMeters,routes.legs.polyline.encodedPolyline",
     },
     body: JSON.stringify({
       origin: waypoint(coordinates[0]),
@@ -53,7 +91,12 @@ export async function getTrafficAwareETAs(
   if (!response.ok) throw new Error(`Google Routes ETA request failed (${response.status}).`);
   const result = await response.json() as {
     routes?: Array<{
-      legs?: Array<{ duration?: string; staticDuration?: string; distanceMeters?: number }>;
+      legs?: Array<{
+        duration?: string;
+        staticDuration?: string;
+        distanceMeters?: number;
+        polyline?: { encodedPolyline?: string };
+      }>;
     }>;
   };
   const legs = result.routes?.[0]?.legs ?? [];
@@ -71,6 +114,9 @@ export async function getTrafficAwareETAs(
       distanceMeters: leg.distanceMeters!,
       durationSeconds: parseDurationSeconds(leg.duration),
       staticDurationSeconds: parseDurationSeconds(leg.staticDuration),
+      path: typeof leg.polyline?.encodedPolyline === "string"
+        ? decodePolyline(leg.polyline.encodedPolyline)
+        : [],
     };
   });
 }

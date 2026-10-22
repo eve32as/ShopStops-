@@ -26,7 +26,8 @@ import {
 } from "../src/backgroundLocation";
 import { NativeSignIn } from "../src/NativeSignIn";
 import { AddressAutocomplete } from "../src/AddressAutocomplete";
-import { getTrafficAwareETAs, type TrafficETA } from "../src/googleMaps";
+import { DriverRouteMap } from "../src/DriverRouteMap";
+import { getTrafficAwareETAs, type RouteCoordinate, type TrafficETA } from "../src/googleMaps";
 
 type Role = "Shopper" | "In-store Shopper" | "Driver" | "Merchant";
 type NearbyMerchant = {
@@ -317,6 +318,26 @@ export default function HomeScreen() {
       requestController?.abort();
     };
   }, [role, route]);
+
+  const driverRoutePath = useMemo(() => {
+    if (!route) return [];
+    const roadPath = trafficETAs.reduce<RouteCoordinate[]>((combined, eta) => {
+      const startsAtPreviousEndpoint = combined.length > 0 && eta.path.length > 0 &&
+        combined[combined.length - 1].latitude === eta.path[0].latitude &&
+        combined[combined.length - 1].longitude === eta.path[0].longitude;
+      combined.push(...(startsAtPreviousEndpoint ? eta.path.slice(1) : eta.path));
+      return combined;
+    }, []);
+    return roadPath.length >= 2
+      ? roadPath
+      : route.stops
+        .slice()
+        .sort((left, right) => left.sequence - right.sequence)
+        .map(({ latitude: stopLatitude, longitude: stopLongitude }) => ({
+          latitude: stopLatitude,
+          longitude: stopLongitude,
+        }));
+  }, [route, trafficETAs]);
 
   const run = useCallback(async <T,>(action: () => Promise<T>) => {
     setBusy(true);
@@ -1713,6 +1734,16 @@ export default function HomeScreen() {
             {route ? (
               <View style={styles.routeBox}>
                 <Text style={styles.checkoutLabel}>ROUTE · {route.status.toUpperCase()}</Text>
+                <DriverRouteMap
+                  path={driverRoutePath}
+                  stops={route.stops}
+                  tracking={tracking}
+                />
+                {trafficETAs.length === 0 ? (
+                  <Text style={styles.tinyNote}>
+                    The line connects stops directly. Configure Google Routes to show road-following geometry.
+                  </Text>
+                ) : null}
                 {googleMapsApiKey ? (
                   <View style={styles.checkoutBox} accessibilityLiveRegion="polite">
                     <Text style={styles.checkoutLabel}>TRAFFIC-AWARE ARRIVAL ESTIMATES</Text>
