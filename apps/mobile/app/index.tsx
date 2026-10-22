@@ -25,6 +25,8 @@ import {
   stopDriverLocationUpdates,
 } from "../src/backgroundLocation";
 import { NativeSignIn } from "../src/NativeSignIn";
+import { AddressAutocomplete } from "../src/AddressAutocomplete";
+import { getTrafficAwareETAs, type TrafficETA } from "../src/googleMaps";
 
 type Role = "Shopper" | "In-store Shopper" | "Driver" | "Merchant";
 type NearbyMerchant = {
@@ -95,6 +97,13 @@ type Route = {
     longitude: number;
     status: string;
   }[];
+  legs?: {
+    fromSequence: number;
+    toSequence: number;
+    distanceMeters: number;
+    durationSeconds: number;
+    provider: string;
+  }[];
 };
 type StopEvent = {
   stopId: string;
@@ -149,6 +158,7 @@ type DriverCashoutSummary = {
 };
 
 const stripeKeyConfigured = Boolean(process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY);
+const googleMapsApiKey = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY?.trim() ?? "";
 const shopperOrderIDsKey = "shopstops.shopper-order-ids.v1";
 const userSessionKey = "shopstops.user-session.v1";
 
@@ -222,7 +232,11 @@ export default function HomeScreen() {
   const [orderProgress, setOrderProgress] = useState<Record<string, OrderProgress>>({});
   const [latitude, setLatitude] = useState("");
   const [longitude, setLongitude] = useState("");
+  const [dropoffAddress, setDropoffAddress] = useState("");
   const [routeId, setRouteId] = useState("");
+  const [trafficETAs, setTrafficETAs] = useState<TrafficETA[]>([]);
+  const [trafficETAError, setTrafficETAError] = useState("");
+  const [trafficETAUpdatedAt, setTrafficETAUpdatedAt] = useState("");
   const [tracking, setTracking] = useState(false);
   const [deliveryWindow, setDeliveryWindow] = useState<DeliveryWindow>(() => createDeliveryWindow());
   const basketWindow = useRef<DeliveryWindow | null>(null);
@@ -258,6 +272,47 @@ export default function HomeScreen() {
     () => [...new Set(orderIds.split(/[\s,]+/).map((id) => id.trim()).filter(isUUID))],
     [orderIds],
   );
+
+  useEffect(() => {
+    if (!route || role !== "Driver" || !googleMapsApiKey) {
+      setTrafficETAs([]);
+      setTrafficETAError("");
+      setTrafficETAUpdatedAt("");
+      return;
+    }
+    let active = true;
+    let requestController: AbortController | null = null;
+    const coordinates = route.stops
+      .slice()
+      .sort((left, right) => left.sequence - right.sequence)
+      .map(({ latitude: stopLatitude, longitude: stopLongitude }) => ({
+        latitude: stopLatitude,
+        longitude: stopLongitude,
+      }));
+    const refresh = async () => {
+      requestController?.abort();
+      requestController = new AbortController();
+      try {
+        const estimates = await getTrafficAwareETAs(
+          googleMapsApiKey, coordinates, requestController.signal,
+        );
+        if (!active) return;
+        setTrafficETAs(estimates);
+        setTrafficETAError("");
+        setTrafficETAUpdatedAt(new Date().toISOString());
+      } catch (error) {
+        if (!active || requestController.signal.aborted) return;
+        setTrafficETAError(error instanceof Error ? error.message : "Traffic ETA is unavailable.");
+      }
+    };
+    void refresh();
+    const timer = setInterval(() => void refresh(), 120_000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+      requestController?.abort();
+    };
+  }, [role, route]);
 
   const run = useCallback(async <T,>(action: () => Promise<T>) => {
     setBusy(true);
@@ -1446,6 +1501,16 @@ export default function HomeScreen() {
                   </View>
                 );
               })}
+              <AddressAutocomplete
+                apiKey={googleMapsApiKey}
+                disabled={Boolean(checkout) || Boolean(orderIds.trim())}
+                onAddressSelected={(selected) => {
+                  setDropoffAddress(selected.address);
+                  setLatitude(String(selected.latitude));
+                  setLongitude(String(selected.longitude));
+                }}
+              />
+              {dropoffAddress ? <Text style={styles.tinyNote}>Selected address · {dropoffAddress}</Text> : null}
               <View style={styles.fieldGrid}>
                 <Field editable={!checkout && !orderIds.trim()} label="Drop-off latitude" keyboardType="decimal-pad" onChangeText={setLatitude} value={latitude} />
                 <Field editable={!checkout && !orderIds.trim()} label="Drop-off longitude" keyboardType="decimal-pad" onChangeText={setLongitude} value={longitude} />
@@ -1644,6 +1709,38 @@ export default function HomeScreen() {
             {route ? (
               <View style={styles.routeBox}>
                 <Text style={styles.checkoutLabel}>ROUTE · {route.status.toUpperCase()}</Text>
+                {googleMapsApiKey ? (
+                  <View style={styles.checkoutBox} accessibilityLiveRegion="polite">
+                    <Text style={styles.checkoutLabel}>TRAFFIC-AWARE ARRIVAL ESTIMATES</Text>
+                    {trafficETAs.map((eta) => (
+                      <View key={`${eta.fromSequence}-${eta.toSequence}`} style={styles.invoiceRow}>
+                        <Text style={styles.invoiceLabel}>
+                          Stop {eta.fromSequence} → {eta.toSequence}
+                        </Text>
+                        <Text style={styles.invoiceAmount}>
+                          ~{Math.ceil(eta.durationSeconds / 60)} min · {(eta.distanceMeters / 1000).toFixed(1)} km
+                        </Text>
+                      </View>
+                    ))}
+                    {trafficETAUpdatedAt ? (
+                      <Text style={styles.tinyNote}>
+                        Updated {new Date(trafficETAUpdatedAt).toLocaleTimeString()} · refreshes every 2 minutes
+                      </Text>
+                    ) : null}
+                    {trafficETAError ? (
+                      <Text style={styles.tinyNote}>
+                        {trafficETAError} Road distance metadata remains available from the routing service when configured.
+                      </Text>
+                    ) : null}
+                    {!trafficETAUpdatedAt && !trafficETAError ? (
+                      <Text style={styles.tinyNote}>Loading current traffic…</Text>
+                    ) : null}
+                  </View>
+                ) : (
+                  <Text style={styles.tinyNote}>
+                    Configure EXPO_PUBLIC_GOOGLE_MAPS_API_KEY to enable traffic-aware arrival estimates.
+                  </Text>
+                )}
                 {route.stops
                   .slice()
                   .sort((a, b) => a.sequence - b.sequence)

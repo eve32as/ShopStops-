@@ -15,6 +15,7 @@ import (
 
 	"github.com/eve32as/ShopStops-/internal/finance"
 	"github.com/eve32as/ShopStops-/internal/httpapi"
+	"github.com/eve32as/ShopStops-/internal/routing"
 )
 
 func main() {
@@ -56,6 +57,14 @@ func main() {
 	startupCancel()
 
 	repository := httpapi.NewPostgresRepository(db, finance.DefaultAssumptions())
+	if osrmURL := os.Getenv("SHOPSTOPS_OSRM_URL"); osrmURL != "" {
+		router, err := routing.NewOSRMClient(osrmURL)
+		if err != nil {
+			logger.Error("configure OSRM router", "error", err)
+			os.Exit(1)
+		}
+		repository.SetRouter(router)
+	}
 	var handler http.Handler
 	if stripeSecretKey == "" {
 		handler = httpapi.New(repository, apiToken, logger)

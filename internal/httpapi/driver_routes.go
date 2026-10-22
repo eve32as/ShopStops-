@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/eve32as/ShopStops-/internal/routing"
 )
 
 type createAssignedRouteRequest struct {
@@ -192,6 +194,60 @@ func (p *PostgresRepository) CreateAssignedRoute(
 			routeID, driverRef,
 		); err != nil {
 			return routeResponse{}, err
+		}
+	}
+	if p.router != nil {
+		var legCount int
+		if err := tx.QueryRowContext(ctx, `
+			SELECT count(*) FROM unified_route_legs WHERE route_id = $1`,
+			routeID,
+		).Scan(&legCount); err != nil {
+			return routeResponse{}, err
+		}
+		if legCount == 0 {
+			stops, err := tx.QueryContext(ctx, `
+				SELECT ST_Y(location::geometry), ST_X(location::geometry)
+				FROM unified_route_stops
+				WHERE route_id = $1
+				ORDER BY sequence`, routeID)
+			if err != nil {
+				return routeResponse{}, err
+			}
+			coordinates := make([]routing.Coordinate, 0, 3)
+			for stops.Next() {
+				var coordinate routing.Coordinate
+				if err := stops.Scan(&coordinate.Latitude, &coordinate.Longitude); err != nil {
+					stops.Close()
+					return routeResponse{}, err
+				}
+				coordinates = append(coordinates, coordinate)
+			}
+			if err := stops.Err(); err != nil {
+				stops.Close()
+				return routeResponse{}, err
+			}
+			if err := stops.Close(); err != nil {
+				return routeResponse{}, err
+			}
+			legs, err := p.router.Route(ctx, coordinates)
+			if err != nil {
+				return routeResponse{}, err
+			}
+			if len(legs) != len(coordinates)-1 {
+				return routeResponse{}, errors.New("routing provider returned an unexpected leg count")
+			}
+			for index, leg := range legs {
+				if _, err := tx.ExecContext(ctx, `
+					INSERT INTO unified_route_legs (
+						route_id, from_sequence, to_sequence,
+						distance_meters, duration_seconds, provider
+					) VALUES ($1, $2, $3, $4, $5, 'osrm')
+					ON CONFLICT (route_id, from_sequence) DO NOTHING`,
+					routeID, index+1, index+2, leg.DistanceMeters, leg.DurationSeconds,
+				); err != nil {
+					return routeResponse{}, err
+				}
+			}
 		}
 	}
 	if err := tx.Commit(); err != nil {

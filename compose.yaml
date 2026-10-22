@@ -26,6 +26,7 @@ services:
       HTTP_ADDR: ":8080"
       DATABASE_URL: postgres://${DB_USER:?Set DB_USER in .env}:${DB_PASSWORD:?Set DB_PASSWORD in .env}@db:5432/${DB_NAME:?Set DB_NAME in .env}?sslmode=disable
       SHOPSTOPS_INTERNAL_API_TOKEN: ${SHOPSTOPS_INTERNAL_API_TOKEN:?Set SHOPSTOPS_INTERNAL_API_TOKEN in .env}
+      SHOPSTOPS_OSRM_URL: ${SHOPSTOPS_OSRM_URL:-}
       STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
       STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
       STRIPE_MERCHANT_MONTHLY_PRICE_ID: ${STRIPE_MERCHANT_MONTHLY_PRICE_ID:-}
@@ -40,6 +41,20 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    restart: unless-stopped
+
+  osrm-router:
+    image: osrm/osrm-backend:v5.27.1
+    profiles: ["routing"]
+    command: ["osrm-routed", "--algorithm", "ch", "/data/region-latest.osrm"]
+    volumes:
+      - osrm-data:/data:ro
+    networks:
+      - data
+    deploy:
+      resources:
+        limits:
+          memory: 2G
     restart: unless-stopped
 
   gateway:
@@ -76,3 +91,4 @@ networks:
 
 volumes:
   shopstops-data:
+  osrm-data:

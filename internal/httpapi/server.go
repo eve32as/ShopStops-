@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/eve32as/ShopStops-/internal/finance"
+	"github.com/eve32as/ShopStops-/internal/routing"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -994,12 +995,21 @@ func (s *Server) recordDriverStopEvent(w http.ResponseWriter, r *http.Request) {
 type PostgresRepository struct {
 	db         *sql.DB
 	financials finance.Assumptions
+	router     routing.Router
 }
 
-func NewPostgresRepository(db *sql.DB, financials finance.Assumptions) *PostgresRepository {
-	return &PostgresRepository{
+func NewPostgresRepository(db *sql.DB, financials finance.Assumptions, routers ...routing.Router) *PostgresRepository {
+	repository := &PostgresRepository{
 		db: db, financials: financials,
 	}
+	if len(routers) > 0 {
+		repository.router = routers[0]
+	}
+	return repository
+}
+
+func (p *PostgresRepository) SetRouter(router routing.Router) {
+	p.router = router
 }
 
 func (p *PostgresRepository) PingContext(ctx context.Context) error {
