@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/eve32as/ShopStops-/internal/finance"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -777,6 +778,10 @@ func (s *Server) createCheckout(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "checkout orders are not eligible or key conflicts")
 		return
 	}
+	if errors.Is(err, ErrIneligible) {
+		writeError(w, http.StatusUnprocessableEntity, "checkout pricing exceeds supported payment limits")
+		return
+	}
 	if err != nil {
 		s.databaseError(w, err)
 		return
@@ -979,14 +984,13 @@ func (s *Server) recordDriverStopEvent(w http.ResponseWriter, r *http.Request) {
 }
 
 type PostgresRepository struct {
-	db               *sql.DB
-	deliveryFeeCents int
-	serviceFeeCents  int
+	db         *sql.DB
+	financials finance.Assumptions
 }
 
-func NewPostgresRepository(db *sql.DB, deliveryFeeCents, serviceFeeCents int) *PostgresRepository {
+func NewPostgresRepository(db *sql.DB, financials finance.Assumptions) *PostgresRepository {
 	return &PostgresRepository{
-		db: db, deliveryFeeCents: deliveryFeeCents, serviceFeeCents: serviceFeeCents,
+		db: db, financials: financials,
 	}
 }
 
@@ -1693,20 +1697,27 @@ func (p *PostgresRepository) CreateCheckout(
 	}
 	defer tx.Rollback()
 	var checkoutID string
+	pricing, err := p.checkoutPricing(ctx, tx, request, customerRef)
+	if err != nil {
+		return checkoutResponse{}, err
+	}
 	err = tx.QueryRowContext(ctx, `
 		SELECT create_unified_checkout(
-			$1, $2, $3::uuid[], $4, $5, $6, $7, $8, $9, $10
+			$1, $2, $3::uuid[], $4, $5, $6, $7, $8::integer, $9::integer, $10
 		)`,
 		customerRef, request.AnchorStoreLocationID, request.OrderIDs,
 		request.Dropoff.Latitude, request.Dropoff.Longitude,
 		request.DeliveryWindowStart, request.DeliveryWindowEnd,
-		p.deliveryFeeCents, p.serviceFeeCents, idempotencyKey,
+		pricing.DeliveryFeeCents, pricing.ServiceFeeCents, idempotencyKey,
 	).Scan(&checkoutID)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "P0001" {
 			return checkoutResponse{}, ErrConflict
 		}
+		return checkoutResponse{}, err
+	}
+	if err := persistCheckoutPricing(ctx, tx, checkoutID, pricing, p.financials); err != nil {
 		return checkoutResponse{}, err
 	}
 

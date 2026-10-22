@@ -54,18 +54,18 @@ type MerchantFee struct {
 }
 
 type Quote struct {
-	ItemSubtotalCents        int64
-	MerchantFees             []MerchantFee
-	CommissionCents          int64
-	DeliveryFeeCents         int64
-	ServiceFeeCents          int64
-	EstimatedProcessorCents  int64
-	DriverPayoutCents        int64
-	FixedOrderCostCents      int64
-	TargetProfitCents        int64
-	ProjectedNetProfitCents  int64
-	AlongRoutePickupCount    int
-	PassThroughCents         int64
+	ItemSubtotalCents       int64
+	MerchantFees            []MerchantFee
+	CommissionCents         int64
+	DeliveryFeeCents        int64
+	ServiceFeeCents         int64
+	EstimatedProcessorCents int64
+	DriverPayoutCents       int64
+	FixedOrderCostCents     int64
+	TargetProfitCents       int64
+	ProjectedNetProfitCents int64
+	AlongRoutePickupCount   int
+	PassThroughCents        int64
 }
 
 func Calculate(assumptions Assumptions, request Request) (Quote, error) {

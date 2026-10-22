@@ -366,7 +366,7 @@ paths:
     post:
       operationId: createUnifiedCheckout
       summary: Create a unified basket with one anchor and at most one adjacent merchant
-      description: The trusted gateway injects X-ShopStops-Actor from the authenticated customer identity. Delivery and service fees are configured by the platform, not accepted from clients.
+      description: The trusted gateway injects X-ShopStops-Actor from the authenticated customer identity. Delivery and service fees are calculated by the platform from persisted order amounts and financial assumptions; clients cannot set them.
       parameters:
         - in: header
           name: Idempotency-Key

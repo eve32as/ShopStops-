@@ -153,6 +153,11 @@ GRANT INSERT ON TABLE
   unified_route_stop_events,
   unified_route_stops
 TO shopstops_app;
+SELECT format('GRANT INSERT ON TABLE %I TO shopstops_app', table_name)
+FROM unnest(ARRAY['checkout_financial_estimates', 'checkout_merchant_financials'])
+    AS available(table_name)
+WHERE to_regclass(table_name) IS NOT NULL
+\gexec
 GRANT UPDATE ON TABLE
   catalog_items,
   checkout_payments,

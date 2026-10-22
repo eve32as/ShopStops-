@@ -178,8 +178,6 @@ resource "aws_ecs_task_definition" "api" {
     }]
     environment = [
       { name = "HTTP_ADDR", value = ":8080" },
-      { name = "SHOPSTOPS_DELIVERY_FEE_CENTS", value = tostring(var.api_delivery_fee_cents) },
-      { name = "SHOPSTOPS_SERVICE_FEE_CENTS", value = tostring(var.api_service_fee_cents) }
     ]
     secrets = concat([
       { name = "DATABASE_URL", valueFrom = aws_secretsmanager_secret.database_url.arn },

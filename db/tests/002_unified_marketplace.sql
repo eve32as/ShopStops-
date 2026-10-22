@@ -152,6 +152,50 @@ SELECT set_config('shopstops.test_api_checkout_replay_id',
                   :'api_checkout_replay_id', true);
 SELECT set_config('shopstops.test_anchor_store_id', :'anchor_store_id', true);
 
+INSERT INTO orders (
+    customer_ref, store_location_id, delivery_zone_id, dropoff_location,
+    delivery_window_start, delivery_window_end, volume_liters, state,
+    ready_at, item_subtotal_cents
+)
+VALUES (
+    'standard-tier-customer', :'anchor_store_id', :'zone_id',
+    ST_SetSRID(ST_MakePoint(-76.98, 38.91), 4326)::geography,
+    now(), now() + interval '2 hours', 1, 'ready', now(), 1500
+)
+RETURNING id AS standard_anchor_order_id \gset
+INSERT INTO orders (
+    customer_ref, store_location_id, delivery_zone_id, dropoff_location,
+    delivery_window_start, delivery_window_end, volume_liters, state,
+    ready_at, item_subtotal_cents
+)
+VALUES (
+    'standard-tier-customer', :'third_store_id', :'zone_id',
+    ST_SetSRID(ST_MakePoint(-76.98, 38.91), 4326)::geography,
+    now(), now() + interval '2 hours', 1, 'ready', now(), 1000
+)
+RETURNING id AS standard_partner_order_id \gset
+SELECT create_unified_checkout(
+    'standard-tier-customer', :'anchor_store_id',
+    ARRAY[:'standard_anchor_order_id'::uuid, :'standard_partner_order_id'::uuid],
+    38.91, -76.98, now(), now() + interval '2 hours',
+    700, 379, 'standard-tier-checkout'
+) AS standard_tier_checkout_id \gset
+SELECT set_config('shopstops.test_standard_tier_checkout_id',
+                  :'standard_tier_checkout_id', true);
+INSERT INTO checkout_financial_estimates (
+    checkout_id, item_subtotal_cents, commission_cents,
+    delivery_fee_cents, service_fee_cents, pass_through_cents,
+    estimated_processor_fee_cents, driver_payout_cents,
+    driver_base_payout_cents, along_route_pickup_bonus_cents,
+    fixed_order_cost_cents, target_profit_cents,
+    projected_net_profit_cents, target_margin_bps,
+    stripe_fee_bps, stripe_fixed_fee_cents,
+    along_route_pickup_count, typical_basket_cents
+) VALUES (
+    :'standard_tier_checkout_id', 2500, 250, 700, 379, 20, 134, 700,
+    700, 450, 120, 375, 375, 1500, 290, 30, 0, 4500
+);
+
 DO $$
 DECLARE
     v_checkout_id uuid := current_setting('shopstops.test_api_checkout_id')::uuid;
@@ -220,18 +264,34 @@ BEGIN
     ) THEN
         RAISE EXCEPTION 'subscribed nearby merchant was not discovered';
     END IF;
-    IF EXISTS (
+    IF NOT EXISTS (
         SELECT 1 FROM nearby_subscribed_merchants(
             current_setting('shopstops.test_anchor_store_id')::uuid, 500
         ) WHERE merchant_id =
             current_setting('shopstops.test_third_merchant_id')::uuid
     ) THEN
-        RAISE EXCEPTION 'merchant with a failed subscription should not be suggested';
+        RAISE EXCEPTION 'subscription-free active merchant should be suggested';
     END IF;
-    IF (SELECT visible FROM merchant_storefront_visibility
+    IF NOT (SELECT visible FROM merchant_storefront_visibility
         WHERE merchant_id =
             current_setting('shopstops.test_third_merchant_id')::uuid) THEN
-        RAISE EXCEPTION 'storefront should hide 48 hours after subscription failure';
+        RAISE EXCEPTION 'subscription-free active merchant storefront should remain visible';
+    END IF;
+    IF (SELECT commission_rate_bps FROM checkout_merchant_financials
+        WHERE checkout_id = current_setting('shopstops.test_standard_tier_checkout_id')::uuid
+          AND merchant_id = current_setting('shopstops.test_third_merchant_id')::uuid) <> 1000
+       OR (SELECT platform_fee_cents FROM checkout_merchant_financials
+           WHERE checkout_id = current_setting('shopstops.test_standard_tier_checkout_id')::uuid
+             AND merchant_id = current_setting('shopstops.test_third_merchant_id')::uuid) <> 100 THEN
+        RAISE EXCEPTION 'subscription-free partner should be charged the 10 percent standard commission';
+    END IF;
+    IF (SELECT commission_rate_bps FROM checkout_merchant_financials
+        WHERE checkout_id = v_checkout_id
+          AND merchant_id = current_setting('shopstops.test_partner_merchant_id')::uuid) <> 500
+       OR (SELECT platform_fee_cents FROM checkout_merchant_financials
+           WHERE checkout_id = v_checkout_id
+             AND merchant_id = current_setting('shopstops.test_partner_merchant_id')::uuid) <> 50 THEN
+        RAISE EXCEPTION 'premium subscriber should be charged the 5 percent commission';
     END IF;
     v_first_surcharge := apply_dc_delivery_surcharge(v_checkout_id);
     v_second_surcharge := apply_dc_delivery_surcharge(v_checkout_id);
@@ -357,8 +417,18 @@ BEGIN
        OR (SELECT sum(processing_fee_cents) FROM connect_transfers
            WHERE checkout_id = current_setting('shopstops.test_checkout_id')::uuid) <> 100
        OR (SELECT sum(transfer_amount_cents) FROM connect_transfers
-           WHERE checkout_id = current_setting('shopstops.test_checkout_id')::uuid) <> 2400 THEN
-        RAISE EXCEPTION 'successful payment should create idempotent merchant transfers with allocated fees';
+           WHERE checkout_id = current_setting('shopstops.test_checkout_id')::uuid) <>
+          (SELECT sum(item_gross_cents - platform_fee_cents) FROM connect_transfers
+           WHERE checkout_id = current_setting('shopstops.test_checkout_id')::uuid)
+       OR (SELECT sum(platform_fee_cents) FROM connect_transfers
+           WHERE checkout_id = current_setting('shopstops.test_checkout_id')::uuid) <>
+          (SELECT sum(platform_fee_cents) FROM checkout_merchant_financials
+           WHERE checkout_id = current_setting('shopstops.test_checkout_id')::uuid)
+       OR (SELECT bool_and(processor_fee_borne_by_platform) FROM connect_transfers
+           WHERE checkout_id = current_setting('shopstops.test_checkout_id')::uuid) IS NOT TRUE
+       OR (SELECT sum(platform_fee_cents) FROM connect_transfers
+           WHERE checkout_id = current_setting('shopstops.test_checkout_id')::uuid) <= 0 THEN
+       RAISE EXCEPTION 'successful payment should deduct the snapshotted platform commission from merchant transfers';
     END IF;
     IF (SELECT processing_fee_cents FROM connect_transfers
         WHERE checkout_id = current_setting('shopstops.test_checkout_id')::uuid
@@ -505,9 +575,9 @@ BEGIN
     END IF;
     IF (SELECT status FROM merchant_subscriptions
         WHERE merchant_id = current_setting('shopstops.test_anchor_merchant_id')::uuid) <> 'past_due'
-       OR (SELECT visible FROM merchant_storefront_visibility
+       OR NOT (SELECT visible FROM merchant_storefront_visibility
            WHERE merchant_id = current_setting('shopstops.test_anchor_merchant_id')::uuid) THEN
-        RAISE EXCEPTION 'subscription failure should update status and hide storefront after 48 hours';
+       RAISE EXCEPTION 'subscription failure should retain standard-tier storefront visibility';
     END IF;
     IF (SELECT status FROM stripe_disputes WHERE stripe_dispute_id = 'dp_test') <> 'won' THEN
         RAISE EXCEPTION 'dispute result was not persisted';
@@ -516,10 +586,10 @@ BEGIN
         WHERE stripe_dispute_id = 'dp_test') <> 1250
        OR (SELECT amount_cents FROM connect_transfer_reversals
            WHERE stripe_dispute_id = 'dp_test'
-             AND merchant_id = current_setting('shopstops.test_anchor_merchant_id')::uuid) <> 750
+             AND merchant_id = current_setting('shopstops.test_anchor_merchant_id')::uuid) <> 734
        OR (SELECT amount_cents FROM connect_transfer_reversals
            WHERE stripe_dispute_id = 'dp_test'
-             AND merchant_id = current_setting('shopstops.test_partner_merchant_id')::uuid) <> 500 THEN
+             AND merchant_id = current_setting('shopstops.test_partner_merchant_id')::uuid) <> 516 THEN
         RAISE EXCEPTION 'dispute reversals should be proportional and capped at the disputed amount';
     END IF;
 END;

@@ -47,8 +47,6 @@ token (at least 32 characters), then run:
 ```sh
 export DATABASE_URL='postgres://<user>:<password>@localhost:5432/shopstops?sslmode=disable'
 export SHOPSTOPS_INTERNAL_API_TOKEN="$(openssl rand -hex 32)"
-export SHOPSTOPS_DELIVERY_FEE_CENTS=500
-export SHOPSTOPS_SERVICE_FEE_CENTS=100
 # Set both through a server-side secret manager to enable Stripe payments.
 export STRIPE_SECRET_KEY
 export STRIPE_WEBHOOK_SECRET
@@ -154,10 +152,13 @@ admin endpoint. To exercise the customer-owned event endpoint too, also set
 use `http://127.0.0.1:8081` as the base URL. The script does not create data or
 perform writes. Inspect startup with `docker compose logs -f db api gateway`.
 
-Delivery/service fee configuration is in integer cents and defaults to zero if
-unset. The checkout endpoint builds the merchant item lines from each order's
-`item_subtotal_cents` snapshot and applies the D.C. surcharge from the configured
-jurisdiction polygon.
+Checkout pricing uses the baseline model documented in
+[`docs/architecture.md`](docs/architecture.md): standard merchants pay a 10%
+commission, the $199/month premium tier pays 5%, and customer delivery/service
+fees are calculated to target a 15% platform contribution margin after estimated
+Stripe costs, driver base payout, and fixed order costs. Rates and costs are
+defined in `internal/finance/pricing.go`; client-supplied amounts are never used.
+The D.C. surcharge remains a pass-through tax line.
 
 The payment endpoint creates one idempotent PaymentIntent from the persisted
 invoice. Configure Stripe to send `payment_intent.succeeded`,
@@ -213,13 +214,14 @@ hours, the API stops resubmitting it rather than risk a duplicate after Stripe's
 idempotency-key retention window; reconcile it with Stripe before retrying.
 
 Stripe processing fees are allocated across merchant item subtotals in
-proportion to each merchant's items; leftover cents go by descending fractional
-remainder, then merchant ID. Allocation is capped at total item value and the
-platform bears any excess. Delivery/service fees and the D.C. surcharge remain
-in the platform ledger. Merchants with positive item subtotals must have
-connected accounts before payment initialization. Payment secrets are never
-returned to client applications; only the PaymentIntent client secret is
-returned to the authenticated customer.
+proportion to each merchant's items for accounting; leftover cents go by
+descending fractional remainder, then merchant ID. The platform bears the
+processor expense. Merchant transfers deduct only the snapshotted 10% or 5%
+platform commission; delivery/service fees remain in the platform ledger and
+the D.C. surcharge is tracked in the municipal tax ledger. Merchants with
+positive item subtotals must have connected accounts before payment
+initialization. Payment secrets are never returned to client applications;
+only the PaymentIntent client secret is returned to the authenticated customer.
 
 Starter clients are in `apps/mobile` (Expo iOS/Android) and `apps/admin` (Vite
 web). The mobile client provides nearby-store discovery, checkout/payment,

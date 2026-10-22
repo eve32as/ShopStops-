@@ -230,14 +230,31 @@ route model rather than legacy `delivery_bundles`; sessions without a matching
 persisted PaymentIntent are rejected and unpaid sessions are ignored.
 
 The Go `POST /checkouts` handler accepts an authenticated customer's anchor
-store, order IDs, destination coordinates, and delivery window. Delivery and
-service fees come from `SHOPSTOPS_DELIVERY_FEE_CENTS` and
-`SHOPSTOPS_SERVICE_FEE_CENTS`; order item amounts come from the immutable
-`orders.item_subtotal_cents` snapshot. `create_unified_checkout` reserves all
-orders, applies merchant/zone/window constraints, writes merchant-level invoice
-lines and fees, applies the D.C. surcharge, and marks the checkout quoted in a
-single transaction. Repeating an idempotency key with the same request returns
-the original checkout; a different request using that key is rejected.
+store, order IDs, destination coordinates, and delivery window. `internal/finance`
+calculates checkout pricing from immutable order subtotals and each merchant's
+persisted subscription tier. Starting assumptions are a $45 typical basket,
+15% target platform contribution margin, 2.9% + $0.30 Stripe processing,
+$7.00 driver base payout, $4.50 per along-route pickup, $1.20 fixed order cost,
+10% standard merchant commission, and 5% commission for the $199/month premium
+tier. The typical basket is a reference assumption; calculations use actual
+checkout subtotals. Standard-tier merchants remain storefront-visible while
+active without a subscription. Fees are rounded in cents; the minimum delivery
+and service fees are solved against estimated Stripe processing on the complete
+invoice, including the D.C. surcharge. A quote that exceeds supported payment
+limits or cannot reach the target margin is rejected.
+
+`create_unified_checkout` reserves all orders, applies merchant/zone/window
+constraints, writes merchant-level invoice lines and fees, applies the D.C.
+surcharge, and marks the checkout quoted in a single transaction. The Go
+repository persists immutable per-merchant commission and checkout margin
+estimates in that same transaction before returning the quote, and the database
+validates the snapshots against the invoice, merchant tier, and pricing
+arithmetic. Repeating an idempotency key with the same request returns the
+original checkout; a different request using that key is rejected. Along-route
+bonus pricing is supported by the financial calculator but remains zero for
+ordinary checkout quotes until route-pickup offers are implemented. No dynamic
+mileage payout is calculated because the baseline assumptions do not specify a
+per-mile rate.
 
 `create_unified_route` requires a paid basket containing an anchor restaurant
 order and exactly one partner merchant. It persists the mandatory immutable
@@ -270,19 +287,23 @@ duplicate after Stripe expires idempotency keys; operators must reconcile the
 Stripe account before retrying. Every merchant with a positive item subtotal
 must have a connected account before payment can be initialized.
 
-Processing fees are allocated proportionally over merchant item subtotals,
-rounded with largest remainders (merchant ID breaks ties), and capped at the
-total item value. The platform absorbs fee amounts above that cap. Delivery and
-service fees remain in the platform ledger; the D.C. surcharge is tracked in
-the municipal tax ledger. Do not collect or store raw card details.
+Processing fees are allocated proportionally over merchant item subtotals for
+accounting, rounded with largest remainders (merchant ID breaks ties), and
+capped at the total item value. The platform bears the actual processor expense;
+merchant Connect transfers deduct the stored platform commission but do not
+deduct processor fees for post-migration quotes; existing transfer records keep
+their prior processor-fee deduction. The D.C. surcharge is tracked in the
+municipal tax ledger. Do not collect or store raw card details.
 `POST /merchant/subscription/setup-intent` creates a Stripe Customer when needed
 and returns a SetupIntent client secret so the merchant can save a
 payment method for off-session billing. `POST /merchant/subscription` validates
 the configured Stripe Price is exactly $199 USD monthly and schedules the
 subscription on the next first-of-month billing anchor. Subscription webhooks
-update the persisted state; storefront visibility is not activated until an
-invoice payment succeeds. `invoice.payment_failed` starts the existing 48-hour
-grace period, and successful collection clears it.
+update the persisted state and determine whether the merchant receives the
+premium commission rate. Subscription status no longer gates active storefront
+visibility; `invoice.payment_failed` starts the existing 48-hour premium-tier
+grace period, after which the merchant stays visible at the standard commission
+rate. Successful collection restores premium commission eligibility.
 
 Admins can request a full remaining checkout refund through
 `POST /admin/checkouts/{checkoutId}/refund`. The API persists an idempotent

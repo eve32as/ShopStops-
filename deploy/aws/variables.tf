@@ -187,28 +187,6 @@ variable "db_max_storage_gib" {
   }
 }
 
-variable "api_delivery_fee_cents" {
-  description = "Delivery fee in cents."
-  type        = number
-  default     = 0
-
-  validation {
-    condition     = var.api_delivery_fee_cents >= 0 && var.api_delivery_fee_cents <= 2147483647 && floor(var.api_delivery_fee_cents) == var.api_delivery_fee_cents
-    error_message = "The delivery fee must be a non-negative 32-bit integer number of cents."
-  }
-}
-
-variable "api_service_fee_cents" {
-  description = "Service fee in cents."
-  type        = number
-  default     = 0
-
-  validation {
-    condition     = var.api_service_fee_cents >= 0 && var.api_service_fee_cents <= 2147483647 && floor(var.api_service_fee_cents) == var.api_service_fee_cents
-    error_message = "The service fee must be a non-negative 32-bit integer number of cents."
-  }
-}
-
 variable "enable_stripe" {
   description = "Inject Stripe secrets into the API. Secrets must be populated before enabling."
   type        = bool

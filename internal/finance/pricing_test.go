@@ -4,14 +4,22 @@ import "testing"
 
 func TestCalculateBaselineMerchantTiers(t *testing.T) {
 	tests := []struct {
-		name             string
-		premium          bool
-		commissionCents  int64
-		wantDelivery     int64
-		wantServiceFloor int64
+		name              string
+		premium           bool
+		commissionCents   int64
+		serviceFeeCents   int64
+		processorFeeCents int64
+		wantDelivery      int64
+		wantServiceFloor  int64
 	}{
-		{name: "standard", commissionCents: 450, wantDelivery: 700, wantServiceFloor: 0},
-		{name: "premium", premium: true, commissionCents: 225, wantDelivery: 700, wantServiceFloor: 0},
+		{
+			name: "standard", commissionCents: 450, serviceFeeCents: 541,
+			processorFeeCents: 196, wantDelivery: 700,
+		},
+		{
+			name: "premium", premium: true, commissionCents: 225,
+			serviceFeeCents: 773, processorFeeCents: 203, wantDelivery: 700,
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -26,12 +34,13 @@ func TestCalculateBaselineMerchantTiers(t *testing.T) {
 			}
 			if quote.CommissionCents != test.commissionCents ||
 				quote.DeliveryFeeCents != test.wantDelivery ||
-				quote.ServiceFeeCents < test.wantServiceFloor ||
+				quote.ServiceFeeCents != test.serviceFeeCents ||
 				quote.ProjectedNetProfitCents < quote.TargetProfitCents {
 				t.Fatalf("unexpected baseline quote: %+v", quote)
 			}
-			if quote.EstimatedProcessorCents != 70 {
-				t.Fatalf("estimated processor fee = %d, want 70", quote.EstimatedProcessorCents)
+			if quote.EstimatedProcessorCents != test.processorFeeCents {
+				t.Fatalf("estimated processor fee = %d, want %d",
+					quote.EstimatedProcessorCents, test.processorFeeCents)
 			}
 		})
 	}
@@ -85,9 +94,9 @@ func TestCalculateRejectsInvalidOrUnattainableQuote(t *testing.T) {
 	}
 
 	assumptions := DefaultAssumptions()
-	assumptions.TargetMarginBasisPoints = 9000
+	assumptions.TargetMarginBasisPoints = 9900
 	if _, err := Calculate(assumptions, Request{
-		Merchants: []MerchantBasket{{MerchantID: "m1", ItemSubtotal: 4500}},
+		Merchants: []MerchantBasket{{MerchantID: "m1", ItemSubtotal: maxInvoiceLineCents}},
 	}); err == nil {
 		t.Fatal("unattainable target unexpectedly succeeded")
 	}
