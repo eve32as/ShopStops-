@@ -59,6 +59,24 @@ type Repository interface {
 	) (driverStopEventResponse, error)
 }
 
+type DriverFraudAlertRepository interface {
+	ListDriverFraudAlerts(context.Context, string, int) ([]DriverFraudAlert, error)
+	ResolveDriverFraudAlert(context.Context, string, string, string) error
+}
+
+type DriverFraudAlert struct {
+	ID         string          `json:"id"`
+	RouteID    string          `json:"routeId"`
+	DriverRef  string          `json:"driverRef"`
+	AlertType  string          `json:"alertType"`
+	Severity   string          `json:"severity"`
+	Status     string          `json:"status"`
+	Evidence   json.RawMessage `json:"evidence"`
+	DetectedAt time.Time       `json:"detectedAt"`
+	ResolvedAt *time.Time      `json:"resolvedAt,omitempty"`
+	ResolvedBy string          `json:"resolvedBy,omitempty"`
+}
+
 type NearbyMerchant struct {
 	MerchantID     string  `json:"merchantId"`
 	Name           string  `json:"name"`
@@ -255,6 +273,8 @@ func (s *Server) handler() http.Handler {
 	mux.Handle("GET /driver/routes/{routeId}", s.authorized(http.HandlerFunc(s.getDriverRoute)))
 	mux.Handle("POST /driver/routes/{routeId}/location", s.authorized(http.HandlerFunc(s.recordDriverLocation)))
 	mux.Handle("POST /driver/routes/{routeId}/stops/{stopId}/events", s.authorized(http.HandlerFunc(s.recordDriverStopEvent)))
+	mux.Handle("GET /admin/driver-fraud-alerts", s.authorized(http.HandlerFunc(s.listDriverFraudAlerts)))
+	mux.Handle("PATCH /admin/driver-fraud-alerts/{alertId}", s.authorized(http.HandlerFunc(s.resolveDriverFraudAlert)))
 	mux.Handle("POST /checkouts", s.authorized(http.HandlerFunc(s.createCheckout)))
 	mux.Handle("POST /checkouts/{checkoutId}/payment", s.authorized(http.HandlerFunc(s.createCheckoutPayment)))
 	mux.Handle("GET /merchant/subscription", s.authorized(http.HandlerFunc(s.getMerchantSubscription)))
@@ -768,6 +788,87 @@ func (s *Server) recordDriverStopEvent(w http.ResponseWriter, r *http.Request) {
 		s.databaseError(w, err)
 	default:
 		writeJSON(w, http.StatusOK, response)
+	}
+}
+
+func (s *Server) listDriverFraudAlerts(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.authorizedActorRole(w, r, "admin"); !ok {
+		return
+	}
+	status := r.URL.Query().Get("status")
+	if status != "" && status != "open" && status != "reviewed" && status != "dismissed" {
+		writeError(w, http.StatusBadRequest, "status must be open, reviewed, or dismissed")
+		return
+	}
+	limit := 50
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 1 || value > 100 {
+			writeError(w, http.StatusBadRequest, "limit must be between 1 and 100")
+			return
+		}
+		limit = value
+	}
+	repository, ok := s.repo.(DriverFraudAlertRepository)
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "driver fraud monitoring is unavailable")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	alerts, err := repository.ListDriverFraudAlerts(ctx, status, limit)
+	if err != nil {
+		s.databaseError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, alerts)
+}
+
+func (s *Server) resolveDriverFraudAlert(w http.ResponseWriter, r *http.Request) {
+	actor, ok := s.authorizedActorRole(w, r, "admin")
+	if !ok {
+		return
+	}
+	alertID := r.PathValue("alertId")
+	if !isUUID(alertID) {
+		writeError(w, http.StatusBadRequest, "invalid alert ID")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 8*1024)
+	var request struct {
+		Status string `json:"status"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "request body must contain one JSON object")
+		return
+	}
+	if request.Status != "reviewed" && request.Status != "dismissed" {
+		writeError(w, http.StatusBadRequest, "status must be reviewed or dismissed")
+		return
+	}
+	repository, ok := s.repo.(DriverFraudAlertRepository)
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "driver fraud monitoring is unavailable")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	err := repository.ResolveDriverFraudAlert(ctx, alertID, actor, request.Status)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		writeError(w, http.StatusNotFound, "driver fraud alert not found")
+	case errors.Is(err, ErrConflict):
+		writeError(w, http.StatusConflict, "driver fraud alert is already resolved")
+	case err != nil:
+		s.databaseError(w, err)
+	default:
+		writeJSON(w, http.StatusOK, map[string]string{"id": alertID, "status": request.Status})
 	}
 }
 
@@ -1346,6 +1447,73 @@ func (p *PostgresRepository) RecordDriverStopEvent(
 		return driverStopEventResponse{}, err
 	}
 	return response, nil
+}
+
+func (p *PostgresRepository) ListDriverFraudAlerts(
+	ctx context.Context, status string, limit int,
+) ([]DriverFraudAlert, error) {
+	rows, err := p.db.QueryContext(ctx, `
+		SELECT id, route_id, driver_ref, alert_type, severity, status, evidence,
+		       detected_at, resolved_at, resolved_by
+		FROM driver_fraud_alerts
+		WHERE ($1 = '' OR status = $1)
+		ORDER BY detected_at DESC, id
+		LIMIT $2`, status, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	alerts := make([]DriverFraudAlert, 0)
+	for rows.Next() {
+		var alert DriverFraudAlert
+		var resolvedAt sql.NullTime
+		var resolvedBy sql.NullString
+		if err := rows.Scan(
+			&alert.ID, &alert.RouteID, &alert.DriverRef, &alert.AlertType,
+			&alert.Severity, &alert.Status, &alert.Evidence, &alert.DetectedAt,
+			&resolvedAt, &resolvedBy,
+		); err != nil {
+			return nil, err
+		}
+		if resolvedAt.Valid {
+			alert.ResolvedAt = &resolvedAt.Time
+		}
+		if resolvedBy.Valid {
+			alert.ResolvedBy = resolvedBy.String
+		}
+		alerts = append(alerts, alert)
+	}
+	return alerts, rows.Err()
+}
+
+func (p *PostgresRepository) ResolveDriverFraudAlert(
+	ctx context.Context, alertID, actor, status string,
+) error {
+	result, err := p.db.ExecContext(ctx, `
+		UPDATE driver_fraud_alerts
+		SET status = $2, resolved_at = now(), resolved_by = $3
+		WHERE id = $1 AND status = 'open'`, alertID, status, actor)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 1 {
+		return nil
+	}
+	var exists bool
+	if err := p.db.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM driver_fraud_alerts WHERE id = $1)`,
+		alertID,
+	).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
+		return ErrNotFound
+	}
+	return ErrConflict
 }
 
 func (s *Server) databaseError(w http.ResponseWriter, err error) {
