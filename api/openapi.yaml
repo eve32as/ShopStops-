@@ -262,6 +262,39 @@ paths:
           description: More than two merchants or an ineligible merchant
         '403':
           description: Authenticated actor does not have the customer role
+  /checkouts/{checkoutId}/route:
+    post:
+      operationId: createUnifiedRoute
+      summary: Calculate and persist the two OSRM route legs for a paid checkout
+      description: Requires a trusted gateway dispatch or admin role. The server obtains stop coordinates from the paid checkout, calls OSRM with a 450 ms per-request deadline, then atomically creates the route and persists both leg measurements.
+      parameters:
+        - $ref: '#/components/parameters/CheckoutId'
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+      responses:
+        '201':
+          description: Route created and both OSRM legs persisted
+        '200':
+          description: Existing route returned for an idempotent retry
+        '400':
+          description: Invalid checkout ID or idempotency key
+        '403':
+          description: Authenticated actor does not have the dispatch or admin role
+        '404':
+          description: Checkout not found
+        '409':
+          description: Checkout is not eligible or idempotency key conflicts
+        '502':
+          description: OSRM could not calculate the route
+        '503':
+          description: OSRM route creation is not configured
+        '504':
+          description: OSRM request timed out
   /checkouts/{checkoutId}/payment:
     post:
       operationId: createCheckoutPayment

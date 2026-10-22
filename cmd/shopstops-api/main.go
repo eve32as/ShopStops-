@@ -15,6 +15,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/eve32as/ShopStops-/internal/httpapi"
+	"github.com/eve32as/ShopStops-/internal/routing"
 )
 
 func main() {
@@ -66,15 +67,35 @@ func main() {
 	startupCancel()
 
 	repository := httpapi.NewPostgresRepository(db, deliveryFeeCents, serviceFeeCents)
+	var router *routing.OSRMClient
+	if osrmBaseURL := os.Getenv("SHOPSTOPS_OSRM_BASE_URL"); osrmBaseURL != "" {
+		router, err = routing.NewOSRMClient(osrmBaseURL)
+		if err != nil {
+			logger.Error("invalid OSRM base URL", "error", err)
+			os.Exit(1)
+		}
+	}
 	var handler http.Handler
 	if stripeSecretKey == "" {
-		handler = httpapi.New(repository, apiToken, logger)
+		if router == nil {
+			handler = httpapi.New(repository, apiToken, logger)
+		} else {
+			handler = httpapi.NewWithRouting(repository, apiToken, logger, router)
+		}
 	} else {
-		handler = httpapi.NewWithPayments(
-			repository, apiToken, logger,
-			httpapi.NewStripeGateway(stripeSecretKey), stripeWebhookSecret,
-			stripeMerchantPriceID,
-		)
+		if router == nil {
+			handler = httpapi.NewWithPayments(
+				repository, apiToken, logger,
+				httpapi.NewStripeGateway(stripeSecretKey), stripeWebhookSecret,
+				stripeMerchantPriceID,
+			)
+		} else {
+			handler = httpapi.NewWithPaymentsAndRouting(
+				repository, apiToken, logger,
+				httpapi.NewStripeGateway(stripeSecretKey), stripeWebhookSecret,
+				router, stripeMerchantPriceID,
+			)
+		}
 	}
 
 	server := &http.Server{

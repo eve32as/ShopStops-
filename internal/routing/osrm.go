@@ -105,7 +105,9 @@ func (c *OSRMClient) Route(ctx context.Context, coordinates []Coordinate) (Route
 		DistanceMeters:  payload.Routes[0].Distance,
 		DurationSeconds: payload.Routes[0].Duration,
 	}
-	if result.DistanceMeters < 0 || result.DurationSeconds < 0 {
+	if math.IsNaN(result.DistanceMeters) || math.IsInf(result.DistanceMeters, 0) ||
+		math.IsNaN(result.DurationSeconds) || math.IsInf(result.DurationSeconds, 0) ||
+		result.DistanceMeters < 0 || result.DurationSeconds < 0 {
 		return Route{}, errors.New("OSRM returned invalid route measurements")
 	}
 	return result, nil

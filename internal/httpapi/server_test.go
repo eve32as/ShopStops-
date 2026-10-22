@@ -8,8 +8,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/eve32as/ShopStops-/internal/routing"
 )
 
 type fakeRepository struct {
@@ -66,6 +69,27 @@ type fakeRepository struct {
 	checkoutReq          checkoutRequest
 	customerRef          string
 	checkoutKey          string
+	routeCoordinates     []routing.Coordinate
+	routeCoordinatesErr  error
+	createdRouteID       string
+	createdRouteErr      error
+	routeLegs            []routing.Route
+	existingRouteID      string
+	existingRouteFound   bool
+	existingRouteErr     error
+}
+
+type fakeOSRMRouter struct {
+	route routing.Route
+	err   error
+	calls *atomic.Int32
+}
+
+func (f fakeOSRMRouter) Route(context.Context, []routing.Coordinate) (routing.Route, error) {
+	if f.calls != nil {
+		f.calls.Add(1)
+	}
+	return f.route, f.err
 }
 
 func (f *fakeRepository) PingContext(context.Context) error { return f.pingErr }
@@ -125,6 +149,22 @@ func (f *fakeRepository) CreateCheckout(
 ) (checkoutResponse, error) {
 	f.checkoutReq, f.customerRef, f.checkoutKey = request, customerRef, idempotencyKey
 	return f.checkout, f.checkoutErr
+}
+func (f *fakeRepository) FindUnifiedRoute(
+	_ context.Context, _, _ string,
+) (string, bool, error) {
+	return f.existingRouteID, f.existingRouteFound, f.existingRouteErr
+}
+func (f *fakeRepository) UnifiedRouteCoordinates(
+	_ context.Context, _ string,
+) ([]routing.Coordinate, error) {
+	return f.routeCoordinates, f.routeCoordinatesErr
+}
+func (f *fakeRepository) CreateUnifiedRoute(
+	_ context.Context, _, _ string, legs []routing.Route,
+) (string, error) {
+	f.routeLegs = legs
+	return f.createdRouteID, f.createdRouteErr
 }
 func (f *fakeRepository) DriverRoute(
 	_ context.Context, routeID, driverRef string,
@@ -195,6 +235,7 @@ func TestSensitiveEndpointsRequireMatchingActorRole(t *testing.T) {
 		{name: "driver location", method: http.MethodPost, path: "/driver/routes/00000000-0000-0000-0000-000000000010/location", role: "customer"},
 		{name: "driver stop event", method: http.MethodPost, path: "/driver/routes/00000000-0000-0000-0000-000000000010/stops/00000000-0000-0000-0000-000000000011/events", role: "customer"},
 		{name: "dispatch bundle", method: http.MethodPost, path: "/dispatch/bundles", role: "customer"},
+		{name: "route creation", method: http.MethodPost, path: "/checkouts/00000000-0000-0000-0000-000000000001/route", role: "customer"},
 		{name: "missing customer role", method: http.MethodPost, path: "/orders", role: ""},
 	}
 	for _, test := range tests {
@@ -667,6 +708,81 @@ func TestCreateCheckoutRejectsDuplicateOrderIDs(t *testing.T) {
 		ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
+	}
+}
+
+func TestCreateUnifiedRouteRoutesAndPersistsBothLegs(t *testing.T) {
+	repo := &fakeRepository{
+		routeCoordinates: []routing.Coordinate{
+			{Latitude: 38.9, Longitude: -77},
+			{Latitude: 38.91, Longitude: -76.99},
+			{Latitude: 38.92, Longitude: -76.98},
+		},
+		createdRouteID: "route-123",
+	}
+	calls := &atomic.Int32{}
+	handler := NewWithRouting(
+		repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil)),
+		fakeOSRMRouter{route: routing.Route{DistanceMeters: 1234.5, DurationSeconds: 321.25}, calls: calls},
+	)
+	request := httptest.NewRequest(http.MethodPost,
+		"/checkouts/00000000-0000-0000-0000-000000000001/route", nil)
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "dispatch-123")
+	request.Header.Set("X-ShopStops-Actor-Role", "dispatch")
+	request.Header.Set("Idempotency-Key", "route-request-1")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusCreated || calls.Load() != 2 ||
+		repo.createdRouteID != "route-123" || len(repo.routeLegs) != 2 ||
+		repo.routeLegs[0].DistanceMeters != 1234.5 ||
+		repo.routeLegs[1].DurationSeconds != 321.25 ||
+		!strings.Contains(recorder.Body.String(), `"routingProvider":"osrm"`) {
+		t.Fatalf("status=%d calls=%d legs=%+v body=%s",
+			recorder.Code, calls.Load(), repo.routeLegs, recorder.Body.String())
+	}
+}
+
+func TestCreateUnifiedRouteRetrySkipsOSRM(t *testing.T) {
+	repo := &fakeRepository{existingRouteID: "route-existing", existingRouteFound: true}
+	calls := &atomic.Int32{}
+	handler := NewWithRouting(
+		repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil)),
+		fakeOSRMRouter{calls: calls},
+	)
+	request := httptest.NewRequest(http.MethodPost,
+		"/checkouts/00000000-0000-0000-0000-000000000001/route", nil)
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "dispatch-123")
+	request.Header.Set("X-ShopStops-Actor-Role", "dispatch")
+	request.Header.Set("Idempotency-Key", "route-request-1")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || calls.Load() != 0 ||
+		!strings.Contains(recorder.Body.String(), `"routeId":"route-existing"`) {
+		t.Fatalf("status=%d calls=%d body=%s", recorder.Code, calls.Load(), recorder.Body.String())
+	}
+}
+
+func TestCreateUnifiedRouteMapsRouterTimeoutToGatewayTimeout(t *testing.T) {
+	repo := &fakeRepository{
+		routeCoordinates: []routing.Coordinate{{}, {Latitude: 1}, {Latitude: 2}},
+	}
+	handler := NewWithRouting(
+		repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil)),
+		fakeOSRMRouter{err: context.DeadlineExceeded},
+	)
+	request := httptest.NewRequest(http.MethodPost,
+		"/checkouts/00000000-0000-0000-0000-000000000001/route", nil)
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "dispatch-123")
+	request.Header.Set("X-ShopStops-Actor-Role", "dispatch")
+	request.Header.Set("Idempotency-Key", "route-timeout")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusGatewayTimeout || len(repo.routeLegs) != 0 {
+		t.Fatalf("status=%d legs=%+v body=%s", recorder.Code, repo.routeLegs, recorder.Body.String())
 	}
 }
 

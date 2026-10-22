@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/eve32as/ShopStops-/internal/routing"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -33,6 +34,11 @@ type Server struct {
 	payments        PaymentGateway
 	webhookSecret   string
 	merchantPriceID string
+	router          OSRMRouter
+}
+
+type OSRMRouter interface {
+	Route(context.Context, []routing.Coordinate) (routing.Route, error)
 }
 
 type Repository interface {
@@ -62,6 +68,12 @@ type Repository interface {
 type DriverFraudAlertRepository interface {
 	ListDriverFraudAlerts(context.Context, string, int) ([]DriverFraudAlert, error)
 	ResolveDriverFraudAlert(context.Context, string, string, string) error
+}
+
+type UnifiedRouteRepository interface {
+	FindUnifiedRoute(context.Context, string, string) (string, bool, error)
+	UnifiedRouteCoordinates(context.Context, string) ([]routing.Coordinate, error)
+	CreateUnifiedRoute(context.Context, string, string, []routing.Route) (string, error)
 }
 
 type DriverFraudAlert struct {
@@ -259,6 +271,28 @@ func NewWithPayments(
 	return s.handler()
 }
 
+func NewWithRouting(
+	repo Repository, token string, logger *slog.Logger, router OSRMRouter,
+) http.Handler {
+	s := &Server{repo: repo, token: token, log: logger, router: router}
+	return s.handler()
+}
+
+func NewWithPaymentsAndRouting(
+	repo Repository, token string, logger *slog.Logger,
+	payments PaymentGateway, webhookSecret string, router OSRMRouter,
+	merchantPriceIDs ...string,
+) http.Handler {
+	s := &Server{
+		repo: repo, token: token, log: logger,
+		payments: payments, webhookSecret: webhookSecret, router: router,
+	}
+	if len(merchantPriceIDs) > 0 {
+		s.merchantPriceID = merchantPriceIDs[0]
+	}
+	return s.handler()
+}
+
 func (s *Server) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
@@ -277,6 +311,7 @@ func (s *Server) handler() http.Handler {
 	mux.Handle("PATCH /admin/driver-fraud-alerts/{alertId}", s.authorized(http.HandlerFunc(s.resolveDriverFraudAlert)))
 	mux.Handle("POST /checkouts", s.authorized(http.HandlerFunc(s.createCheckout)))
 	mux.Handle("POST /checkouts/{checkoutId}/payment", s.authorized(http.HandlerFunc(s.createCheckoutPayment)))
+	mux.Handle("POST /checkouts/{checkoutId}/route", s.authorized(http.HandlerFunc(s.createUnifiedRoute)))
 	mux.Handle("GET /merchant/subscription", s.authorized(http.HandlerFunc(s.getMerchantSubscription)))
 	mux.Handle("POST /merchant/subscription/setup-intent", s.authorized(http.HandlerFunc(s.createMerchantSetupIntent)))
 	mux.Handle("POST /merchant/subscription", s.authorized(http.HandlerFunc(s.createMerchantSubscription)))
@@ -678,6 +713,126 @@ func (s *Server) createCheckout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+func (s *Server) createUnifiedRoute(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.authorizedActorRoles(w, r, "dispatch", "admin"); !ok {
+		return
+	}
+	checkoutID := r.PathValue("checkoutId")
+	if !isUUID(checkoutID) {
+		writeError(w, http.StatusBadRequest, "valid checkout ID is required")
+		return
+	}
+	idempotencyKey := r.Header.Get("Idempotency-Key")
+	if idempotencyKey == "" || len(idempotencyKey) > 200 ||
+		strings.TrimSpace(idempotencyKey) != idempotencyKey {
+		writeError(w, http.StatusBadRequest, "valid Idempotency-Key header is required")
+		return
+	}
+	if s.router == nil {
+		writeError(w, http.StatusServiceUnavailable, "OSRM routing is unavailable")
+		return
+	}
+	repository, ok := s.repo.(UnifiedRouteRepository)
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "route creation is unavailable")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	routeID, found, err := repository.FindUnifiedRoute(ctx, checkoutID, idempotencyKey)
+	if errors.Is(err, ErrConflict) {
+		writeError(w, http.StatusConflict, "route idempotency key conflicts with another checkout")
+		return
+	}
+	if err != nil {
+		s.databaseError(w, err)
+		return
+	}
+	if found {
+		writeJSON(w, http.StatusOK, map[string]string{
+			"routeId": routeID, "checkoutId": checkoutID, "routingProvider": "osrm",
+		})
+		return
+	}
+
+	coordinates, err := repository.UnifiedRouteCoordinates(ctx, checkoutID)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		writeError(w, http.StatusNotFound, "checkout not found")
+		return
+	case errors.Is(err, ErrConflict):
+		writeError(w, http.StatusConflict, "checkout is not eligible for routing")
+		return
+	case err != nil:
+		s.databaseError(w, err)
+		return
+	}
+	if len(coordinates) != 3 {
+		s.log.Error("route coordinate query returned an invalid stop count", "checkout_id", checkoutID)
+		writeError(w, http.StatusInternalServerError, "route could not be created")
+		return
+	}
+
+	type legResult struct {
+		index int
+		route routing.Route
+		err   error
+	}
+	routeCtx, cancelRoutes := context.WithCancel(ctx)
+	results := make(chan legResult, 2)
+	for i := range 2 {
+		go func(index int) {
+			route, err := s.router.Route(
+				routeCtx, coordinates[index:index+2],
+			)
+			results <- legResult{index: index, route: route, err: err}
+		}(i)
+	}
+	legs := make([]routing.Route, 2)
+	var routeErr error
+	for range 2 {
+		result := <-results
+		legs[result.index] = result.route
+		if result.err != nil && routeErr == nil {
+			routeErr = result.err
+			cancelRoutes()
+		}
+	}
+	cancelRoutes()
+	if routeErr != nil {
+		if errors.Is(routeErr, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			writeError(w, http.StatusGatewayTimeout, "OSRM routing timed out")
+		} else {
+			s.log.Error("OSRM route request failed", "error", routeErr)
+			writeError(w, http.StatusBadGateway, "route could not be calculated")
+		}
+		return
+	}
+	for _, leg := range legs {
+		if !validPersistedRouteMeasurement(leg.DistanceMeters) ||
+			!validPersistedRouteMeasurement(leg.DurationSeconds) {
+			writeError(w, http.StatusBadGateway, "OSRM returned invalid route measurements")
+			return
+		}
+	}
+	routeID, err = repository.CreateUnifiedRoute(ctx, checkoutID, idempotencyKey, legs)
+	switch {
+	case errors.Is(err, ErrConflict):
+		writeError(w, http.StatusConflict, "route idempotency key conflicts with another checkout")
+	case err != nil:
+		s.databaseError(w, err)
+	default:
+		writeJSON(w, http.StatusCreated, map[string]string{
+			"routeId": routeID, "checkoutId": checkoutID, "routingProvider": "osrm",
+		})
+	}
+}
+
+func validPersistedRouteMeasurement(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0) &&
+		value >= 0 && value <= math.MaxInt32
 }
 
 func (s *Server) getDriverRoute(w http.ResponseWriter, r *http.Request) {
@@ -1290,6 +1445,178 @@ func (p *PostgresRepository) CreateCheckout(
 		return checkoutResponse{}, err
 	}
 	return response, nil
+}
+
+func (p *PostgresRepository) FindUnifiedRoute(
+	ctx context.Context, checkoutID, idempotencyKey string,
+) (string, bool, error) {
+	var routeID, routeCheckoutID string
+	err := p.db.QueryRowContext(ctx, `
+		SELECT id, checkout_id
+		FROM unified_delivery_routes
+		WHERE idempotency_key = $1`, idempotencyKey,
+	).Scan(&routeID, &routeCheckoutID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	if routeCheckoutID != checkoutID {
+		return "", false, ErrConflict
+	}
+	return routeID, true, nil
+}
+
+func (p *PostgresRepository) UnifiedRouteCoordinates(
+	ctx context.Context, checkoutID string,
+) ([]routing.Coordinate, error) {
+	var status string
+	err := p.db.QueryRowContext(ctx,
+		`SELECT status FROM unified_checkouts WHERE id = $1`, checkoutID,
+	).Scan(&status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if status != "paid" {
+		return nil, ErrConflict
+	}
+
+	rows, err := p.db.QueryContext(ctx, `
+		WITH checkout_data AS (
+			SELECT c.id, c.dropoff_location, a.id AS anchor_store_id,
+			       a.merchant_id AS anchor_merchant_id, a.location AS anchor_location
+			FROM unified_checkouts c
+			JOIN store_locations a ON a.id = c.anchor_store_location_id AND a.active
+			JOIN merchants am ON am.id = a.merchant_id
+				AND am.active AND am.merchant_type = 'restaurant'
+			WHERE c.id = $1 AND c.status = 'paid'
+			  AND EXISTS (
+				SELECT 1
+				FROM checkout_orders co
+				JOIN orders o ON o.id = co.order_id
+				JOIN store_locations anchor_order_store
+					ON anchor_order_store.id = o.store_location_id
+				WHERE co.checkout_id = c.id
+				  AND anchor_order_store.merchant_id = a.merchant_id
+			  )
+		),
+		partner_info AS (
+			SELECT count(DISTINCT s.merchant_id) AS merchant_count
+			FROM checkout_data c
+			JOIN checkout_orders co ON co.checkout_id = c.id
+			JOIN orders o ON o.id = co.order_id
+			JOIN store_locations s ON s.id = o.store_location_id AND s.active
+			WHERE s.merchant_id <> c.anchor_merchant_id
+		),
+		partner_store AS (
+			SELECT s.location
+			FROM checkout_data c
+			JOIN checkout_orders co ON co.checkout_id = c.id
+			JOIN orders o ON o.id = co.order_id
+			JOIN store_locations s ON s.id = o.store_location_id AND s.active
+			WHERE s.merchant_id <> c.anchor_merchant_id
+			ORDER BY s.id
+			LIMIT 1
+		),
+		stop_coordinates AS (
+			SELECT 1 AS sequence, ST_Y(anchor_location::geometry) AS latitude,
+			       ST_X(anchor_location::geometry) AS longitude
+			FROM checkout_data, partner_info WHERE merchant_count = 1
+			UNION ALL
+			SELECT 2, ST_Y(location::geometry), ST_X(location::geometry)
+			FROM partner_store, partner_info WHERE merchant_count = 1
+			UNION ALL
+			SELECT 3, ST_Y(dropoff_location::geometry), ST_X(dropoff_location::geometry)
+			FROM checkout_data, partner_info WHERE merchant_count = 1
+		)
+		SELECT latitude, longitude
+		FROM stop_coordinates
+		ORDER BY sequence`, checkoutID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	coordinates := make([]routing.Coordinate, 0, 3)
+	for rows.Next() {
+		var coordinate routing.Coordinate
+		if err := rows.Scan(&coordinate.Latitude, &coordinate.Longitude); err != nil {
+			return nil, err
+		}
+		coordinates = append(coordinates, coordinate)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(coordinates) != 3 {
+		return nil, ErrConflict
+	}
+	return coordinates, nil
+}
+
+func (p *PostgresRepository) CreateUnifiedRoute(
+	ctx context.Context, checkoutID, idempotencyKey string, legs []routing.Route,
+) (string, error) {
+	if len(legs) != 2 {
+		return "", ErrConflict
+	}
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+	var routeID string
+	err = tx.QueryRowContext(ctx,
+		`SELECT create_unified_route($1, $2, 'osrm')`,
+		checkoutID, idempotencyKey,
+	).Scan(&routeID)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "P0001" {
+			return "", ErrConflict
+		}
+		return "", err
+	}
+	var routeCheckoutID string
+	if err := tx.QueryRowContext(ctx,
+		`SELECT checkout_id FROM unified_delivery_routes WHERE id = $1 FOR UPDATE`,
+		routeID,
+	).Scan(&routeCheckoutID); err != nil {
+		return "", err
+	}
+	if routeCheckoutID != checkoutID {
+		return "", ErrConflict
+	}
+	for i, leg := range legs {
+		if !validPersistedRouteMeasurement(leg.DistanceMeters) ||
+			!validPersistedRouteMeasurement(leg.DurationSeconds) {
+			return "", ErrConflict
+		}
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO unified_route_legs (
+				route_id, from_sequence, to_sequence, distance_meters,
+				duration_seconds, provider
+			) VALUES ($1, $2, $3, $4, $5, 'osrm')
+			ON CONFLICT (route_id, from_sequence) DO NOTHING`,
+			routeID, i+1, i+2,
+			int(math.Round(leg.DistanceMeters)), int(math.Round(leg.DurationSeconds)),
+		)
+		if err != nil {
+			return "", err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE unified_delivery_routes SET status = 'routed'
+		WHERE id = $1 AND status = 'planned'`, routeID); err != nil {
+		return "", err
+	}
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+	return routeID, nil
 }
 
 func (p *PostgresRepository) DriverRoute(

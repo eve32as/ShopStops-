@@ -35,6 +35,8 @@ export DATABASE_URL='postgres://<user>:<password>@localhost:5432/shopstops?sslmo
 export SHOPSTOPS_INTERNAL_API_TOKEN="$(openssl rand -hex 32)"
 export SHOPSTOPS_DELIVERY_FEE_CENTS=500
 export SHOPSTOPS_SERVICE_FEE_CENTS=100
+# Set to enable OSRM-backed route creation; individual requests time out at 450ms.
+export SHOPSTOPS_OSRM_BASE_URL='http://localhost:5000'
 # Set both through a server-side secret manager to enable Stripe payments.
 export STRIPE_SECRET_KEY
 export STRIPE_WEBHOOK_SECRET
@@ -45,7 +47,8 @@ go run ./cmd/shopstops-api
 
 The service listens on `:8080` by default; set `HTTP_ADDR` to override it. It
 implements health checks, nearby subscribed-merchant discovery, atomic
-dispatch, checkout creation/payment, Stripe webhooks, driver route reads,
+dispatch, checkout creation/payment, OSRM-backed paid-checkout route creation,
+Stripe webhooks, driver route reads,
 catalog discovery, order creation, ordered stop arrival/completion, and GPS
 ingestion with review-only fraud alerts for extreme GPS speeds and sustained
 route expansion. Admins can list and resolve these alerts in the control room.
@@ -53,8 +56,9 @@ Merchant catalog endpoints let authenticated merchants manage item names,
 descriptions, prices, delivery volumes, and customer-facing availability.
 Protected endpoints use a shared internal bearer token and must be placed
 behind a gateway that authenticates users, enforces roles, strips client-supplied
-`X-ShopStops-Actor` headers, and injects the authenticated actor
-identity. Do not distribute this internal token to client applications.
+`X-ShopStops-Actor` and `X-ShopStops-Actor-Role` headers, and injects verified
+actor identity and role. Do not distribute this internal token to client
+applications.
 Delivery/service fee configuration is in integer cents and defaults to zero if
 unset. The checkout endpoint builds the merchant item lines from each order's
 `item_subtotal_cents` snapshot and applies the D.C. surcharge from the configured

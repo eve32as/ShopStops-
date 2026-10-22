@@ -155,12 +155,15 @@ the original checkout; a different request using that key is rejected.
 `create_unified_route` requires a paid basket containing an anchor restaurant
 order and exactly one partner merchant. It persists the mandatory immutable
 sequence: restaurant pickup, adjacent merchant pickup, customer drop-off.
-`unified_route_legs` stores road-network distance/duration returned by an OSRM
-or Google Maps matrix integration. `internal/routing` provides an OSRM client
-with a 450 ms request timeout and caller cancellation, but route creation does
-not yet invoke it; route-leg distances and durations must still be supplied by
-an external integration. The repository does not provide turn-by-turn
-navigation. Driver clients should sample GPS every five seconds;
+`POST /checkouts/{checkoutId}/route` reads these stop coordinates from the
+database, calculates both legs with the OSRM client, and persists the route and
+measurements atomically. Each OSRM request has a 450 ms deadline and propagates
+caller cancellation. Set `SHOPSTOPS_OSRM_BASE_URL` to enable this endpoint; it
+returns service unavailable when no router is configured and gateway timeout
+when OSRM exceeds its deadline. Route creation is idempotent by
+`Idempotency-Key`, and OSRM calls occur outside the database transaction. The
+repository does not provide turn-by-turn navigation. Driver clients should
+sample GPS every five seconds;
 `record_driver_location` enforces assigned active routes, idempotency, and no
 more than one sample per five seconds. Route/authenticated API processes must
 reject client attempts to reorder stops.
