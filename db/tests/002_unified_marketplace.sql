@@ -328,6 +328,19 @@ $$;
 
 UPDATE unified_checkouts SET status = 'quoted'
 WHERE id = :'checkout_id';
+INSERT INTO checkout_financial_estimates (
+    checkout_id, item_subtotal_cents, commission_cents,
+    delivery_fee_cents, service_fee_cents, pass_through_cents,
+    estimated_processor_fee_cents, driver_payout_cents,
+    driver_base_payout_cents, along_route_pickup_bonus_cents,
+    fixed_order_cost_cents, target_profit_cents,
+    projected_net_profit_cents, target_margin_bps,
+    stripe_fee_bps, stripe_fixed_fee_cents,
+    along_route_pickup_count, typical_basket_cents
+) VALUES (
+    :'checkout_id', 2500, 200, 500, 100, 20, 120, 550,
+    100, 450, 0, 0, 130, 0, 290, 30, 1, 4500
+);
 UPDATE merchants SET stripe_account_id = 'acct_anchor_test'
 WHERE id = :'anchor_merchant_id';
 UPDATE merchants SET stripe_account_id = 'acct_partner_test'
@@ -668,6 +681,13 @@ $$;
 SELECT set_config('shopstops.test_route_stop_1', :'route_stop_1', true);
 SELECT set_config('shopstops.test_route_stop_2', :'route_stop_2', true);
 SELECT set_config('shopstops.test_route_stop_3', :'route_stop_3', true);
+UPDATE orders
+SET fulfillment_mode = 'in_store_shopper',
+    in_store_shopper_ref = 'shopper-test',
+    in_store_shopper_claimed_at = now(),
+    packed_at = now(),
+    custody_pin_hash = decode(repeat('01', 32), 'hex')
+WHERE id = :'anchor_order_id';
 SELECT record_driver_location(
     :'route_id', 'driver-test',
     ST_SetSRID(ST_MakePoint(-76.99, 38.91), 4326)::geography,
@@ -773,6 +793,21 @@ BEGIN
             RAISE;
         END IF;
     END;
+    BEGIN
+        PERFORM record_unified_route_stop_event(
+            v_route_id, v_stop_1, 'driver-test', 'stop-complete-before-custody',
+            'complete', now()
+        );
+        RAISE EXCEPTION 'in-store pickup completed without custody verification';
+    EXCEPTION WHEN OTHERS THEN
+        GET STACKED DIAGNOSTICS v_message = MESSAGE_TEXT;
+        IF v_message NOT LIKE '%custody must be verified%' THEN
+            RAISE;
+        END IF;
+    END;
+    UPDATE orders
+    SET custody_verified_at = now(), custody_pin_attempts = 1
+    WHERE id = current_setting('shopstops.test_anchor_order_id')::uuid;
     PERFORM record_unified_route_stop_event(
         v_route_id, v_stop_1, 'driver-test', 'stop-complete-1', 'complete', now()
     );
@@ -794,6 +829,16 @@ BEGIN
           <> 'completed'
        OR (SELECT count(*) FROM unified_route_stop_events WHERE route_id = v_route_id) <> 6 THEN
         RAISE EXCEPTION 'complete stop sequence should finish route and checkout exactly once';
+    END IF;
+    IF (SELECT amount_cents FROM driver_route_earnings
+        WHERE route_id = v_route_id) <> 550
+       OR (SELECT base_payout_cents FROM driver_route_earnings
+           WHERE route_id = v_route_id) <> 100
+       OR (SELECT along_route_bonus_cents FROM driver_route_earnings
+           WHERE route_id = v_route_id) <> 450
+       OR (SELECT along_route_pickup_count FROM driver_route_earnings
+           WHERE route_id = v_route_id) <> 1 THEN
+        RAISE EXCEPTION 'completed route did not settle its base and along-route bonus snapshot';
     END IF;
 END;
 $$;
