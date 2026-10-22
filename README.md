@@ -9,10 +9,10 @@ ready orders into a bundle and persisting its pickup/drop-off queue.
 Apply `db/migrations/001_delivery_foundation.sql`,
 `db/migrations/002_unified_marketplace.sql`,
 `db/migrations/003_stripe_checkout_payments.sql`,
-`db/migrations/004_billing_refunds_disputes.sql`, and
-`db/migrations/005_driver_stop_progress.sql`, and
-`db/migrations/006_catalog_orders.sql`, and
-`db/migrations/007_merchant_catalog_management.sql`, and
+`db/migrations/004_billing_refunds_disputes.sql`,
+`db/migrations/005_driver_stop_progress.sql`,
+`db/migrations/006_catalog_orders.sql`,
+`db/migrations/007_merchant_catalog_management.sql`,
 `db/migrations/008_driver_fraud_monitor.sql`, and
 `db/migrations/010_driver_rerouting_tracking.sql` on PostgreSQL 14+ with PostGIS 3.x
 installed. The migrations create dispatch, unified-basket, catalog, and order
