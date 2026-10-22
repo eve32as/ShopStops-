@@ -971,6 +971,158 @@ paths:
           description: Bundle or stop not found
         '409':
           description: Event conflicts with current stop state
+  /shopper/in-store/orders:
+    get:
+      operationId: listInStoreShopperOrders
+      summary: List ready paid orders available to an in-store shopper
+      description: Requires the dedicated shopper role. Claimed orders are visible only to their assigned shopper.
+      responses:
+        '200':
+          description: Available or currently claimed orders
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  required: [id, storeLocationId, storeName, status, items]
+                  properties:
+                    id: { type: string, format: uuid }
+                    storeLocationId: { type: string, format: uuid }
+                    storeName: { type: string }
+                    status: { type: string }
+                    items: { type: array, items: { type: object } }
+        '403':
+          description: Shopper role required
+  /shopper/in-store/orders/{orderId}/claim:
+    post:
+      operationId: claimInStoreShopperOrder
+      summary: Claim an eligible paid, ready order for in-store packing
+      parameters:
+        - in: path
+          name: orderId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Order claimed by the authenticated shopper
+        '403':
+          description: Shopper role required or order belongs to another shopper
+        '409':
+          description: Order is not available for shopper fulfillment
+  /shopper/in-store/orders/{orderId}/pack:
+    post:
+      operationId: packInStoreShopperOrder
+      summary: Mark an order packed and return its custody PIN
+      parameters:
+        - in: path
+          name: orderId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Packed order and four-digit custody PIN for the assigned shopper
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, status, custodyPIN]
+                properties:
+                  id: { type: string, format: uuid }
+                  status: { type: string, const: packed }
+                  custodyPIN: { type: string, pattern: '^[0-9]{4}$' }
+        '403':
+          description: Shopper role required or order belongs to another shopper
+        '409':
+          description: Order is not eligible for packing
+  /driver/routes/{routeId}/stops/{stopId}/custody:
+    post:
+      operationId: verifyShopperCustody
+      summary: Verify a packed order PIN at its assigned pickup stop
+      parameters:
+        - in: path
+          name: routeId
+          required: true
+          schema: { type: string, format: uuid }
+        - in: path
+          name: stopId
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [orderId, pin]
+              properties:
+                orderId: { type: string, format: uuid }
+                pin: { type: string, pattern: '^[0-9]{4}$' }
+      responses:
+        '200':
+          description: Custody verified; pickup completion is now permitted
+        '403':
+          description: Route is not assigned to this driver
+        '409':
+          description: PIN is invalid, expired, or the pickup is not ready
+  /driver/connect/onboarding:
+    post:
+      operationId: startDriverConnectOnboarding
+      summary: Create or resume Stripe Express onboarding for the authenticated driver
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [country]
+              properties:
+                country: { type: string, pattern: '^[A-Za-z]{2}$' }
+      responses:
+        '200':
+          description: Stripe-hosted onboarding URL
+        '503':
+          description: Stripe Connect is unavailable or onboarding URLs are not configured
+  /driver/cashout:
+    get:
+      operationId: getDriverCashoutSummary
+      summary: Review the authenticated driver's settled earnings and payout history
+      responses:
+        '200':
+          description: Connect status, available earnings, bonus breakdown, and payout history
+    post:
+      operationId: requestDriverCashout
+      summary: Transfer all available settled earnings to the driver's connected account
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 200 }
+      responses:
+        '202':
+          description: Transfer and connected-account payout accepted
+        '409':
+          description: Connect onboarding incomplete or no settled earnings available
+  /driver/cashout/{cashoutId}/retry:
+    post:
+      operationId: retryDriverCashoutPayout
+      summary: Retry a failed bank payout without creating a second earnings transfer
+      parameters:
+        - in: path
+          name: cashoutId
+          required: true
+          schema: { type: string, format: uuid }
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 200 }
+      responses:
+        '202':
+          description: Retry accepted
+        '404':
+          description: Cash-out request not found for this driver
+        '409':
+          description: Cash-out is not in a failed state
 components:
   securitySchemes:
     bearerAuth:

@@ -2,20 +2,25 @@ ALTER TABLE orders
     ADD COLUMN fulfillment_mode text NOT NULL DEFAULT 'driver'
         CHECK (fulfillment_mode IN ('driver', 'in_store_shopper')),
     ADD COLUMN in_store_shopper_ref text,
+    ADD COLUMN in_store_shopper_claimed_at timestamptz,
     ADD COLUMN custody_pin_hash bytea,
     ADD COLUMN custody_pin_attempts integer NOT NULL DEFAULT 0
         CHECK (custody_pin_attempts BETWEEN 0 AND 5),
     ADD COLUMN custody_verified_at timestamptz,
     ADD COLUMN packed_at timestamptz,
+    ADD CONSTRAINT orders_custody_pin_hash_length
+        CHECK (custody_pin_hash IS NULL OR octet_length(custody_pin_hash) = 32),
     ADD CONSTRAINT orders_shopper_fulfillment_consistency CHECK (
         (fulfillment_mode = 'driver'
             AND in_store_shopper_ref IS NULL
+            AND in_store_shopper_claimed_at IS NULL
             AND custody_pin_hash IS NULL
             AND packed_at IS NULL
             AND custody_verified_at IS NULL)
         OR
         (fulfillment_mode = 'in_store_shopper'
             AND in_store_shopper_ref IS NOT NULL
+            AND in_store_shopper_claimed_at IS NOT NULL
             AND ((packed_at IS NULL AND custody_pin_hash IS NULL)
                 OR (packed_at IS NOT NULL AND custody_pin_hash IS NOT NULL))
             AND (custody_verified_at IS NULL OR packed_at IS NOT NULL))
@@ -37,12 +42,16 @@ CREATE TABLE driver_route_earnings (
     route_id uuid PRIMARY KEY REFERENCES unified_delivery_routes(id),
     driver_ref text NOT NULL,
     amount_cents bigint NOT NULL CHECK (amount_cents > 0),
+    base_payout_cents integer NOT NULL CHECK (base_payout_cents >= 0),
+    along_route_bonus_cents integer NOT NULL CHECK (along_route_bonus_cents >= 0),
+    along_route_pickup_count integer NOT NULL CHECK (along_route_pickup_count >= 0),
     currency char(3) NOT NULL DEFAULT 'usd' CHECK (currency = 'usd'),
     pickup_count integer NOT NULL CHECK (pickup_count > 0),
     status text NOT NULL DEFAULT 'available'
         CHECK (status IN ('available', 'reserved', 'paid')),
     created_at timestamptz NOT NULL DEFAULT now(),
-    paid_at timestamptz
+    paid_at timestamptz,
+    CHECK (amount_cents = base_payout_cents::bigint + along_route_bonus_cents)
 );
 CREATE INDEX driver_route_earnings_available_idx
     ON driver_route_earnings (driver_ref, created_at)
@@ -56,6 +65,7 @@ CREATE TABLE driver_cashout_requests (
     amount_cents bigint NOT NULL CHECK (amount_cents > 0),
     stripe_transfer_id text UNIQUE,
     stripe_payout_id text UNIQUE,
+    payout_attempt integer NOT NULL DEFAULT 1 CHECK (payout_attempt > 0),
     status text NOT NULL DEFAULT 'pending'
         CHECK (status IN ('pending', 'paid', 'failed')),
     failure_reason text,
@@ -66,29 +76,64 @@ CREATE TABLE driver_cashout_requests (
 CREATE INDEX driver_cashout_requests_history_idx
     ON driver_cashout_requests (driver_ref, created_at DESC);
 
+CREATE TABLE driver_cashout_payout_attempts (
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    cashout_request_id uuid NOT NULL
+        REFERENCES driver_cashout_requests(id) ON DELETE CASCADE,
+    attempt_number integer NOT NULL CHECK (attempt_number > 0),
+    retry_key text NOT NULL,
+    stripe_payout_id text UNIQUE,
+    status text NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'paid', 'failed')),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (cashout_request_id, attempt_number),
+    UNIQUE (cashout_request_id, retry_key)
+);
+
+ALTER TABLE driver_route_earnings
+    ADD COLUMN cashout_request_id uuid REFERENCES driver_cashout_requests(id),
+    ADD CONSTRAINT driver_route_earnings_cashout_status CHECK (
+        (status = 'available' AND cashout_request_id IS NULL AND paid_at IS NULL)
+        OR (status = 'reserved' AND cashout_request_id IS NOT NULL AND paid_at IS NULL)
+        OR (status = 'paid' AND cashout_request_id IS NOT NULL AND paid_at IS NOT NULL)
+    );
+
 CREATE FUNCTION record_driver_route_earnings()
 RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 DECLARE
     v_amount_cents bigint;
+    v_base_payout_cents integer;
+    v_bonus_cents integer;
+    v_along_route_pickup_count integer;
     v_pickup_count integer;
 BEGIN
     IF OLD.status IS DISTINCT FROM NEW.status AND NEW.status = 'completed'
        AND NEW.driver_ref IS NOT NULL THEN
         SELECT estimate.driver_payout_cents,
+               estimate.driver_base_payout_cents,
+               estimate.along_route_pickup_bonus_cents * estimate.along_route_pickup_count,
+               estimate.along_route_pickup_count,
                count(*) FILTER (WHERE stop.stop_type = 'pickup')::integer
-        INTO v_amount_cents, v_pickup_count
+        INTO v_amount_cents, v_base_payout_cents, v_bonus_cents,
+             v_along_route_pickup_count, v_pickup_count
         FROM checkout_financial_estimates estimate
         JOIN unified_route_stops stop ON stop.route_id = NEW.id
         WHERE estimate.checkout_id = NEW.checkout_id
-        GROUP BY estimate.driver_payout_cents;
+        GROUP BY estimate.driver_payout_cents,
+                 estimate.driver_base_payout_cents,
+                 estimate.along_route_pickup_bonus_cents,
+                 estimate.along_route_pickup_count;
 
         IF v_amount_cents > 0 AND v_pickup_count > 0 THEN
             INSERT INTO driver_route_earnings (
-                route_id, driver_ref, amount_cents, pickup_count
+                route_id, driver_ref, amount_cents, base_payout_cents,
+                along_route_bonus_cents, along_route_pickup_count, pickup_count
             ) VALUES (
-                NEW.id, NEW.driver_ref, v_amount_cents, v_pickup_count
+                NEW.id, NEW.driver_ref, v_amount_cents, v_base_payout_cents,
+                v_bonus_cents, v_along_route_pickup_count, v_pickup_count
             )
             ON CONFLICT (route_id) DO NOTHING;
         END IF;
@@ -129,3 +174,5 @@ FOR EACH ROW EXECUTE FUNCTION enforce_shopper_custody_before_pickup();
 GRANT SELECT, INSERT, UPDATE ON driver_connect_accounts TO shopstops_app;
 GRANT SELECT, INSERT, UPDATE ON driver_route_earnings TO shopstops_app;
 GRANT SELECT, INSERT, UPDATE ON driver_cashout_requests TO shopstops_app;
+GRANT SELECT, INSERT, UPDATE ON driver_cashout_payout_attempts TO shopstops_app;
+GRANT USAGE, SELECT ON SEQUENCE driver_cashout_payout_attempts_id_seq TO shopstops_app;

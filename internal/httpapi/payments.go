@@ -37,6 +37,9 @@ type PaymentIntent struct {
 type StripePaymentEvent struct {
 	ID                   string
 	Type                 string
+	ConnectedAccountID   string
+	PayoutID             string
+	PayoutStatus         string
 	CheckoutID           string
 	PaymentIntentID      string
 	AmountCents          int64
@@ -86,11 +89,20 @@ type PaymentGateway interface {
 }
 
 type StripeGateway struct {
-	client *stripe.Client
+	client            *stripe.Client
+	connectReturnURL  string
+	connectRefreshURL string
 }
 
-func NewStripeGateway(secretKey string) *StripeGateway {
-	return &StripeGateway{client: stripe.NewClient(secretKey)}
+func NewStripeGateway(secretKey string, connectURLs ...string) *StripeGateway {
+	gateway := &StripeGateway{client: stripe.NewClient(secretKey)}
+	if len(connectURLs) > 0 {
+		gateway.connectReturnURL = connectURLs[0]
+	}
+	if len(connectURLs) > 1 {
+		gateway.connectRefreshURL = connectURLs[1]
+	}
+	return gateway
 }
 
 func (g *StripeGateway) CreatePaymentIntent(
@@ -133,6 +145,24 @@ func (g *StripeGateway) VerifyWebhook(
 		return StripePaymentEvent{}, nil, err
 	}
 	result := StripePaymentEvent{ID: event.ID, Type: string(event.Type)}
+	if isDriverPayoutEvent(result.Type) {
+		var payout struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		}
+		if err := json.Unmarshal(event.Data.Raw, &payout); err != nil {
+			return StripePaymentEvent{}, nil, err
+		}
+		result.ConnectedAccountID = event.Account
+		result.PayoutID = payout.ID
+		result.PayoutStatus = payout.Status
+		summary, err := json.Marshal(map[string]string{
+			"eventId": result.ID, "type": result.Type,
+			"accountId": result.ConnectedAccountID, "payoutId": result.PayoutID,
+			"status": result.PayoutStatus,
+		})
+		return result, summary, err
+	}
 	if result.Type == "checkout.session.completed" {
 		var session struct {
 			ID                string            `json:"id"`
@@ -222,6 +252,15 @@ func (g *StripeGateway) VerifyWebhook(
 		return StripePaymentEvent{}, nil, err
 	}
 	return result, summary, nil
+}
+
+func isDriverPayoutEvent(eventType string) bool {
+	switch eventType {
+	case "payout.paid", "payout.failed", "payout.canceled":
+		return true
+	default:
+		return false
+	}
 }
 
 func isLifecycleStripeEvent(eventType string) bool {
@@ -509,6 +548,26 @@ func (s *Server) stripeWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
 	defer cancel()
+	if isDriverPayoutEvent(event.Type) {
+		if event.ConnectedAccountID == "" || event.PayoutID == "" {
+			writeError(w, http.StatusBadRequest, "Stripe payout event is missing account details")
+			return
+		}
+		repository, ok := s.repo.(DriverCashoutRepository)
+		if !ok {
+			writeError(w, http.StatusServiceUnavailable, "driver payout reconciliation is unavailable")
+			return
+		}
+		if err := repository.ApplyDriverPayoutEvent(
+			ctx, event.ConnectedAccountID, event.PayoutID, event.PayoutStatus,
+		); err != nil {
+			s.log.Error("Stripe driver payout could not be reconciled")
+			writeError(w, http.StatusServiceUnavailable, "payout event will be retried")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "processed"})
+		return
+	}
 	if isLifecycleStripeEvent(event.Type) {
 		s.handleStripeLifecycleWebhook(w, ctx, event, summary)
 		return

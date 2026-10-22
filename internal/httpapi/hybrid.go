@@ -241,8 +241,15 @@ func (p *PostgresRepository) ClaimShopperOrder(
 		UPDATE orders
 		SET fulfillment_mode = 'in_store_shopper',
 		    in_store_shopper_ref = $2,
+		    in_store_shopper_claimed_at = COALESCE(in_store_shopper_claimed_at, now()),
 		    updated_at = now()
 		WHERE id = $1 AND state = 'ready'
+		  AND EXISTS (
+		      SELECT 1 FROM checkout_orders co
+		      JOIN unified_checkouts c ON c.id = co.checkout_id
+		      WHERE co.order_id = orders.id
+		        AND c.status IN ('paid', 'dispatching', 'in_progress')
+		  )
 		  AND (fulfillment_mode = 'driver'
 		       OR (fulfillment_mode = 'in_store_shopper'
 		           AND in_store_shopper_ref = $2 AND packed_at IS NULL))`,
@@ -288,7 +295,13 @@ func (p *PostgresRepository) PackShopperOrder(
 		    updated_at = now()
 		WHERE id = $1 AND state = 'ready'
 		  AND fulfillment_mode = 'in_store_shopper'
-		  AND in_store_shopper_ref = $2`,
+		  AND in_store_shopper_ref = $2
+		  AND EXISTS (
+		      SELECT 1 FROM checkout_orders co
+		      JOIN unified_checkouts c ON c.id = co.checkout_id
+		      WHERE co.order_id = orders.id
+		        AND c.status IN ('paid', 'dispatching', 'in_progress')
+		  )`,
 		orderID, shopperRef, pinHash)
 	if err != nil {
 		return err
@@ -369,7 +382,9 @@ func (p *PostgresRepository) VerifyShopperCustody(
 		  AND o.fulfillment_mode = 'in_store_shopper'
 		  AND o.packed_at IS NOT NULL AND o.custody_verified_at IS NULL
 		  AND o.custody_pin_attempts < 5
-		FOR UPDATE OF o`, routeID, stopID, orderID)
+		FOR UPDATE OF o`, routeID, stopID, orderID).Scan(
+		&storedOrderID, &storedHash, &attempts,
+	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrConflict
 	}

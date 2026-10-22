@@ -532,6 +532,23 @@ func TestStripeGatewayWebhookSignatureVerification(t *testing.T) {
 	}
 }
 
+func TestStripeGatewayParsesConnectedAccountPayoutEvents(t *testing.T) {
+	payload := []byte(`{"id":"evt_payout","object":"event","api_version":"` +
+		stripe.APIVersion + `","account":"acct_driver","created":1792390000,"data":{"object":{"id":"po_test","object":"payout","status":"paid"}},"livemode":false,"pending_webhooks":1,"type":"payout.paid"}`)
+	signed := webhook.GenerateTestSignedPayload(&webhook.UnsignedPayload{
+		Payload: payload, Secret: "webhook-test-secret",
+	}).Header
+	gateway := NewStripeGateway("unused-test-key")
+	event, summary, err := gateway.VerifyWebhook(payload, signed, "webhook-test-secret")
+	if err != nil || event.ConnectedAccountID != "acct_driver" ||
+		event.PayoutID != "po_test" || event.PayoutStatus != "paid" {
+		t.Fatalf("parsed event=%+v err=%v", event, err)
+	}
+	if strings.Contains(string(summary), "account_number") {
+		t.Fatalf("payout event summary contains bank details: %s", summary)
+	}
+}
+
 func TestStripeGatewayParsesCheckoutSessionCompletion(t *testing.T) {
 	const checkoutID = "00000000-0000-0000-0000-000000000001"
 	payload := []byte(`{"id":"evt_session","object":"event","api_version":"` +

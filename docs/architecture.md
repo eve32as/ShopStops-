@@ -267,6 +267,34 @@ scheduling and permissions. `record_driver_location` enforces assigned active
 routes, idempotency, and no more than one sample per five seconds. Route/authenticated API processes
 must reject client attempts to reorder stops.
 
+Migration `012_hybrid_driver_cashout.sql` lets a separately authorized `shopper`
+claim a paid, ready order and mark it packed. Packing returns a four-digit,
+order-bound custody PIN; only its keyed digest is stored. The assigned driver
+verifies the PIN at the arrived pickup stop, with five attempts maximum, and a
+database trigger prevents pickup completion until every in-store-shopped order
+at that stop is verified. Orders fulfilled directly by merchants do not require
+this handoff.
+
+Route completion creates one immutable driver earnings record from that
+checkout's persisted payout estimate, including its base amount and along-route
+bonus breakdown. Drivers onboard a Stripe Express account through
+`POST /driver/connect/onboarding`; payout URLs are configured with
+`SHOPSTOPS_STRIPE_CONNECT_RETURN_URL` and
+`SHOPSTOPS_STRIPE_CONNECT_REFRESH_URL`. `GET /driver/cashout` reports the
+authenticated driver's settled routes and payout history. `POST /driver/cashout`
+reserves all available earnings server-side, then creates an idempotent Connect
+transfer and payout; its `Idempotency-Key` is required. Failed bank payouts can
+be retried through `POST /driver/cashout/{cashoutId}/retry`. Connect payout
+webhook events must be enabled for the platform's Stripe endpoint so payout
+statuses and reserved earnings reconcile. Stripe settlement timing depends on
+account eligibility and bank processing; this implementation does not promise
+instant bank settlement.
+
+Along-route offers remain disabled: the repository has no live road-routing
+integration or configured per-mile rate, so a 1.5-mile detour and mileage
+payment cannot yet be validated or priced safely. Checkout pricing continues to
+snapshot only the configured $4.50 pickup bonus.
+
 Migration `003_stripe_checkout_payments.sql` records verified Stripe checkout
 events and transfer source charges. The Go API's authenticated
 `POST /checkouts/{checkoutId}/payment` creates one idempotent PaymentIntent using
@@ -323,8 +351,9 @@ the database outbox alone does not deliver real-time client updates.
 `cmd/shopstops-api` is the runnable Go service. It implements health, nearby
 subscribed-merchant discovery, catalog browsing, customer order creation,
 proximity dispatch, checkout creation and Stripe payment, subscription, refund,
-dispute, and webhook processing, driver route
-reads, ordered stop arrival/completion, and GPS ingestion backed by PostgreSQL.
+dispute, and webhook processing, in-store shopper custody, driver Connect payouts,
+driver route reads, ordered stop arrival/completion, and GPS ingestion backed by
+PostgreSQL.
 Driver stop events are idempotent, assignment-checked, and must advance through
 the server-defined pickup/pickup/drop-off sequence; completion publishes route
 events to the transactional outbox. Billing requires `STRIPE_MERCHANT_MONTHLY_PRICE_ID` set to a $199 USD monthly

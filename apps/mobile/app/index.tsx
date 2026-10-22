@@ -8,6 +8,7 @@ import {
   Image,
   ActivityIndicator,
   KeyboardAvoidingView,
+  Linking,
   Platform,
   Pressable,
   ScrollView,
@@ -25,7 +26,7 @@ import {
 } from "../src/backgroundLocation";
 import { NativeSignIn } from "../src/NativeSignIn";
 
-type Role = "Shopper" | "Driver" | "Merchant";
+type Role = "Shopper" | "In-store Shopper" | "Driver" | "Merchant";
 type NearbyMerchant = {
   merchantId: string;
   name: string;
@@ -122,6 +123,30 @@ type Subscription = {
   currentPeriodEnd: string | null;
   paymentMethodReady: boolean;
 };
+type ShopperFulfillmentOrder = {
+  id: string;
+  storeLocationId: string;
+  storeName: string;
+  status: string;
+  items: { name: string; quantity: number; unitPriceCents: number }[];
+};
+type DriverCashoutSummary = {
+  connectAccount?: { detailsSubmitted: boolean; payoutsEnabled: boolean };
+  availableCents: number;
+  pendingCents: number;
+  earnings: {
+    routeId: string;
+    amountCents: number;
+    basePayoutCents: number;
+    alongRouteBonusCents: number;
+    alongRoutePickupCount: number;
+    pickupCount: number;
+    currency: string;
+    status: string;
+    createdAt: string;
+  }[];
+  cashouts: { id: string; amountCents: number; status: string; createdAt: string }[];
+};
 
 const stripeKeyConfigured = Boolean(process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY);
 const shopperOrderIDsKey = "shopstops.shopper-order-ids.v1";
@@ -179,6 +204,12 @@ export default function HomeScreen() {
   const [subscription, setSubscription] = useState<Subscription | null>(null);
   const [merchantStoreLocations, setMerchantStoreLocations] = useState<MerchantStoreLocation[]>([]);
   const [merchantOrders, setMerchantOrders] = useState<MerchantOrder[]>([]);
+  const [shopperOrders, setShopperOrders] = useState<ShopperFulfillmentOrder[]>([]);
+  const [packedPINs, setPackedPINs] = useState<Record<string, string>>({});
+  const [cashoutSummary, setCashoutSummary] = useState<DriverCashoutSummary | null>(null);
+  const [connectCountry, setConnectCountry] = useState("US");
+  const [custodyOrderID, setCustodyOrderID] = useState("");
+  const [custodyPIN, setCustodyPIN] = useState("");
   const [merchantCatalog, setMerchantCatalog] = useState<MerchantCatalogItem[]>([]);
   const [merchantCatalogDrafts, setMerchantCatalogDrafts] = useState<Record<string, MerchantCatalogDraft>>({});
   const [merchantStoreLocation, setMerchantStoreLocation] = useState("");
@@ -208,6 +239,7 @@ export default function HomeScreen() {
     };
   } | null>(null);
   const routeStopAttempts = useRef(new Map<string, { eventId: string; observedAt: string }>());
+  const cashoutIdempotencyKey = useRef<string | null>(null);
   const checkoutAttempt = useRef<{
     key: string;
     body: {
@@ -354,6 +386,12 @@ export default function HomeScreen() {
       setSubscription(null);
       setMerchantCatalog([]);
       setMerchantOrders([]);
+      setShopperOrders([]);
+      setPackedPINs({});
+      setCashoutSummary(null);
+      setCustodyOrderID("");
+      setCustodyPIN("");
+      cashoutIdempotencyKey.current = null;
       setMerchantCatalogDrafts({});
       setMerchantStoreLocations([]);
       setMerchantStoreLocation("");
@@ -549,6 +587,123 @@ export default function HomeScreen() {
     if (result) {
       setAssignedRoutes(result);
       setAssignedRoutesLoaded(true);
+    }
+  }
+
+  async function loadShopperOrders() {
+    const result = await run(() =>
+      apiRequest<ShopperFulfillmentOrder[]>(settings, "shopper/in-store/orders"),
+    );
+    if (result) {
+      setShopperOrders((current) => [
+        ...result,
+        ...current.filter((order) => packedPINs[order.id] && !result.some((item) => item.id === order.id)),
+      ]);
+    }
+  }
+
+  async function claimShopperOrder(orderID: string) {
+    const result = await run(() =>
+      apiRequest<{ id: string; status: string }>(
+        settings,
+        `shopper/in-store/orders/${encodeURIComponent(orderID)}/claim`,
+        { method: "POST", body: JSON.stringify({}) },
+      ),
+    );
+    if (result) await loadShopperOrders();
+  }
+
+  async function packShopperOrder(orderID: string) {
+    const result = await run(() =>
+      apiRequest<{ id: string; status: string; custodyPIN: string }>(
+        settings,
+        `shopper/in-store/orders/${encodeURIComponent(orderID)}/pack`,
+        { method: "POST", body: JSON.stringify({}) },
+      ),
+    );
+    if (result) {
+      setPackedPINs((current) => ({ ...current, [orderID]: result.custodyPIN }));
+    }
+  }
+
+  async function loadDriverCashout() {
+    const result = await run(() =>
+      apiRequest<DriverCashoutSummary>(settings, "driver/cashout"),
+    );
+    if (result) setCashoutSummary(result);
+  }
+
+  async function startDriverConnectOnboarding() {
+    const result = await run(() =>
+      apiRequest<{ url: string }>(settings, "driver/connect/onboarding", {
+        method: "POST",
+        body: JSON.stringify({ country: connectCountry.trim().toUpperCase() }),
+      }),
+    );
+    if (result) {
+      try {
+        await Linking.openURL(result.url);
+      } catch {
+        setMessage("Stripe onboarding is ready, but this device could not open the link.");
+      }
+    }
+  }
+
+  async function requestDriverCashout() {
+    cashoutIdempotencyKey.current ??= idempotencyKey();
+    const result = await run(async () => {
+      const response = await apiRequest<{
+        id: string;
+        amountCents: number;
+        status: string;
+      }>(settings, "driver/cashout", {
+        method: "POST",
+        headers: { "Idempotency-Key": cashoutIdempotencyKey.current ?? "" },
+      });
+      cashoutIdempotencyKey.current = null;
+      const summary = await apiRequest<DriverCashoutSummary>(settings, "driver/cashout");
+      setCashoutSummary(summary);
+      return response;
+    });
+    if (result) setMessage(`Cash-out ${result.status.replaceAll("_", " ")}.`);
+  }
+
+  async function retryDriverCashout(cashoutID: string) {
+    const result = await run(async () => {
+      const response = await apiRequest<{ status: string }>(
+        settings,
+        `driver/cashout/${encodeURIComponent(cashoutID)}/retry`,
+        {
+          method: "POST",
+          headers: { "Idempotency-Key": idempotencyKey() },
+        },
+      );
+      const summary = await apiRequest<DriverCashoutSummary>(settings, "driver/cashout");
+      setCashoutSummary(summary);
+      return response;
+    });
+    if (result) setMessage(`Cash-out retry ${result.status.replaceAll("_", " ")}.`);
+  }
+
+  async function verifyCustody(stopId: string) {
+    const orderID = custodyOrderID.trim();
+    if (!isUUID(orderID) || !/^\d{4}$/.test(custodyPIN)) {
+      setMessage("Enter the packed order ID and its four-digit custody PIN.");
+      return;
+    }
+    const result = await run(() =>
+      apiRequest<{ status: string }>(
+        settings,
+        `driver/routes/${encodeURIComponent(routeId)}/stops/${encodeURIComponent(stopId)}/custody`,
+        {
+          method: "POST",
+          body: JSON.stringify({ orderId: orderID, pin: custodyPIN }),
+        },
+      ),
+    );
+    if (result) {
+      setCustodyPIN("");
+      setMessage("Custody verified. You can now confirm the pickup.");
     }
   }
 
@@ -1118,7 +1273,7 @@ export default function HomeScreen() {
         </View>
 
         <View style={styles.rolePicker}>
-          {(["Shopper", "Driver", "Merchant"] as const).map((item) => (
+          {(["Shopper", "In-store Shopper", "Driver", "Merchant"] as const).map((item) => (
             <Pressable
               accessibilityRole="tab"
               accessibilityState={{ selected: role === item }}
@@ -1395,6 +1550,55 @@ export default function HomeScreen() {
           </>
         ) : null}
 
+        {role === "In-store Shopper" ? (
+          <View style={styles.card}>
+            <Text style={styles.sectionEyebrow}>SHOPPER / PICK & PACK</Text>
+            <Text style={styles.sectionTitle}>Prepare a handoff for your courier.</Text>
+            <Text style={styles.helpText}>
+              Claim a ready paid order, pack it, then share its one-time four-digit custody PIN
+              with the assigned driver at pickup.
+            </Text>
+            <ActionButton
+              disabled={busy}
+              label="Refresh ready orders"
+              onPress={() => void loadShopperOrders()}
+              secondary
+            />
+            {shopperOrders.length === 0 ? (
+              <Text style={styles.tinyNote}>No eligible orders are ready to claim.</Text>
+            ) : null}
+            {shopperOrders.map((order) => (
+              <View key={order.id} style={styles.merchantItem}>
+                <Text style={styles.resultTitle}>{order.storeName}</Text>
+                <Text style={styles.resultSub}>Order · {order.id}</Text>
+                {order.items.map((item, index) => (
+                  <Text key={`${order.id}-${index}`} style={styles.resultSub}>
+                    {item.quantity} × {item.name}
+                  </Text>
+                ))}
+                <ActionButton
+                  disabled={busy}
+                  label="Claim order"
+                  onPress={() => void claimShopperOrder(order.id)}
+                  secondary
+                />
+                <ActionButton
+                  disabled={busy}
+                  label="Finish packing & show PIN"
+                  onPress={() => void packShopperOrder(order.id)}
+                />
+                {packedPINs[order.id] ? (
+                  <View style={styles.checkoutBox}>
+                    <Text style={styles.checkoutLabel}>DRIVER CUSTODY PIN</Text>
+                    <Text style={styles.totalValue}>{packedPINs[order.id]}</Text>
+                    <Text style={styles.tinyNote}>Only share this code with the assigned driver.</Text>
+                  </View>
+                ) : null}
+              </View>
+            ))}
+          </View>
+        ) : null}
+
         {role === "Driver" ? (
           <View style={styles.card}>
             <Text style={styles.sectionEyebrow}>DRIVER / ACTIVE DELIVERY</Text>
@@ -1463,11 +1667,32 @@ export default function HomeScreen() {
                         onPress={() => void updateRouteStop(activeStop.id, "arrive")}
                       />
                     ) : (
-                      <ActionButton
-                        disabled={busy}
-                        label={activeStop.type === "dropoff" ? "Confirm delivery" : "Confirm pickup"}
-                        onPress={() => void updateRouteStop(activeStop.id, "complete")}
-                      />
+                      <>
+                        {activeStop.type === "pickup" ? (
+                          <View style={styles.checkoutBox}>
+                            <Text style={styles.checkoutLabel}>IN-STORE HANDOFF (IF REQUIRED)</Text>
+                            <Field label="Packed order ID" onChangeText={setCustodyOrderID} value={custodyOrderID} />
+                            <Field
+                              label="Four-digit custody PIN"
+                              keyboardType="number-pad"
+                              maxLength={4}
+                              onChangeText={setCustodyPIN}
+                              value={custodyPIN}
+                            />
+                            <ActionButton
+                              disabled={busy}
+                              label="Verify shopper handoff"
+                              onPress={() => void verifyCustody(activeStop.id)}
+                              secondary
+                            />
+                          </View>
+                        ) : null}
+                        <ActionButton
+                          disabled={busy}
+                          label={activeStop.type === "dropoff" ? "Confirm delivery" : "Confirm pickup"}
+                          onPress={() => void updateRouteStop(activeStop.id, "complete")}
+                        />
+                      </>
                     )}
                   </View>
                 ) : (
@@ -1476,6 +1701,90 @@ export default function HomeScreen() {
                 <Text style={styles.tinyNote}>Routing matrix · {route.routingProvider}</Text>
               </View>
             ) : null}
+            <View style={styles.checkoutBox}>
+              <Text style={styles.sectionEyebrow}>DRIVER / CASH OUT</Text>
+              <Text style={styles.sectionTitle}>Settled route earnings.</Text>
+              <Text style={styles.helpText}>
+                Payout requests use earnings settled from completed routes. Amounts and payout
+                destination are verified by the server; Stripe handles bank details.
+              </Text>
+              {cashoutSummary ? (
+                <>
+                  <View style={styles.invoiceRow}>
+                    <Text style={styles.invoiceLabel}>Available</Text>
+                    <Text style={styles.invoiceAmount}>${(cashoutSummary.availableCents / 100).toFixed(2)}</Text>
+                  </View>
+                  <View style={styles.invoiceRow}>
+                    <Text style={styles.invoiceLabel}>In payout</Text>
+                    <Text style={styles.invoiceAmount}>${(cashoutSummary.pendingCents / 100).toFixed(2)}</Text>
+                  </View>
+                  {cashoutSummary.connectAccount?.payoutsEnabled ? (
+                    <Text style={styles.tinyNote}>Stripe payouts enabled</Text>
+                  ) : (
+                    <>
+                      <Field
+                        label="Stripe account country (ISO)"
+                        onChangeText={setConnectCountry}
+                        value={connectCountry}
+                      />
+                      <ActionButton
+                        disabled={busy}
+                        label="Set up Stripe Connect"
+                        onPress={() => void startDriverConnectOnboarding()}
+                        secondary
+                      />
+                    </>
+                  )}
+                  {cashoutSummary.earnings.slice(0, 10).map((earning) => (
+                    <View key={earning.routeId} style={styles.invoiceRow}>
+                      <View style={styles.resultCopy}>
+                        <Text style={styles.invoiceLabel}>
+                          Route · {earning.status.replaceAll("_", " ")}
+                        </Text>
+                        <Text style={styles.tinyNote}>
+                          Base ${(earning.basePayoutCents / 100).toFixed(2)} · Bonus $
+                          {(earning.alongRouteBonusCents / 100).toFixed(2)} ·{" "}
+                          {earning.alongRoutePickupCount} along-route pickup
+                          {earning.alongRoutePickupCount === 1 ? "" : "s"}
+                        </Text>
+                      </View>
+                      <Text style={styles.invoiceAmount}>${(earning.amountCents / 100).toFixed(2)}</Text>
+                    </View>
+                  ))}
+                  {cashoutSummary.cashouts.slice(0, 5).map((cashout) => (
+                    <View key={cashout.id} style={styles.merchantItem}>
+                      <Text style={styles.tinyNote}>
+                        Cash-out · ${(cashout.amountCents / 100).toFixed(2)} · {cashout.status.replaceAll("_", " ")}
+                      </Text>
+                      {cashout.status === "failed" ? (
+                        <ActionButton
+                          disabled={busy}
+                          label="Retry bank payout"
+                          onPress={() => void retryDriverCashout(cashout.id)}
+                          secondary
+                        />
+                      ) : null}
+                    </View>
+                  ))}
+                </>
+              ) : (
+                <Text style={styles.tinyNote}>Load your earnings to get started.</Text>
+              )}
+              <View style={styles.actionRow}>
+                <ActionButton
+                  disabled={busy}
+                  label="Refresh earnings"
+                  onPress={() => void loadDriverCashout()}
+                  secondary
+                />
+                <ActionButton
+                  disabled={busy || !cashoutSummary?.connectAccount?.payoutsEnabled ||
+                    (!cashoutSummary.availableCents && !cashoutSummary.pendingCents)}
+                  label={cashoutSummary?.pendingCents ? "Resume payout" : "Request payout"}
+                  onPress={() => void requestDriverCashout()}
+                />
+              </View>
+            </View>
             <ActionButton
               disabled={tracking || !route || route.status !== "in_progress"}
               label={tracking ? "Background location sharing is active" : "Start background location sharing"}
@@ -1681,12 +1990,14 @@ function Field({
   onChangeText,
   keyboardType = "default",
   editable = true,
+  maxLength,
 }: {
   label: string;
   value: string;
   onChangeText: (value: string) => void;
-  keyboardType?: "default" | "decimal-pad";
+  keyboardType?: "default" | "decimal-pad" | "number-pad";
   editable?: boolean;
+  maxLength?: number;
 }) {
   return (
     <View style={styles.field}>
@@ -1697,6 +2008,7 @@ function Field({
         autoCorrect={false}
         editable={editable}
         keyboardType={keyboardType}
+        maxLength={maxLength}
         onChangeText={onChangeText}
         placeholder={label}
         placeholderTextColor="#94a3b8"
@@ -1752,8 +2064,8 @@ const styles = StyleSheet.create({
   heroStats: { flexDirection: "row", justifyContent: "space-between", marginTop: 24, paddingTop: 17, borderTopWidth: 1, borderTopColor: "#436057" },
   statValue: { color: "#fffdf7", fontSize: 19, fontWeight: "800" },
   statLabel: { color: "#afc4bb", fontSize: 10, marginTop: 3 },
-  rolePicker: { flexDirection: "row", gap: 7, padding: 5, backgroundColor: "#e9e8e2", borderRadius: 14, marginTop: 18 },
-  roleButton: { flex: 1, alignItems: "center", paddingVertical: 11, borderRadius: 10 },
+  rolePicker: { flexDirection: "row", flexWrap: "wrap", gap: 7, padding: 5, backgroundColor: "#e9e8e2", borderRadius: 14, marginTop: 18 },
+  roleButton: { flex: 1, minWidth: "45%", alignItems: "center", paddingVertical: 11, borderRadius: 10 },
   roleButtonActive: { backgroundColor: "#fff", elevation: 1 },
   roleText: { color: "#64756e", fontSize: 12, fontWeight: "700" },
   roleTextActive: { color: "#19352f" },

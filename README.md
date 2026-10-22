@@ -6,15 +6,7 @@ ready orders into a bundle and persisting its pickup/drop-off queue.
 
 ## Database
 
-Apply `db/migrations/001_delivery_foundation.sql`,
-`db/migrations/002_unified_marketplace.sql`,
-`db/migrations/003_stripe_checkout_payments.sql`,
-`db/migrations/004_billing_refunds_disputes.sql`, and
-`db/migrations/005_driver_stop_progress.sql`,
-`db/migrations/006_catalog_orders.sql`,
-`db/migrations/007_merchant_catalog_management.sql`,
-`db/migrations/008_merchant_order_fulfillment.sql`, and
-`db/migrations/009_delivery_zone_dispatch_defaults.sql` on PostgreSQL 14+ with
+Apply all numbered SQL migrations in `db/migrations/` on PostgreSQL 14+ with
 PostGIS 3.x installed. The migrations create dispatch, unified-basket, catalog,
 and order models; spatial queries; transaction-safe order/merchant limits;
 immutable multi-stop routes; payment/tax ledger records; and outbox events.
@@ -52,6 +44,9 @@ export STRIPE_SECRET_KEY
 export STRIPE_WEBHOOK_SECRET
 # Configure a Stripe Price for USD 199/month to enable merchant subscriptions.
 export STRIPE_MERCHANT_MONTHLY_PRICE_ID
+# Configure HTTPS app return URLs for driver Connect onboarding.
+export SHOPSTOPS_STRIPE_CONNECT_RETURN_URL
+export SHOPSTOPS_STRIPE_CONNECT_REFRESH_URL
 go run ./cmd/shopstops-api
 ```
 
@@ -65,7 +60,14 @@ The API
 implements health checks, nearby subscribed-merchant discovery, atomic
 dispatch, checkout creation/payment, Stripe webhooks, driver route reads,
 catalog discovery, order creation, ordered stop arrival/completion, and GPS
-ingestion. Merchant catalog endpoints let authenticated merchants manage item
+ingestion. A `shopper` OIDC role can claim and pack paid in-store orders; drivers
+must verify the order's custody PIN before completing its pickup stop. Completed
+routes accrue the immutable payout estimate from the checkout and expose
+role-scoped Connect onboarding, earnings history, payout requests, and retries.
+Stripe-connected payout statuses reconcile through `payout.paid`,
+`payout.failed`, and `payout.canceled` webhook events. Stripe's actual bank
+settlement timing still depends on the connected account and payout eligibility.
+Merchant catalog endpoints let authenticated merchants manage item
 names, descriptions, prices, delivery volumes, and customer-facing availability.
 Protected endpoints use a shared internal bearer token and must not be exposed
 directly to clients. Run the included OIDC identity gateway as a separate
@@ -86,7 +88,7 @@ HTTP_ADDR=':8081' go run ./cmd/shopstops-gateway
 The gateway verifies issuer, audience, signature, and expiry using OIDC discovery
 and the issuer's JWKS. Tokens must include a stable `sub` or configured actor
 claim, and the configured role claim must be a role string or string array
-containing `customer`, `merchant`, `driver`, `dispatch`, or `admin`. It maps
+containing `customer`, `shopper`, `merchant`, `driver`, `dispatch`, or `admin`. It maps
 route access to those roles, removes client-supplied actor, role, forwarding,
 cookie, and authorization headers, and injects the verified actor/role plus the
 internal API bearer token. `/v1/healthz`, `/v1/readyz`, and the

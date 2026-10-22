@@ -62,7 +62,11 @@ func main() {
 	} else {
 		handler = httpapi.NewWithPayments(
 			repository, apiToken, logger,
-			httpapi.NewStripeGateway(stripeSecretKey), stripeWebhookSecret,
+			httpapi.NewStripeGateway(
+				stripeSecretKey,
+				os.Getenv("SHOPSTOPS_STRIPE_CONNECT_RETURN_URL"),
+				os.Getenv("SHOPSTOPS_STRIPE_CONNECT_REFRESH_URL"),
+			), stripeWebhookSecret,
 			stripeMerchantPriceID,
 		)
 	}
