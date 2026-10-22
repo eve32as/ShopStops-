@@ -156,11 +156,14 @@ the original checkout; a different request using that key is rejected.
 order and exactly one partner merchant. It persists the mandatory immutable
 sequence: restaurant pickup, adjacent merchant pickup, customer drop-off.
 `unified_route_legs` stores road-network distance/duration returned by an OSRM
-or Google Maps matrix integration; this repository does not call either vendor
-or provide turn-by-turn navigation. Driver clients should sample GPS every five
-seconds; `record_driver_location` enforces assigned active routes, idempotency,
-and no more than one sample per five seconds. Route/authenticated API processes
-must reject client attempts to reorder stops.
+or Google Maps matrix integration. `internal/routing` provides an OSRM client
+with a 450 ms request timeout and caller cancellation, but route creation does
+not yet invoke it; route-leg distances and durations must still be supplied by
+an external integration. The repository does not provide turn-by-turn
+navigation. Driver clients should sample GPS every five seconds;
+`record_driver_location` enforces assigned active routes, idempotency, and no
+more than one sample per five seconds. Route/authenticated API processes must
+reject client attempts to reorder stops.
 
 Migration `003_stripe_checkout_payments.sql` records verified Stripe checkout
 events and transfer source charges. The Go API's authenticated
