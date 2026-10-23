@@ -1,6 +1,6 @@
 CREATE TABLE driver_payout_profiles (
     driver_ref text PRIMARY KEY CHECK (length(btrim(driver_ref)) BETWEEN 1 AND 200),
-    email_address text NOT NULL CHECK (
+    email_address text NOT NULL UNIQUE CHECK (
         length(email_address) BETWEEN 3 AND 320
         AND position('@' IN email_address) > 1
         AND email_address = btrim(email_address)

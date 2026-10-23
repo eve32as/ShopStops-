@@ -89,10 +89,10 @@ func TestCalculateWeeklyStatementAggregatesCompletedRoutePay(t *testing.T) {
 func TestCalculateWeeklyStatementRejectsInvalidRoutes(t *testing.T) {
 	start := time.Date(2026, time.January, 5, 0, 0, 0, 0, time.UTC)
 	tests := []struct {
-		name string
-		ref  string
+		name   string
+		ref    string
 		routes []CompletedRoute
-		rate int64
+		rate   int64
 	}{
 		{name: "missing driver", routes: []CompletedRoute{{DriverRef: "driver-1"}}},
 		{name: "wrong driver", ref: "driver-1", routes: []CompletedRoute{{DriverRef: "driver-2"}}},
@@ -113,12 +113,12 @@ func TestCalculateWeeklyStatementRejectsInvalidRoutes(t *testing.T) {
 func TestWorkerCreatesAndSendsWeeklyStatements(t *testing.T) {
 	now := time.Date(2026, time.October, 21, 12, 0, 0, 0, time.UTC)
 	repository := &fakeRepository{
-		created: 1,
+		created:  1,
 		messages: []Message{{ID: "message-1", AttemptNumber: 1}},
 	}
 	worker := &Worker{
-		Repository: repository,
-		Sender: fakeSender{},
+		Repository:       repository,
+		Sender:           fakeSender{},
 		MileageRateCents: 45,
 	}
 	created, sent, err := worker.RunOnce(context.Background(), now)
@@ -142,7 +142,7 @@ func TestWorkerRecordsSMTPFailureAndContinues(t *testing.T) {
 	}
 	worker := &Worker{
 		Repository: repository,
-		Sender: fakeSender{err: errors.New("smtp rejected")},
+		Sender:     fakeSender{err: errors.New("smtp rejected")},
 	}
 	_, sent, err := worker.RunOnce(context.Background(), time.Now())
 	if err != nil {

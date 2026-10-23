@@ -714,6 +714,58 @@ BEGIN
 END;
 $$;
 
+INSERT INTO driver_payout_profiles (driver_ref, email_address, updated_by)
+VALUES ('driver-test', 'driver-test@example.com', 'admin-test');
+INSERT INTO driver_weekly_earnings_statements (
+    driver_ref, period_start, period_end, completed_routes, distance_meters,
+    base_pay_cents, mileage_pay_cents, total_earnings_cents,
+    mileage_rate_cents_per_mile
+)
+VALUES (
+    'driver-test', date_trunc('week', current_date)::date - 7,
+    date_trunc('week', current_date)::date, 1, 4000, 700, 100, 800, 45
+)
+RETURNING id AS payout_statement_id \gset
+INSERT INTO delivery_message_logs (
+    statement_id, recipient_type, recipient_ref, recipient_address,
+    channel, notification_type
+)
+VALUES (
+    :'payout_statement_id', 'driver', 'driver-test',
+    'driver-test@example.com', 'email', 'weekly_payout_statement'
+)
+RETURNING id AS payout_message_id \gset
+INSERT INTO delivery_message_attempts (message_id, status)
+VALUES (:'payout_message_id', 'sending')
+RETURNING id AS payout_attempt_id \gset
+UPDATE delivery_message_attempts
+SET status = 'sent', completed_at = now(),
+    provider_message_id = '<weekly-test@example.com>'
+WHERE id = :'payout_attempt_id';
+UPDATE delivery_message_logs
+SET status = 'sent', sent_at = now(),
+    provider_message_id = '<weekly-test@example.com>'
+WHERE id = :'payout_message_id';
+DO $$
+BEGIN
+    IF (SELECT count(*) FROM driver_weekly_earnings_statements
+        WHERE driver_ref = 'driver-test'
+          AND period_start = date_trunc('week', current_date)::date - 7
+          AND period_end = date_trunc('week', current_date)::date) <> 1
+       OR (SELECT count(*) FROM delivery_message_logs
+           WHERE recipient_ref = 'driver-test'
+             AND notification_type = 'weekly_payout_statement'
+             AND status = 'sent') <> 1
+       OR (SELECT count(*) FROM delivery_message_attempts attempt
+           JOIN delivery_message_logs message ON message.id = attempt.message_id
+           WHERE message.recipient_ref = 'driver-test'
+             AND attempt.status = 'sent'
+             AND attempt.provider_message_id = '<weekly-test@example.com>') <> 1 THEN
+        RAISE EXCEPTION 'weekly payout statement and message attempt should be auditable';
+    END IF;
+END;
+$$;
+
 UPDATE orders SET state = 'preparing'
 WHERE id = :'anchor_order_id';
 DO $$

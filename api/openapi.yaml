@@ -522,6 +522,88 @@ paths:
           description: Admin role required
         '503':
           description: Fraud monitoring is unavailable
+  /admin/notifications:
+    get:
+      operationId: listDeliveryMessageLogs
+      summary: Audit recent outbound notification delivery and attempt history
+      description: Admin-only. Recipient email addresses and provider credentials are excluded from the response.
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [queued, sending, sent, failed]
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        '200':
+          description: Recent outbound messages with append-only attempt history
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/DeliveryMessageLog'
+        '403':
+          description: Admin role required
+        '503':
+          description: Notification management is unavailable
+  /admin/notifications/{notificationId}/retry:
+    post:
+      operationId: retryDeliveryMessage
+      summary: Queue a failed notification for another delivery attempt
+      description: Admin-only. This does not create a duplicate statement or retry a message already in progress.
+      parameters:
+        - $ref: '#/components/parameters/NotificationId'
+      responses:
+        '200':
+          description: Failed message requeued
+        '403':
+          description: Admin role required
+        '404':
+          description: Notification not found
+        '409':
+          description: Only failed notifications can be retried
+  /admin/driver-payout-profiles/{driverRef}:
+    put:
+      operationId: upsertDriverPayoutProfile
+      summary: Enable or update a courier's weekly statement email
+      description: Admin-only. The configured email is stored privately and copied to newly queued statements.
+      parameters:
+        - in: path
+          name: driverRef
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [email]
+              properties:
+                email:
+                  type: string
+                  format: email
+                  maxLength: 320
+      responses:
+        '200':
+          description: Courier statement email enabled
+        '400':
+          description: Invalid driver reference or email address
+        '403':
+          description: Admin role required
+        '409':
+          description: Email address is already assigned to another courier
   /admin/driver-fraud-alerts/{alertId}:
     patch:
       operationId: resolveDriverFraudAlert
@@ -780,7 +862,62 @@ components:
       schema:
         type: string
         format: uuid
+    NotificationId:
+      in: path
+      name: notificationId
+      required: true
+      schema:
+        type: string
+        format: uuid
   schemas:
+    DeliveryMessageLog:
+      type: object
+      required: [id, recipientRef, notificationType, channel, status, attempts, createdAt, attemptHistory]
+      properties:
+        id:
+          type: string
+          format: uuid
+        recipientRef:
+          type: string
+        notificationType:
+          type: string
+        channel:
+          type: string
+          enum: [email]
+        status:
+          type: string
+          enum: [queued, sending, sent, failed]
+        attempts:
+          type: integer
+        lastError:
+          type: string
+        providerMessageId:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        sentAt:
+          type: string
+          format: date-time
+        attemptHistory:
+          type: array
+          items:
+            type: object
+            required: [status, startedAt]
+            properties:
+              status:
+                type: string
+                enum: [sending, sent, failed]
+              errorCode:
+                type: string
+              providerMessageId:
+                type: string
+              startedAt:
+                type: string
+                format: date-time
+              completedAt:
+                type: string
+                format: date-time
     NearbyMerchant:
       type: object
       required: [merchantId, name, merchantType, storeLocationId, distanceMeters]

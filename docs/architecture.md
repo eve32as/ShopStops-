@@ -268,6 +268,28 @@ invoices; the current checkout continues to use configured delivery and
 service fees. `NetPlatformMargin` is the value from the supplied formula, not
 a fully reconciled accounting margin, as it does not deduct every listed cost.
 
+Migration `011_weekly_payout_notifications.sql` adds admin-managed courier email
+profiles, immutable weekly earnings statements, and delivery-message attempt
+history. The separate `cmd/shopstops-payout-worker` snapshots completed unified
+route miles for the previous complete UTC week, applying the finance package's
+standard $7 route base pay and the worker's configured cents-per-mile rate.
+Unique driver/week statements and `FOR UPDATE SKIP LOCKED` message leases allow
+safe retries and multiple worker replicas. Email uses SMTP with required
+STARTTLS; failed messages retry with backoff up to eight attempts before an
+admin may requeue them. This is an earnings statement and email delivery
+workflow only: it does not move funds or confirm a bank/Stripe payout. A delivery
+may be duplicated if SMTP accepts it but the worker cannot persist success, so
+the message uses a stable Message-ID and reports at-least-once delivery.
+
+Admins configure a courier recipient with
+`PUT /admin/driver-payout-profiles/{driverRef}` and audit recent message state and
+append-only attempts through `GET /admin/notifications`. The admin dashboard
+refreshes this log every ten seconds and allows retrying failed messages.
+Recipient email addresses and raw SMTP errors are not exposed in the API. The
+worker requires `DATABASE_URL`, `SHOPSTOPS_DRIVER_MILEAGE_RATE_CENTS_PER_MILE`,
+`SHOPSTOPS_SMTP_ADDRESS`, `SHOPSTOPS_SMTP_HOST`, and `SHOPSTOPS_PAYOUT_FROM`;
+SMTP username/password are optional but must be configured together.
+
 The OpenAPI contract describes subscription, refund, and webhook flows. The
 `apps/mobile` Expo client targets iOS and Android and exposes current shopper,
 driver, and merchant billing API flows; `apps/admin` provides the full-refund

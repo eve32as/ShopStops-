@@ -19,23 +19,23 @@ const (
 )
 
 type WeeklyStatement struct {
-	DriverRef           string
-	PeriodStart         time.Time
-	PeriodEnd           time.Time
-	CompletedRoutes     int
-	DistanceMeters      int64
-	BasePayCents        int64
-	MileagePayCents     int64
-	TotalEarningsCents  int64
+	DriverRef               string
+	PeriodStart             time.Time
+	PeriodEnd               time.Time
+	CompletedRoutes         int
+	DistanceMeters          int64
+	BasePayCents            int64
+	MileagePayCents         int64
+	TotalEarningsCents      int64
 	MileageRateCentsPerMile int64
 }
 
 type Message struct {
-	ID                string
-	AttemptID         int64
-	AttemptNumber     int
-	Recipient         string
-	Statement         WeeklyStatement
+	ID            string
+	AttemptID     int64
+	AttemptNumber int
+	Recipient     string
+	Statement     WeeklyStatement
 }
 
 type Repository interface {
@@ -122,10 +122,10 @@ func CalculateWeeklyStatement(
 		return WeeklyStatement{}, finance.ErrInvalidPricingInput
 	}
 	statement := WeeklyStatement{
-		DriverRef: driverRef,
-		PeriodStart: start.UTC(),
-		PeriodEnd: end.UTC(),
-		CompletedRoutes: len(routes),
+		DriverRef:               driverRef,
+		PeriodStart:             start.UTC(),
+		PeriodEnd:               end.UTC(),
+		CompletedRoutes:         len(routes),
 		MileageRateCentsPerMile: mileageRateCents,
 	}
 	engine := finance.NewProductionPricingEngine(mileageRateCents, false, false)

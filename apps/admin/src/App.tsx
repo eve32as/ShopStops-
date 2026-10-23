@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import './App.css'
 
 type RefundResult = {
@@ -19,6 +19,28 @@ type FraudAlert = {
   detectedAt: string
   resolvedAt?: string
   resolvedBy?: string
+}
+
+type NotificationAttempt = {
+  status: string
+  errorCode?: string
+  providerMessageId?: string
+  startedAt: string
+  completedAt?: string
+}
+
+type NotificationLog = {
+  id: string
+  recipientRef: string
+  notificationType: string
+  channel: string
+  status: 'queued' | 'sending' | 'sent' | 'failed'
+  attempts: number
+  lastError?: string
+  providerMessageId?: string
+  createdAt: string
+  sentAt?: string
+  attemptHistory: NotificationAttempt[]
 }
 
 function newIdempotencyKey() {
@@ -72,12 +94,20 @@ function App() {
   const [reason, setReason] = useState('requested_by_customer')
   const [idempotencyKey, setIdempotencyKey] = useState('')
   const [refund, setRefund] = useState<RefundResult | null>(null)
-  const [activeView, setActiveView] = useState<'refunds' | 'driver-alerts'>('refunds')
+  const [activeView, setActiveView] = useState<'refunds' | 'driver-alerts' | 'notifications'>('refunds')
   const [fraudAlerts, setFraudAlerts] = useState<FraudAlert[]>([])
   const [fraudStatus, setFraudStatus] = useState<'open' | 'reviewed' | 'dismissed' | ''>('open')
   const [fraudError, setFraudError] = useState('')
   const [fraudLoading, setFraudLoading] = useState(false)
   const [resolvingAlertId, setResolvingAlertId] = useState('')
+  const [notificationLogs, setNotificationLogs] = useState<NotificationLog[]>([])
+  const [notificationStatus, setNotificationStatus] = useState<'' | NotificationLog['status']>('')
+  const [notificationError, setNotificationError] = useState('')
+  const [notificationLoading, setNotificationLoading] = useState(false)
+  const [retryingNotificationId, setRetryingNotificationId] = useState('')
+  const [payoutDriverRef, setPayoutDriverRef] = useState('')
+  const [payoutEmail, setPayoutEmail] = useState('')
+  const [profileSaved, setProfileSaved] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
@@ -120,6 +150,71 @@ function App() {
       setResolvingAlertId('')
     }
   }
+
+  async function loadNotificationLogs() {
+    setNotificationError('')
+    setNotificationLoading(true)
+    try {
+      const query = new URLSearchParams({ limit: '100' })
+      if (notificationStatus) query.set('status', notificationStatus)
+      const logs = await fraudRequest<NotificationLog[]>(
+        gatewayUrl, sessionToken, `admin/notifications?${query.toString()}`,
+      )
+      setNotificationLogs(logs)
+    } catch (requestError) {
+      setNotificationError(requestError instanceof Error
+        ? requestError.message
+        : 'Could not load notification logs.')
+    } finally {
+      setNotificationLoading(false)
+    }
+  }
+
+  async function retryNotification(notification: NotificationLog) {
+    setNotificationError('')
+    setRetryingNotificationId(notification.id)
+    try {
+      await fraudRequest<{ id: string; status: string }>(
+        gatewayUrl, sessionToken,
+        `admin/notifications/${encodeURIComponent(notification.id)}/retry`,
+        { method: 'POST' },
+      )
+      await loadNotificationLogs()
+    } catch (requestError) {
+      setNotificationError(requestError instanceof Error
+        ? requestError.message
+        : 'Could not queue notification retry.')
+    } finally {
+      setRetryingNotificationId('')
+    }
+  }
+
+  async function savePayoutProfile(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setNotificationError('')
+    setProfileSaved('')
+    try {
+      await fraudRequest<{ driverRef: string; status: string }>(
+        gatewayUrl,
+        sessionToken,
+        `admin/driver-payout-profiles/${encodeURIComponent(payoutDriverRef.trim())}`,
+        { method: 'PUT', body: JSON.stringify({ email: payoutEmail.trim() }) },
+      )
+      setProfileSaved(`Weekly statement email enabled for ${payoutDriverRef.trim()}.`)
+      setPayoutEmail('')
+    } catch (requestError) {
+      setNotificationError(requestError instanceof Error
+        ? requestError.message
+        : 'Could not save courier email.')
+    }
+  }
+
+  useEffect(() => {
+    if (activeView !== 'notifications' || !gatewayUrl.trim() || !sessionToken.trim()) return
+    void loadNotificationLogs()
+    const timer = window.setInterval(() => void loadNotificationLogs(), 10_000)
+    return () => window.clearInterval(timer)
+  }, [activeView, gatewayUrl, sessionToken, notificationStatus])
 
   async function submitRefund(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -204,6 +299,11 @@ function App() {
           onClick={() => setActiveView('driver-alerts')}
           type="button"
         ><span className="nav-icon">⚑</span>Driver alerts</button>
+        <button
+          className={`nav-item ${activeView === 'notifications' ? 'nav-active' : 'nav-muted'}`}
+          onClick={() => setActiveView('notifications')}
+          type="button"
+        ><span className="nav-icon">✉</span>Notifications</button>
         <div className="rail-bottom">
           <div className="connection-dot" />
           <span>Trusted gateway only</span>
@@ -371,7 +471,7 @@ function App() {
             <span>SHOPSTOPS ADMIN · INTERNAL WORKFLOW</span>
             <span>Card data stays with Stripe</span>
           </footer>
-          </> : <>
+          </> : activeView === 'driver-alerts' ? <>
             <div className="page-heading">
               <div>
                 <div className="eyebrow">DELIVERY OPERATIONS</div>
@@ -457,6 +557,129 @@ function App() {
             <footer className="page-footer">
               <span>SHOPSTOPS ADMIN · DRIVER MONITORING</span>
               <span>Alerts are review-only</span>
+            </footer>
+          </> : <>
+            <div className="page-heading">
+              <div>
+                <div className="eyebrow">COMMUNICATION OPERATIONS</div>
+                <h1>Notification delivery</h1>
+                <p>Audit courier earnings statements and retry failed email delivery.</p>
+              </div>
+              <div className="status-pill"><span /> AUTO-REFRESH · 10 SEC</div>
+            </div>
+            <section className="panel">
+              <div className="panel-header">
+                <div>
+                  <div className="eyebrow">COURIER PAYOUT STATEMENTS</div>
+                  <h2>Email recipient setup</h2>
+                </div>
+                <span className="lock-mark" aria-label="Admin only">⌑</span>
+              </div>
+              <div className="notice">
+                <span className="notice-icon">i</span>
+                <p>Statements are generated for completed routes from the previous UTC week. They report earnings and do not initiate or confirm funds transfer.</p>
+              </div>
+              <form onSubmit={(event) => void savePayoutProfile(event)}>
+                <label>
+                  Driver reference
+                  <input autoComplete="off" value={payoutDriverRef}
+                    onChange={(event) => setPayoutDriverRef(event.target.value)}
+                    placeholder="driver reference" required />
+                </label>
+                <label>
+                  Courier email
+                  <input autoComplete="email" type="email" value={payoutEmail}
+                    onChange={(event) => setPayoutEmail(event.target.value)}
+                    placeholder="courier@example.com" required />
+                </label>
+                <button className="submit-button" type="submit">Save statement recipient</button>
+              </form>
+              {profileSaved ? <div className="alert alert-success" role="status">{profileSaved}</div> : null}
+            </section>
+            <section className="panel notification-panel">
+              <div className="panel-header">
+                <div>
+                  <div className="eyebrow">DELIVERY MESSAGE LOG</div>
+                  <h2>Recent notifications</h2>
+                </div>
+                <span className="notification-count">{notificationLogs.length} shown</span>
+              </div>
+              <div className="alert-toolbar">
+                <label>
+                  Delivery status
+                  <select
+                    value={notificationStatus}
+                    onChange={(event) => setNotificationStatus(event.target.value as typeof notificationStatus)}
+                  >
+                    <option value="">All statuses</option>
+                    <option value="queued">Queued</option>
+                    <option value="sending">Sending</option>
+                    <option value="sent">Sent</option>
+                    <option value="failed">Failed</option>
+                  </select>
+                </label>
+                <button className="submit-button alert-load" disabled={notificationLoading}
+                  onClick={() => void loadNotificationLogs()} type="button">
+                  {notificationLoading ? 'Refreshing…' : 'Refresh now'}
+                </button>
+              </div>
+              {notificationError ? <div className="alert alert-error" role="alert">{notificationError}</div> : null}
+              {notificationLogs.length === 0 && !notificationLoading
+                ? <p className="empty-alerts">No matching messages have been logged.</p>
+                : null}
+              <div className="notification-list">
+                {notificationLogs.map((notification) => (
+                  <article className="notification-row" key={notification.id}>
+                    <div className="notification-row-heading">
+                      <div>
+                        <span className={`alert-state state-${notification.status}`}>{notification.status}</span>
+                        <h3>{notification.notificationType.replaceAll('_', ' ')}</h3>
+                      </div>
+                      <span className="notification-channel">{notification.channel}</span>
+                    </div>
+                    <dl className="fraud-details notification-details">
+                      <div><dt>Courier</dt><dd>{notification.recipientRef}</dd></div>
+                      <div><dt>Attempts</dt><dd>{notification.attempts}</dd></div>
+                      <div><dt>Created</dt><dd>{new Date(notification.createdAt).toLocaleString()}</dd></div>
+                      {notification.sentAt
+                        ? <div><dt>Sent</dt><dd>{new Date(notification.sentAt).toLocaleString()}</dd></div>
+                        : null}
+                    </dl>
+                    {notification.lastError
+                      ? <p className="notification-error">Latest error: {notification.lastError}</p>
+                      : null}
+                    {notification.providerMessageId
+                      ? <p className="notification-message-id">Message ID: {notification.providerMessageId}</p>
+                      : null}
+                    <details>
+                      <summary>Attempt history ({notification.attemptHistory.length})</summary>
+                      <ol className="attempt-history">
+                        {notification.attemptHistory.map((attempt, index) => (
+                          <li key={`${notification.id}-${index}`}>
+                            <span className={`alert-state state-${attempt.status}`}>{attempt.status}</span>
+                            <time>{new Date(attempt.startedAt).toLocaleString()}</time>
+                            {attempt.errorCode ? <span>{attempt.errorCode}</span> : null}
+                            {attempt.providerMessageId ? <span>{attempt.providerMessageId}</span> : null}
+                          </li>
+                        ))}
+                      </ol>
+                    </details>
+                    {notification.status === 'failed' ? (
+                      <div className="fraud-actions">
+                        <button className="review-button"
+                          disabled={retryingNotificationId === notification.id}
+                          onClick={() => void retryNotification(notification)} type="button">
+                          {retryingNotificationId === notification.id ? 'Queueing…' : 'Retry email'}
+                        </button>
+                      </div>
+                    ) : null}
+                  </article>
+                ))}
+              </div>
+            </section>
+            <footer className="page-footer">
+              <span>SHOPSTOPS ADMIN · MESSAGE AUDIT</span>
+              <span>Recipient addresses are not exposed in this log</span>
             </footer>
           </>}
         </div>

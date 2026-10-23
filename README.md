@@ -14,10 +14,12 @@ Apply `db/migrations/001_delivery_foundation.sql`,
 `db/migrations/006_catalog_orders.sql`,
 `db/migrations/007_merchant_catalog_management.sql`,
 `db/migrations/008_driver_fraud_monitor.sql`, and
-`db/migrations/010_driver_rerouting_tracking.sql` on PostgreSQL 14+ with PostGIS 3.x
+`db/migrations/010_driver_rerouting_tracking.sql`, and
+`db/migrations/011_weekly_payout_notifications.sql` on PostgreSQL 14+ with PostGIS 3.x
 installed. The migrations create dispatch, unified-basket, catalog, and order
 models; spatial queries; transaction-safe order/merchant limits; immutable
-multi-stop routes; payment/tax ledger records; and outbox events.
+multi-stop routes; payment/tax ledger records; outbox events; and weekly courier
+earnings statement and delivery-message audit tables.
 
 See [`docs/architecture.md`](docs/architecture.md) for MVP assumptions, service
 boundaries, workflows, and operational guidance. The initial HTTP interface is
@@ -55,6 +57,36 @@ ingestion with review-only fraud alerts for extreme GPS speeds and sustained
 route expansion. Admins can list and resolve these alerts in the control room.
 Merchant catalog endpoints let authenticated merchants manage item names,
 descriptions, prices, delivery volumes, and customer-facing availability.
+The admin dashboard also audits outbound notification attempts and can retry
+failed statement emails. Recipient addresses are managed by admins and are not
+returned by the notification log endpoint.
+
+## Weekly courier earnings statements
+
+Run the separate mailer worker with the same database migrations applied. It
+creates idempotent statements for completed unified routes in the previous
+complete UTC week, using the configured per-mile rate and the finance package's
+standard route base pay. It emails statements over SMTP with mandatory STARTTLS;
+this worker reports earnings only and does not initiate or confirm funds
+transfers. Delivery attempts are retained for admin review, retried with
+backoff up to eight times, and can then be manually requeued from the dashboard.
+
+```sh
+export DATABASE_URL='postgres://<user>:<password>@localhost:5432/shopstops?sslmode=disable'
+export SHOPSTOPS_DRIVER_MILEAGE_RATE_CENTS_PER_MILE=45
+export SHOPSTOPS_SMTP_ADDRESS='smtp.example.com:587'
+export SHOPSTOPS_SMTP_HOST='smtp.example.com'
+export SHOPSTOPS_PAYOUT_FROM='payouts@example.com'
+# Optional SMTP AUTH credentials; configure both or neither via a secret manager.
+export SHOPSTOPS_SMTP_USERNAME
+export SHOPSTOPS_SMTP_PASSWORD
+go run ./cmd/shopstops-payout-worker
+```
+
+Configure a driver's statement recipient in the admin dashboard before the
+worker runs. Statement creation is unique per driver and UTC week; separate
+worker replicas safely claim messages using database row locks and expiring
+leases.
 Protected endpoints use a shared internal bearer token and must be placed
 behind a gateway that authenticates users, enforces roles, strips client-supplied
 `X-ShopStops-Actor` and `X-ShopStops-Actor-Role` headers, and injects verified

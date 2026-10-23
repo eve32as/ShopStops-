@@ -65,6 +65,16 @@ type fakeRepository struct {
 	resolvedAlertActor    string
 	resolvedAlertStatus   string
 	resolveFraudAlertErr  error
+	messageLogs           []DeliveryMessageLog
+	messageLogsErr        error
+	messageStatus         string
+	messageLimit          int
+	retriedMessageID      string
+	retryMessageErr       error
+	payoutProfileDriver   string
+	payoutProfileEmail    string
+	payoutProfileActor    string
+	payoutProfileErr      error
 	checkout              checkoutResponse
 	checkoutErr           error
 	checkoutReq           checkoutRequest
@@ -226,6 +236,23 @@ func (f *fakeRepository) ResolveDriverFraudAlert(
 	f.resolvedAlertID, f.resolvedAlertActor, f.resolvedAlertStatus =
 		alertID, actor, status
 	return f.resolveFraudAlertErr
+}
+func (f *fakeRepository) ListDeliveryMessageLogs(
+	_ context.Context, status string, limit int,
+) ([]DeliveryMessageLog, error) {
+	f.messageStatus, f.messageLimit = status, limit
+	return f.messageLogs, f.messageLogsErr
+}
+func (f *fakeRepository) RetryDeliveryMessage(_ context.Context, messageID string) error {
+	f.retriedMessageID = messageID
+	return f.retryMessageErr
+}
+func (f *fakeRepository) UpsertDriverPayoutProfile(
+	_ context.Context, driverRef, email, actor string,
+) error {
+	f.payoutProfileDriver, f.payoutProfileEmail, f.payoutProfileActor =
+		driverRef, email, actor
+	return f.payoutProfileErr
 }
 
 func testServer() http.Handler {
