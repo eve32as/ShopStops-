@@ -44,7 +44,7 @@ services:
     restart: unless-stopped
 
   osrm-router:
-    image: osrm/osrm-backend:v5.27.1
+    image: osrm/osrm-backend:v5.25.0
     profiles: ["routing"]
     command: ["osrm-routed", "--algorithm", "ch", "/data/region-latest.osrm"]
     volumes:

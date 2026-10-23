@@ -141,7 +141,7 @@ scripts/prepare-osrm-data.sh north-america/us/new-york
 ```
 
 The script downloads that Geofabrik region over HTTPS and runs the same pinned
-OSRM image and driving profile as the router (`osrm-extract`, then
+`osrm/osrm-backend:v5.25.0` image and driving profile as the router (`osrm-extract`, then
 `osrm-contract` for Contraction Hierarchies). It installs the generated files
 in the `shopstops-osrm-data` Docker volume, which is mounted read-only by the
 router. Choose a region that covers the staging service area; extracts can be
