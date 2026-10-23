@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import './App.css'
 
 type RefundResult = {
@@ -151,7 +151,7 @@ function App() {
     }
   }
 
-  async function loadNotificationLogs() {
+  const loadNotificationLogs = useCallback(async () => {
     setNotificationError('')
     setNotificationLoading(true)
     try {
@@ -168,7 +168,7 @@ function App() {
     } finally {
       setNotificationLoading(false)
     }
-  }
+  }, [gatewayUrl, sessionToken, notificationStatus])
 
   async function retryNotification(notification: NotificationLog) {
     setNotificationError('')
@@ -211,10 +211,13 @@ function App() {
 
   useEffect(() => {
     if (activeView !== 'notifications' || !gatewayUrl.trim() || !sessionToken.trim()) return
-    void loadNotificationLogs()
+    const initialLoad = window.setTimeout(() => void loadNotificationLogs(), 0)
     const timer = window.setInterval(() => void loadNotificationLogs(), 10_000)
-    return () => window.clearInterval(timer)
-  }, [activeView, gatewayUrl, sessionToken, notificationStatus])
+    return () => {
+      window.clearTimeout(initialLoad)
+      window.clearInterval(timer)
+    }
+  }, [activeView, gatewayUrl, sessionToken, loadNotificationLogs])
 
   async function submitRefund(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
