@@ -48,6 +48,8 @@ CREATE TABLE delivery_message_logs (
     locked_until timestamptz,
     last_error text,
     provider_message_id text,
+    retry_requested_by text,
+    retry_requested_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
     sent_at timestamptz,

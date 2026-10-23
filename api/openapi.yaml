@@ -557,7 +557,7 @@ paths:
     post:
       operationId: retryDeliveryMessage
       summary: Queue a failed notification for another delivery attempt
-      description: Admin-only. This does not create a duplicate statement or retry a message already in progress.
+      description: Admin-only. The requesting actor and time are audited; this does not create a duplicate statement or retry a message already in progress.
       parameters:
         - $ref: '#/components/parameters/NotificationId'
       responses:
@@ -893,10 +893,15 @@ components:
           type: string
         providerMessageId:
           type: string
+        retryRequestedBy:
+          type: string
         createdAt:
           type: string
           format: date-time
         sentAt:
+          type: string
+          format: date-time
+        retryRequestedAt:
           type: string
           format: date-time
         attemptHistory:

@@ -17,7 +17,7 @@ import (
 
 type NotificationRepository interface {
 	ListDeliveryMessageLogs(context.Context, string, int) ([]DeliveryMessageLog, error)
-	RetryDeliveryMessage(context.Context, string) error
+	RetryDeliveryMessage(context.Context, string, string) error
 	UpsertDriverPayoutProfile(context.Context, string, string, string) error
 }
 
@@ -30,8 +30,10 @@ type DeliveryMessageLog struct {
 	Attempts          int                      `json:"attempts"`
 	LastError         string                   `json:"lastError,omitempty"`
 	ProviderMessageID string                   `json:"providerMessageId,omitempty"`
+	RetryRequestedBy  string                   `json:"retryRequestedBy,omitempty"`
 	CreatedAt         time.Time                `json:"createdAt"`
 	SentAt            *time.Time               `json:"sentAt,omitempty"`
+	RetryRequestedAt  *time.Time               `json:"retryRequestedAt,omitempty"`
 	AttemptHistory    []DeliveryMessageAttempt `json:"attemptHistory"`
 }
 
@@ -79,7 +81,8 @@ func (s *Server) listDeliveryMessageLogs(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) retryDeliveryMessage(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.authorizedActorRole(w, r, "admin"); !ok {
+	actor, ok := s.authorizedActorRole(w, r, "admin")
+	if !ok {
 		return
 	}
 	messageID := r.PathValue("notificationId")
@@ -94,7 +97,7 @@ func (s *Server) retryDeliveryMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	err := repository.RetryDeliveryMessage(ctx, messageID)
+	err := repository.RetryDeliveryMessage(ctx, messageID, actor)
 	switch {
 	case errors.Is(err, ErrNotFound):
 		writeError(w, http.StatusNotFound, "notification not found")
@@ -180,7 +183,8 @@ func (p *PostgresRepository) ListDeliveryMessageLogs(
 		SELECT message.id::text, message.recipient_ref, message.notification_type,
 		       message.channel, message.status, message.attempts,
 		       COALESCE(message.last_error, ''), COALESCE(message.provider_message_id, ''),
-		       message.created_at, message.sent_at,
+		           COALESCE(message.retry_requested_by, ''),
+		           message.created_at, message.sent_at, message.retry_requested_at,
 		       COALESCE(jsonb_agg(jsonb_build_object(
 		           'status', attempt.status,
 		           'errorCode', attempt.error_code,
@@ -202,17 +206,20 @@ func (p *PostgresRepository) ListDeliveryMessageLogs(
 	logs := make([]DeliveryMessageLog, 0)
 	for rows.Next() {
 		var item DeliveryMessageLog
-		var sentAt sql.NullTime
+		var sentAt, retryRequestedAt sql.NullTime
 		var history []byte
 		if err := rows.Scan(
 			&item.ID, &item.RecipientRef, &item.NotificationType, &item.Channel,
 			&item.Status, &item.Attempts, &item.LastError, &item.ProviderMessageID,
-			&item.CreatedAt, &sentAt, &history,
+			&item.RetryRequestedBy, &item.CreatedAt, &sentAt, &retryRequestedAt, &history,
 		); err != nil {
 			return nil, err
 		}
 		if sentAt.Valid {
 			item.SentAt = &sentAt.Time
+		}
+		if retryRequestedAt.Valid {
+			item.RetryRequestedAt = &retryRequestedAt.Time
 		}
 		if err := json.Unmarshal(history, &item.AttemptHistory); err != nil {
 			return nil, err
@@ -229,14 +236,14 @@ func (p *PostgresRepository) ListDeliveryMessageLogs(
 }
 
 func (p *PostgresRepository) RetryDeliveryMessage(
-	ctx context.Context, messageID string,
+	ctx context.Context, messageID, actor string,
 ) error {
 	result, err := p.db.ExecContext(ctx, `
 		UPDATE delivery_message_logs
 		SET status = 'queued', attempts = 0, available_at = now(),
 		    locked_until = NULL, last_error = NULL, provider_message_id = NULL,
-		    updated_at = now()
-		WHERE id = $1 AND status = 'failed'`, messageID)
+		    retry_requested_by = $2, retry_requested_at = now(), updated_at = now()
+		WHERE id = $1 AND status = 'failed'`, messageID, actor)
 	if err != nil {
 		return err
 	}

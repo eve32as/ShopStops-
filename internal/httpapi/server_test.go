@@ -70,6 +70,7 @@ type fakeRepository struct {
 	messageStatus         string
 	messageLimit          int
 	retriedMessageID      string
+	retriedMessageActor   string
 	retryMessageErr       error
 	payoutProfileDriver   string
 	payoutProfileEmail    string
@@ -243,8 +244,10 @@ func (f *fakeRepository) ListDeliveryMessageLogs(
 	f.messageStatus, f.messageLimit = status, limit
 	return f.messageLogs, f.messageLogsErr
 }
-func (f *fakeRepository) RetryDeliveryMessage(_ context.Context, messageID string) error {
-	f.retriedMessageID = messageID
+func (f *fakeRepository) RetryDeliveryMessage(
+	_ context.Context, messageID, actor string,
+) error {
+	f.retriedMessageID, f.retriedMessageActor = messageID, actor
 	return f.retryMessageErr
 }
 func (f *fakeRepository) UpsertDriverPayoutProfile(

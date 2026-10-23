@@ -38,8 +38,10 @@ type NotificationLog = {
   attempts: number
   lastError?: string
   providerMessageId?: string
+  retryRequestedBy?: string
   createdAt: string
   sentAt?: string
+  retryRequestedAt?: string
   attemptHistory: NotificationAttempt[]
 }
 
@@ -371,6 +373,9 @@ function App() {
                       setIdempotencyKey('')
                       setFraudAlerts([])
                       setFraudError('')
+                      setNotificationLogs([])
+                      setNotificationError('')
+                      setProfileSaved('')
                     }}
                     placeholder="https://api.shopstops.example/v1"
                     value={gatewayUrl}
@@ -387,6 +392,9 @@ function App() {
                       setIdempotencyKey('')
                       setFraudAlerts([])
                       setFraudError('')
+                      setNotificationLogs([])
+                      setNotificationError('')
+                      setProfileSaved('')
                     }}
                     placeholder="Paste your user access token"
                     type="password"
@@ -646,6 +654,9 @@ function App() {
                       <div><dt>Created</dt><dd>{new Date(notification.createdAt).toLocaleString()}</dd></div>
                       {notification.sentAt
                         ? <div><dt>Sent</dt><dd>{new Date(notification.sentAt).toLocaleString()}</dd></div>
+                        : null}
+                      {notification.retryRequestedAt
+                        ? <div><dt>Last retry requested</dt><dd>{new Date(notification.retryRequestedAt).toLocaleString()} by {notification.retryRequestedBy}</dd></div>
                         : null}
                     </dl>
                     {notification.lastError

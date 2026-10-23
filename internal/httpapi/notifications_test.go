@@ -64,8 +64,10 @@ func TestRetryDeliveryMessageRequiresAdmin(t *testing.T) {
 	handler.ServeHTTP(recorder, notificationRequest(
 		http.MethodPost, "/admin/notifications/"+messageID+"/retry", "", "admin",
 	))
-	if recorder.Code != http.StatusOK || repository.retriedMessageID != messageID {
-		t.Fatalf("status/id = %d/%q, want 200/%q", recorder.Code, repository.retriedMessageID, messageID)
+	if recorder.Code != http.StatusOK || repository.retriedMessageID != messageID ||
+		repository.retriedMessageActor != "admin-user" {
+		t.Fatalf("status/id/actor = %d/%q/%q, want 200/%q/admin-user",
+			recorder.Code, repository.retriedMessageID, repository.retriedMessageActor, messageID)
 	}
 
 	recorder = httptest.NewRecorder()

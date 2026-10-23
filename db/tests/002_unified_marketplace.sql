@@ -744,7 +744,8 @@ SET status = 'sent', completed_at = now(),
 WHERE id = :'payout_attempt_id';
 UPDATE delivery_message_logs
 SET status = 'sent', sent_at = now(),
-    provider_message_id = '<weekly-test@example.com>'
+    provider_message_id = '<weekly-test@example.com>',
+    retry_requested_by = 'admin-test', retry_requested_at = now()
 WHERE id = :'payout_message_id';
 DO $$
 BEGIN
@@ -755,7 +756,9 @@ BEGIN
        OR (SELECT count(*) FROM delivery_message_logs
            WHERE recipient_ref = 'driver-test'
              AND notification_type = 'weekly_payout_statement'
-             AND status = 'sent') <> 1
+             AND status = 'sent'
+             AND retry_requested_by = 'admin-test'
+             AND retry_requested_at IS NOT NULL) <> 1
        OR (SELECT count(*) FROM delivery_message_attempts attempt
            JOIN delivery_message_logs message ON message.id = attempt.message_id
            WHERE message.recipient_ref = 'driver-test'

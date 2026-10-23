@@ -4,8 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
-	"math"
 	"time"
 )
 
@@ -141,8 +139,8 @@ func (p *PostgresRepository) ClaimNextMessage(
 			OR (status = 'sending' AND locked_until < $1)
 		)
 		ORDER BY available_at, created_at, id
-		FOR UPDATE SKIP LOCKED
-		LIMIT 1`, now, maxAttempts,
+		LIMIT 1
+		FOR UPDATE SKIP LOCKED`, now, maxAttempts,
 	).Scan(&messageID, &attempts)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Message{}, ErrNoMessage
@@ -174,7 +172,6 @@ func (p *PostgresRepository) ClaimNextMessage(
 	var message Message
 	message.ID = messageID
 	message.AttemptNumber = attempts + 1
-	message.Recipient = ""
 	err = tx.QueryRowContext(ctx, `
 		SELECT message.recipient_address, statement.driver_ref,
 		       statement.period_start, statement.period_end,
@@ -291,14 +288,4 @@ func (p *PostgresRepository) FailMessage(
 		return err
 	}
 	return tx.Commit()
-}
-
-func validateStatement(statement WeeklyStatement) error {
-	if statement.TotalEarningsCents != statement.BasePayCents+statement.MileagePayCents ||
-		statement.CompletedRoutes <= 0 || statement.DistanceMeters < 0 ||
-		statement.BasePayCents < 0 || statement.MileagePayCents < 0 ||
-		statement.BasePayCents > math.MaxInt64-statement.MileagePayCents {
-		return fmt.Errorf("invalid weekly earnings statement")
-	}
-	return nil
 }
