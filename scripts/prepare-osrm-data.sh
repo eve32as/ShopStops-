@@ -1,9 +1,10 @@
 #!/bin/sh
 set -eu
 
-if [ "$#" -ne 1 ]; then
-  echo "Usage: $0 <geofabrik-region-path>" >&2
+if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
+  echo "Usage: $0 <geofabrik-region-path> [local-osm-pbf]" >&2
   echo "Example: $0 north-america/us/new-york" >&2
+  echo "Use a local file directly: $0 north-america/us/new-york ./pre-staged/region.osm.pbf" >&2
   exit 2
 fi
 
@@ -53,10 +54,36 @@ umask 077
 
 map_file="$work_dir/region-latest.osm.pbf"
 map_url="https://download.geofabrik.de/${region}-latest.osm.pbf"
-echo "Downloading $map_url"
-curl --fail --location --proto '=https' --tlsv1.2 \
-  --connect-timeout 30 --retry 3 --retry-delay 2 \
-  --output "$map_file" "$map_url"
+local_pbf=${2:-${SHOPSTOPS_OSRM_PBF:-$repo_root/pre-staged/region.osm.pbf}}
+if [ "$#" -eq 2 ] || [ -n "${SHOPSTOPS_OSRM_PBF:-}" ]; then
+  if [ ! -s "$local_pbf" ]; then
+    echo "Local OSM PBF is missing or empty: $local_pbf" >&2
+    exit 2
+  fi
+  echo "Using local OSM PBF: $local_pbf"
+  cp "$local_pbf" "$map_file"
+elif command -v getent >/dev/null 2>&1 && getent hosts download.geofabrik.de >/dev/null 2>&1; then
+  echo "Downloading $map_url"
+  if ! curl --fail --location --proto '=https' --tlsv1.2 \
+    --connect-timeout 30 --retry 3 --retry-delay 2 \
+    --output "$map_file" "$map_url"; then
+    rm -f "$map_file"
+    echo "Geofabrik download failed; checking for a pre-staged OSM PBF." >&2
+  fi
+else
+  echo "Geofabrik DNS resolution failed or getent is unavailable; checking for a pre-staged OSM PBF." >&2
+fi
+
+if [ ! -s "$map_file" ]; then
+  if [ -s "$local_pbf" ]; then
+    echo "Using pre-staged OSM PBF: $local_pbf"
+    cp "$local_pbf" "$map_file"
+  else
+    echo "No usable local OSM PBF found at $local_pbf." >&2
+    echo "Provide a file with the optional second argument or SHOPSTOPS_OSRM_PBF." >&2
+    exit 1
+  fi
+fi
 
 compose() {
   docker compose --env-file "$env_file" --project-directory "$repo_root" \

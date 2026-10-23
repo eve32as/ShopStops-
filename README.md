@@ -140,16 +140,21 @@ start it, prepare a regional OSRM dataset with:
 scripts/prepare-osrm-data.sh north-america/us/new-york
 ```
 
-The script downloads that Geofabrik region over HTTPS and runs the same pinned
-`osrm/osrm-backend:v5.25.0` image and driving profile as the router (`osrm-extract`, then
-`osrm-contract` for Contraction Hierarchies). It installs the generated files
-in the `shopstops-osrm-data` Docker volume, which is mounted read-only by the
-router. Choose a region that covers the staging service area; extracts can be
-large and preprocessing needs substantial temporary disk space and memory. The
-script refuses to overwrite an existing prepared dataset. To use a different
-Docker volume name, set `SHOPSTOPS_OSRM_VOLUME` both when preparing the map and
-when running Compose. It requires `curl`, Docker Compose, and network access to
-Geofabrik and the container registry.
+The script downloads that Geofabrik region from its direct HTTPS PBF URL when
+DNS and network access are available. If DNS or the download fails, it uses
+`./pre-staged/region.osm.pbf` if present. You can also provide a local file
+explicitly with `scripts/prepare-osrm-data.sh north-america/us/new-york /path/to/region.osm.pbf`
+or set `SHOPSTOPS_OSRM_PBF`. The local extract must cover the region configured
+for your staging service. The script runs the same pinned
+`osrm/osrm-backend:v5.25.0` image and driving profile as the router
+(`osrm-extract`, then `osrm-contract` for Contraction Hierarchies). It installs
+the generated files in the `shopstops-osrm-data` Docker volume, which is mounted
+read-only by the router. Extracts can be large and preprocessing needs
+substantial temporary disk space and memory. The script refuses to overwrite an
+existing prepared dataset. To use a different Docker volume name, set
+`SHOPSTOPS_OSRM_VOLUME` both when preparing the map and when running Compose.
+The script requires `curl`, Docker Compose, and the container registry; Geofabrik
+access is only needed when no local PBF is available.
 
 The optional Compose override [`compose.routing.yaml`](compose.routing.yaml)
 configures the API endpoint as `http://osrm-router:5000` on the private data
