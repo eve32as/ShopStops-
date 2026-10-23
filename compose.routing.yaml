@@ -1,0 +1,7 @@
+services:
+  api:
+    environment:
+      SHOPSTOPS_OSRM_URL: http://osrm-router:5000
+    depends_on:
+      osrm-router:
+        condition: service_started

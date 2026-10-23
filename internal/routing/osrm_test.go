@@ -174,7 +174,10 @@ func TestOSRMClientRejectsInvalidResponses(t *testing.T) {
 func TestOSRMClientStress1000Concurrent(t *testing.T) {
 	baseURL := os.Getenv("SHOPSTOPS_OSRM_STRESS_URL")
 	if baseURL == "" {
-		t.Skip("set SHOPSTOPS_OSRM_STRESS_URL to run the opt-in 1,000-request OSRM stress test")
+		baseURL = os.Getenv("SHOPSTOPS_OSRM_URL")
+	}
+	if baseURL == "" {
+		t.Skip("set SHOPSTOPS_OSRM_STRESS_URL or SHOPSTOPS_OSRM_URL to run the opt-in 1,000-request OSRM stress test")
 	}
 	client, err := NewOSRMClient(baseURL)
 	if err != nil {

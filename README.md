@@ -151,11 +151,18 @@ Docker volume name, set `SHOPSTOPS_OSRM_VOLUME` both when preparing the map and
 when running Compose. It requires `curl`, Docker Compose, and network access to
 Geofabrik and the container registry.
 
-Configure `SHOPSTOPS_OSRM_URL=http://osrm-router:5000` in `.env`, then start the
-stack with `docker compose --profile routing up --build -d`. Without the
-environment setting, the API does not call OSRM. When enabled, route assignment
-requests missing route legs with a 500 ms client timeout; routing errors fail
-the assignment transaction rather than persisting an incomplete route.
+The optional Compose override [`compose.routing.yaml`](compose.routing.yaml)
+configures the API endpoint as `http://osrm-router:5000` on the private data
+network. Start the routing stack with:
+
+```sh
+docker compose -f compose.yaml -f compose.routing.yaml --profile routing up --build -d
+```
+
+The regular Compose stack remains OSRM-disabled. When routing is enabled, route
+assignment requests missing route legs with a 500 ms client timeout; routing
+errors fail the assignment transaction rather than persisting an incomplete
+route.
 
 The Expo app optionally supports Google Places address search and Google Routes
 traffic-aware driver ETAs. Set `EXPO_PUBLIC_GOOGLE_MAPS_API_KEY` when building
@@ -173,20 +180,19 @@ connects stops directly. These route estimates do not enable mileage charges at
 checkout: trusted pre-checkout route distances are still unavailable.
 
 The Go OSRM client includes an opt-in 1,000-request synchronized stress test.
-Run it only against an isolated staging OSRM instance from an environment with
-private-network access:
+With the routing stack running, execute the test inside the private router
+container without publishing OSRM to the host or internet:
 
 ```sh
-SHOPSTOPS_OSRM_STRESS_URL=http://osrm-router:5000 \
-  go test ./internal/routing -run '^TestOSRMClientStress1000Concurrent$' -count=1 -v
+scripts/test-osrm-stress.sh
 ```
 
-The default test coordinates are in New York; set
-`SHOPSTOPS_OSRM_STRESS_COORDINATES` to a semicolon-separated list of
-`latitude,longitude` pairs covered by the prepared map. The test reports
-latencies and fails if any request errors or exceeds the client's 500 ms
-timeout. Results depend on the staging hardware, map extract, and workload and
-are not a general performance guarantee.
+The default test coordinates are in New York. To test a different region, set
+`SHOPSTOPS_OSRM_STRESS_COORDINATES` to semicolon-separated `latitude,longitude`
+pairs covered by the prepared map. The test reports latency percentiles and
+fails if any request errors or exceeds the client's 500 ms timeout. Results
+depend on hardware, map extract, and workload and are not a general performance
+guarantee. Do not run this load test against a public or third-party router.
 
 The example issuer is a placeholder. The gateway must be able to reach the real
 OIDC discovery/JWKS endpoints at startup. Keep `.env` private; Compose passes

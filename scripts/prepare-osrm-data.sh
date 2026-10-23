@@ -30,6 +30,18 @@ fi
 export SHOPSTOPS_OSRM_VOLUME="$volume"
 host_uid=$(id -u)
 host_gid=$(id -g)
+env_file=${SHOPSTOPS_COMPOSE_ENV_FILE:-}
+if [ -z "$env_file" ]; then
+  if [ -f "$repo_root/.env" ]; then
+    env_file="$repo_root/.env"
+  else
+    env_file="$repo_root/.env.example"
+  fi
+fi
+if [ ! -r "$env_file" ]; then
+  echo "Compose environment file is not readable: $env_file" >&2
+  exit 2
+fi
 
 work_dir=$(mktemp -d "${TMPDIR:-/tmp}/shopstops-osrm.XXXXXX")
 cleanup() {
@@ -47,7 +59,8 @@ curl --fail --location --proto '=https' --tlsv1.2 \
   --output "$map_file" "$map_url"
 
 compose() {
-  docker compose --project-directory "$repo_root" -f "$repo_root/compose.yaml" "$@"
+  docker compose --env-file "$env_file" --project-directory "$repo_root" \
+    -f "$repo_root/compose.yaml" "$@"
 }
 
 compose --profile routing pull osrm-router
@@ -108,4 +121,4 @@ compose --profile routing run --rm --no-deps \
   '
 
 printf 'Installed the preprocessed region in Docker volume %s.\n' "$volume"
-printf 'Start the router with: SHOPSTOPS_OSRM_VOLUME=%s docker compose --profile routing up -d osrm-router\n' "$volume"
+printf 'Start the routing stack with: SHOPSTOPS_OSRM_VOLUME=%s docker compose -f compose.yaml -f compose.routing.yaml --profile routing up -d\n' "$volume"
