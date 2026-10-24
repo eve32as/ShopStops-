@@ -66,7 +66,9 @@ returned by the notification log endpoint.
 Run the separate mailer worker with the same database migrations applied. It
 creates idempotent statements for completed unified routes in the previous
 complete UTC week, using the configured per-mile rate and the finance package's
-standard route base pay. It emails statements over SMTP with mandatory STARTTLS;
+standard route base pay. On each run it catches up all earlier unprocessed weeks,
+up to 52 distinct weeks per run; remaining backlog is picked up on subsequent
+hourly runs. It emails statements over SMTP with mandatory STARTTLS;
 this worker reports earnings only and does not initiate or confirm funds
 transfers. Delivery attempts are retained for admin review, retried with
 backoff up to eight times, and can then be manually requeued from the dashboard.

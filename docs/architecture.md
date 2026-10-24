@@ -271,10 +271,13 @@ a fully reconciled accounting margin, as it does not deduct every listed cost.
 Migration `011_weekly_payout_notifications.sql` adds admin-managed courier email
 profiles, immutable weekly earnings statements, and delivery-message attempt
 history. The separate `cmd/shopstops-payout-worker` snapshots completed unified
-route miles for the previous complete UTC week, applying the finance package's
+route miles for completed UTC weeks, applying the finance package's
 standard $7 route base pay and the worker's configured cents-per-mile rate.
-Unique driver/week statements and `FOR UPDATE SKIP LOCKED` message leases allow
-safe retries and multiple worker replicas. Email uses SMTP with required
+Each run discovers periods with completed routes but no statement through the
+latest complete UTC week and processes up to 52 distinct weeks oldest-first;
+later runs continue a larger backlog, and a failure leaves later weeks available
+for retry. Unique driver/week statements and `FOR UPDATE SKIP LOCKED` message
+leases allow safe retries and multiple worker replicas. Email uses SMTP with required
 STARTTLS; failed messages retry with backoff up to eight attempts before an
 admin may requeue them. This is an earnings statement and email delivery
 workflow only: it does not move funds or confirm a bank/Stripe payout. A delivery

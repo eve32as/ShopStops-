@@ -14,9 +14,15 @@ var ErrNoMessage = errors.New("no payout messages are ready")
 
 const (
 	weeklySendLimit = 50
+	weeklyPeriodLimit = 52
 	maxAttempts     = 8
 	messageLease    = 5 * time.Minute
 )
+
+type StatementPeriod struct {
+	Start time.Time
+	End   time.Time
+}
 
 type WeeklyStatement struct {
 	DriverRef               string
@@ -39,6 +45,7 @@ type Message struct {
 }
 
 type Repository interface {
+	PendingStatementPeriods(context.Context, time.Time, int) ([]StatementPeriod, error)
 	CreateWeeklyStatements(context.Context, time.Time, time.Time, int64) (int, error)
 	ClaimNextMessage(context.Context, time.Time, time.Duration) (Message, error)
 	CompleteMessage(context.Context, Message, string) error
@@ -59,12 +66,23 @@ func (w *Worker) RunOnce(ctx context.Context, now time.Time) (int, int, error) {
 	if w == nil || w.Repository == nil || w.Sender == nil || w.MileageRateCents < 0 {
 		return 0, 0, errors.New("payout worker is not configured")
 	}
-	start, end := previousCompleteWeek(now)
-	created, err := w.Repository.CreateWeeklyStatements(
-		ctx, start, end, w.MileageRateCents,
-	)
+	_, throughEnd := previousCompleteWeek(now)
+	periods, err := w.Repository.PendingStatementPeriods(ctx, throughEnd, weeklyPeriodLimit)
 	if err != nil {
-		return 0, 0, fmt.Errorf("create weekly payout statements: %w", err)
+		return 0, 0, fmt.Errorf("find pending weekly payout periods: %w", err)
+	}
+	created := 0
+	for _, period := range periods {
+		count, err := w.Repository.CreateWeeklyStatements(
+			ctx, period.Start, period.End, w.MileageRateCents,
+		)
+		if err != nil {
+			return created, 0, fmt.Errorf(
+				"create weekly payout statements for %s: %w",
+				period.Start.Format("2006-01-02"), err,
+			)
+		}
+		created += count
 	}
 	sent := 0
 	for range weeklySendLimit {
@@ -94,6 +112,58 @@ func (w *Worker) RunOnce(ctx context.Context, now time.Time) (int, int, error) {
 		sent++
 	}
 	return created, sent, nil
+}
+
+func (p *PostgresRepository) PendingStatementPeriods(
+	ctx context.Context, throughEnd time.Time, limit int,
+) ([]StatementPeriod, error) {
+	rows, err := p.db.QueryContext(ctx, `
+		WITH completed_driver_weeks AS (
+			SELECT DISTINCT route.driver_ref,
+			       date_trunc('week', completion.completed_at AT TIME ZONE 'UTC')::date
+			           AS period_start
+			FROM unified_delivery_routes route
+			JOIN LATERAL (
+				SELECT max(completed_at) AS completed_at
+				FROM unified_route_stops
+				WHERE route_id = route.id
+				HAVING count(*) > 0 AND count(*) = count(completed_at)
+			) completion ON true
+			JOIN driver_payout_profiles profile
+			  ON profile.driver_ref = route.driver_ref AND profile.enabled
+			WHERE route.status = 'completed'
+			  AND route.driver_ref IS NOT NULL
+			  AND completion.completed_at < $1
+		)
+		SELECT DISTINCT period.period_start,
+		       period.period_start + 7 AS period_end
+		FROM completed_driver_weeks period
+		WHERE NOT EXISTS (
+			SELECT 1
+			FROM driver_weekly_earnings_statements statement
+			WHERE statement.driver_ref = period.driver_ref
+			  AND statement.period_start = period.period_start
+		)
+		ORDER BY period.period_start
+		LIMIT $2`, throughEnd, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	periods := make([]StatementPeriod, 0)
+	for rows.Next() {
+		var period StatementPeriod
+		if err := rows.Scan(&period.Start, &period.End); err != nil {
+			return nil, err
+		}
+		period.Start = period.Start.UTC()
+		period.End = period.End.UTC()
+		periods = append(periods, period)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return periods, nil
 }
 
 func previousCompleteWeek(now time.Time) (time.Time, time.Time) {
