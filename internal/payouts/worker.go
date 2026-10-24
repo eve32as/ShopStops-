@@ -13,10 +13,10 @@ import (
 var ErrNoMessage = errors.New("no payout messages are ready")
 
 const (
-	weeklySendLimit = 50
+	weeklySendLimit   = 50
 	weeklyPeriodLimit = 52
-	maxAttempts     = 8
-	messageLease    = 5 * time.Minute
+	maxAttempts       = 8
+	messageLease      = 5 * time.Minute
 )
 
 type StatementPeriod struct {

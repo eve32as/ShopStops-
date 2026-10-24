@@ -8,20 +8,20 @@ import (
 )
 
 type fakeRepository struct {
-	createdStart time.Time
-	createdEnd   time.Time
-	rate         int64
-	created      int
-	createErr       error
-	failCreateAt    int
-	createCalls     int
-	periods         []StatementPeriod
-	periodLimit  int
-	throughEnd   time.Time
+	createdStart   time.Time
+	createdEnd     time.Time
+	rate           int64
+	created        int
+	createErr      error
+	failCreateAt   int
+	createCalls    int
+	periods        []StatementPeriod
+	periodLimit    int
+	throughEnd     time.Time
 	createdPeriods []StatementPeriod
-	messages     []Message
-	completeErr  error
-	failedCodes  []string
+	messages       []Message
+	completeErr    error
+	failedCodes    []string
 }
 
 func (f *fakeRepository) PendingStatementPeriods(
@@ -133,7 +133,7 @@ func TestCalculateWeeklyStatementRejectsInvalidRoutes(t *testing.T) {
 func TestWorkerCreatesAndSendsWeeklyStatements(t *testing.T) {
 	now := time.Date(2026, time.October, 21, 12, 0, 0, 0, time.UTC)
 	repository := &fakeRepository{
-		created:  1,
+		created: 1,
 		periods: []StatementPeriod{{
 			Start: time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC),
 			End:   time.Date(2026, 10, 19, 0, 0, 0, 0, time.UTC),
@@ -200,32 +200,32 @@ func TestWorkerDoesNotGenerateStatementsWhenNoPeriodsArePending(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	func TestWorkerKeepsEarlierPeriodsWhenCatchUpRunFails(t *testing.T) {
-		start := time.Date(2026, 9, 28, 0, 0, 0, 0, time.UTC)
-		repository := &fakeRepository{
-			created: 1,
-			failCreateAt: 2,
-			createErr: errors.New("database unavailable"),
-			periods: []StatementPeriod{
-				{Start: start, End: start.AddDate(0, 0, 7)},
-				{Start: start.AddDate(0, 0, 7), End: start.AddDate(0, 0, 14)},
-				{Start: start.AddDate(0, 0, 14), End: start.AddDate(0, 0, 21)},
-			},
-		}
-		worker := &Worker{Repository: repository, Sender: fakeSender{}}
-		created, _, err := worker.RunOnce(context.Background(),
-			time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC))
-		if err == nil {
-			t.Fatal("expected catch-up run error")
-		}
-		if created != 1 || repository.createCalls != 2 {
-			t.Fatalf("created/calls = %d/%d, want 1/2", created, repository.createCalls)
-		}
-	}
 	if created != 0 || sent != 0 || len(repository.createdPeriods) != 0 {
 		t.Fatalf("empty run created/sent/periods = %d/%d/%d",
 			created, sent, len(repository.createdPeriods))
+	}
+}
+
+func TestWorkerKeepsEarlierPeriodsWhenCatchUpRunFails(t *testing.T) {
+	start := time.Date(2026, 9, 28, 0, 0, 0, 0, time.UTC)
+	repository := &fakeRepository{
+		created:      1,
+		failCreateAt: 2,
+		createErr:    errors.New("database unavailable"),
+		periods: []StatementPeriod{
+			{Start: start, End: start.AddDate(0, 0, 7)},
+			{Start: start.AddDate(0, 0, 7), End: start.AddDate(0, 0, 14)},
+			{Start: start.AddDate(0, 0, 14), End: start.AddDate(0, 0, 21)},
+		},
+	}
+	worker := &Worker{Repository: repository, Sender: fakeSender{}}
+	created, _, err := worker.RunOnce(context.Background(),
+		time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC))
+	if err == nil {
+		t.Fatal("expected catch-up run error")
+	}
+	if created != 1 || repository.createCalls != 2 {
+		t.Fatalf("created/calls = %d/%d, want 1/2", created, repository.createCalls)
 	}
 }
 
