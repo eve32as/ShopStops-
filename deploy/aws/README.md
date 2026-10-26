@@ -84,6 +84,59 @@ terraform -chdir=deploy/aws fmt -check -recursive
 terraform -chdir=deploy/aws validate
 ```
 
+## GitHub Actions OIDC deployment workflow
+
+`.github/workflows/terraform-deploy.yml` provides a manually dispatched plan and
+apply path. It does not use long-lived AWS keys, run automatically on pushes, or
+run database migrations. Apply requires the `apply` input, the exact
+`confirm_apply=APPLY` input, and approval from the selected GitHub environment.
+Configure the `production` environment with required reviewers and restrict
+deployments to the protected release branch before allowing production use.
+
+Create four GitHub environments: `staging-plan`, `production-plan`, `staging`,
+and `production`. Set environment variables in each:
+
+- `AWS_ROLE_ARN`: the role for that environment; plan environments use a
+  read-oriented role, while `staging` and `production` use their separately
+  approved deployment roles.
+- `AWS_REGION`, `TF_STATE_BUCKET`, `TF_STATE_KEY`, and `TF_STATE_KMS_KEY_ARN`.
+  Use a different state key for staging and production.
+- The Terraform inputs read by the workflow as environment variables:
+  `TF_VAR_project_name`, `TF_VAR_availability_zones` (JSON list),
+  `TF_VAR_certificate_arn`, `TF_VAR_gateway_hostname`,
+  `TF_VAR_route53_zone_id`, `TF_VAR_oidc_issuer`, `TF_VAR_oidc_audience`,
+  `TF_VAR_api_image`, `TF_VAR_gateway_image`, and `TF_VAR_migration_image`,
+  plus `TF_VAR_db_engine_version`.
+
+These are configuration values, not credentials. Do not place secret values in
+GitHub variables or Terraform inputs. Configure the AWS IAM OIDC provider for
+`https://token.actions.githubusercontent.com`; each role trust policy should
+require audience `sts.amazonaws.com` and the exact subject for its GitHub
+environment, for example
+`repo:eve32as/ShopStops-:environment:production`. Do not trust all branches or
+all repositories. Grant plan roles only the provider read permissions and
+scoped state/lock access needed to plan; grant apply roles only the resource
+permissions needed for this Terraform root and the same scoped state access.
+Keep the GitHub role ARN as a variable, not an access key or credential.
+
+Run the workflow from the approved protected branch with `apply` false to
+produce a plan for review. Download the short-lived plan artifact and inspect it
+with Terraform 1.12.2 (`terraform show shopstops.tfplan`). The plan file can
+contain sensitive infrastructure details: restrict artifact access and do not
+attach it to public issues or logs. When ready to apply, dispatch another run
+with the same configuration, select `apply`, enter `APPLY`, inspect that run's
+new plan artifact, and approve the protected environment. The apply job waits
+for that approval and applies only the plan generated in its own run. For
+application rollout, first populate secrets and complete the
+migration/bootstrap steps below; only then select `deploy_application`.
+
+This workflow is scaffolding, not evidence of production readiness. It does not
+create the AWS account, state bucket, IAM roles, OIDC application/users, ECR
+repositories, secrets, or app-store credentials, and it has not been run against
+a real AWS account. The production owner must validate the role policies and
+trust conditions, run a staging rehearsal, and confirm protected environment
+reviewers and branch restrictions before use.
+
 Set deployment inputs through an ignored `*.tfvars` file or the approved
 deployment system. Do not store credentials or secret values in that file.
 Set `gateway_hostname`, `route53_zone_id`, and `certificate_arn`. Before planning,
@@ -248,6 +301,11 @@ not a CI bypass.
 - Metrics alarms are only a starting point. Subscribe and test the alarm topic,
   set service-specific SLO thresholds, and add tracing and operational
   dashboards before launch.
+- The Terraform source currently creates CloudWatch log groups without a
+  customer-managed KMS key and the public ALB without access-log delivery.
+  Decide and implement the production log encryption, retention, and access-log
+  bucket/policy design before launch; then verify delivery and access controls
+  in AWS.
 - The migration runner is tested on a fresh database and a data-preserving
   008-to-009 upgrade in CI. A production owner must still validate its behavior
   against the selected RDS version and rehearse restore and rollback.

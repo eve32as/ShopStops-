@@ -1,0 +1,183 @@
+name: Terraform deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target deployment environment
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+      apply:
+        description: Apply the reviewed plan (requires environment approval)
+        required: true
+        type: boolean
+        default: false
+      confirm_apply:
+        description: Enter APPLY to authorize the apply job
+        required: false
+        type: string
+        default: ""
+      deploy_application:
+        description: Start ECS services (only after secrets and migrations are ready)
+        required: true
+        type: boolean
+        default: false
+      enable_stripe:
+        description: Enable Stripe secrets (populate them before deploying services)
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: shopstops-terraform-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Create Terraform plan
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}-plan
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      TF_VAR_aws_region: ${{ vars.AWS_REGION }}
+      TF_VAR_environment: ${{ inputs.environment }}
+      TF_VAR_project_name: ${{ vars.TF_VAR_project_name }}
+      TF_VAR_availability_zones: ${{ vars.TF_VAR_availability_zones }}
+      TF_VAR_certificate_arn: ${{ vars.TF_VAR_certificate_arn }}
+      TF_VAR_gateway_hostname: ${{ vars.TF_VAR_gateway_hostname }}
+      TF_VAR_route53_zone_id: ${{ vars.TF_VAR_route53_zone_id }}
+      TF_VAR_oidc_issuer: ${{ vars.TF_VAR_oidc_issuer }}
+      TF_VAR_oidc_audience: ${{ vars.TF_VAR_oidc_audience }}
+      TF_VAR_api_image: ${{ vars.TF_VAR_api_image }}
+      TF_VAR_gateway_image: ${{ vars.TF_VAR_gateway_image }}
+      TF_VAR_migration_image: ${{ vars.TF_VAR_migration_image }}
+      TF_VAR_db_engine_version: ${{ vars.TF_VAR_db_engine_version }}
+      TF_VAR_enable_stripe: ${{ inputs.enable_stripe }}
+      TF_VAR_deploy_application: ${{ inputs.deploy_application }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Configure AWS credentials with OIDC
+        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.12.2
+          terraform_wrapper: false
+
+      - name: Initialize Terraform
+        env:
+          TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+          TF_STATE_KEY: ${{ vars.TF_STATE_KEY }}
+          TF_STATE_KMS_KEY_ARN: ${{ vars.TF_STATE_KMS_KEY_ARN }}
+        run: |
+          terraform -chdir=deploy/aws init -input=false \
+            -backend-config="bucket=$TF_STATE_BUCKET" \
+            -backend-config="key=$TF_STATE_KEY" \
+            -backend-config="region=$AWS_REGION" \
+            -backend-config="kms_key_id=$TF_STATE_KMS_KEY_ARN" \
+            -backend-config="encrypt=true" \
+            -backend-config="use_lockfile=true"
+
+      - name: Check formatting and create plan
+        run: |
+          terraform -chdir=deploy/aws fmt -check -recursive
+          terraform -chdir=deploy/aws validate
+          terraform -chdir=deploy/aws plan -input=false \
+            -out="$RUNNER_TEMP/shopstops.tfplan"
+
+      - name: Upload restricted plan artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: terraform-plan-${{ inputs.environment }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/shopstops.tfplan
+          if-no-files-found: error
+          retention-days: 1
+
+  apply:
+    name: Apply approved Terraform plan
+    if: ${{ inputs.apply }}
+    needs: plan
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      TF_VAR_aws_region: ${{ vars.AWS_REGION }}
+      TF_VAR_environment: ${{ inputs.environment }}
+      TF_VAR_project_name: ${{ vars.TF_VAR_project_name }}
+      TF_VAR_availability_zones: ${{ vars.TF_VAR_availability_zones }}
+      TF_VAR_certificate_arn: ${{ vars.TF_VAR_certificate_arn }}
+      TF_VAR_gateway_hostname: ${{ vars.TF_VAR_gateway_hostname }}
+      TF_VAR_route53_zone_id: ${{ vars.TF_VAR_route53_zone_id }}
+      TF_VAR_oidc_issuer: ${{ vars.TF_VAR_oidc_issuer }}
+      TF_VAR_oidc_audience: ${{ vars.TF_VAR_oidc_audience }}
+      TF_VAR_api_image: ${{ vars.TF_VAR_api_image }}
+      TF_VAR_gateway_image: ${{ vars.TF_VAR_gateway_image }}
+      TF_VAR_migration_image: ${{ vars.TF_VAR_migration_image }}
+      TF_VAR_db_engine_version: ${{ vars.TF_VAR_db_engine_version }}
+      TF_VAR_enable_stripe: ${{ inputs.enable_stripe }}
+      TF_VAR_deploy_application: ${{ inputs.deploy_application }}
+    steps:
+      - name: Require explicit apply confirmation
+        env:
+          CONFIRM_APPLY: ${{ inputs.confirm_apply }}
+        run: |
+          if [[ "$CONFIRM_APPLY" != "APPLY" ]]; then
+            echo "Set confirm_apply to APPLY after reviewing the Terraform plan."
+            exit 1
+          fi
+
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download this run's plan
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: terraform-plan-${{ inputs.environment }}-${{ github.run_id }}
+          path: ${{ runner.temp }}
+
+      - name: Configure AWS credentials with OIDC
+        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.12.2
+          terraform_wrapper: false
+
+      - name: Initialize Terraform
+        env:
+          TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+          TF_STATE_KEY: ${{ vars.TF_STATE_KEY }}
+          TF_STATE_KMS_KEY_ARN: ${{ vars.TF_STATE_KMS_KEY_ARN }}
+        run: |
+          terraform -chdir=deploy/aws init -input=false \
+            -backend-config="bucket=$TF_STATE_BUCKET" \
+            -backend-config="key=$TF_STATE_KEY" \
+            -backend-config="region=$AWS_REGION" \
+            -backend-config="kms_key_id=$TF_STATE_KMS_KEY_ARN" \
+            -backend-config="encrypt=true" \
+            -backend-config="use_lockfile=true"
+
+      - name: Apply the reviewed plan
+        run: terraform -chdir=deploy/aws apply -input=false "$RUNNER_TEMP/shopstops.tfplan"
