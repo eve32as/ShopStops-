@@ -826,6 +826,7 @@ export default function HomeScreen() {
     );
     if (result) {
       setCustodyPIN("");
+      setCustodyOrderID("");
       setMessage("Custody verified. You can now confirm the pickup.");
     }
   }

@@ -318,14 +318,18 @@ export default function DeliveryOperations({ gatewayUrl, sessionToken }: Props) 
             driverRef?: string
             observedAt?: string
           }
+          const observedAtValue = update.observedAt
+          const observedAt = observedAtValue ? Date.parse(observedAtValue) : Number.NaN
           if (update.type !== 'driver.location.updated' ||
-            !update.routeId || !update.driverRef || !update.observedAt ||
-            !Number.isFinite(Date.parse(update.observedAt))) return
+            !update.routeId || !update.driverRef || !observedAtValue ||
+            !Number.isFinite(observedAt)) return
           setAssignedRoutes((routes) => routes.map((route) => {
             if (route.id !== update.routeId || route.driverRef !== update.driverRef) return route
-            if (route.lastLocationAt &&
-              Date.parse(route.lastLocationAt) >= Date.parse(update.observedAt!)) return route
-            return { ...route, lastLocationAt: update.observedAt! }
+            const lastLocationAt = route.lastLocationAt
+              ? Date.parse(route.lastLocationAt)
+              : Number.NaN
+            if (Number.isFinite(lastLocationAt) && lastLocationAt >= observedAt) return route
+            return { ...route, lastLocationAt: observedAtValue }
           }))
         } catch {
           return
