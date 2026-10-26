@@ -240,10 +240,10 @@ func (f *fakeRepository) DriverActiveRoute(
 }
 func (f *fakeRepository) AssignUnifiedDriver(
 	_ context.Context, routeID, driverRef, assignedBy string,
-) error {
+) (string, error) {
 	f.assignedRouteID, f.assignedDriverRef, f.assignedBy =
 		routeID, driverRef, assignedBy
-	return f.assignDriverErr
+	return "routed", f.assignDriverErr
 }
 func (f *fakeRepository) RecordDriverLocation(
 	_ context.Context, routeID, driverRef string, location driverLocationRequest,
@@ -468,6 +468,9 @@ func TestAssignDriverToRouteUsesDispatchActorAndValidatesInput(t *testing.T) {
 		t.Fatalf("status/assignment = %d/%q/%q/%q",
 			recorder.Code, repository.assignedRouteID,
 			repository.assignedDriverRef, repository.assignedBy)
+	}
+	if !strings.Contains(recorder.Body.String(), `"status":"routed"`) {
+		t.Fatalf("response did not include current route status: %s", recorder.Body)
 	}
 }
 

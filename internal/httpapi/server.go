@@ -81,7 +81,7 @@ type UnifiedRouteRepository interface {
 }
 
 type DriverAssignmentRepository interface {
-	AssignUnifiedDriver(context.Context, string, string, string) error
+	AssignUnifiedDriver(context.Context, string, string, string) (string, error)
 }
 
 type DriverRerouteRepository interface {
@@ -947,7 +947,7 @@ func (s *Server) assignDriverToRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
-	err := repository.AssignUnifiedDriver(ctx, routeID, request.DriverRef, actor)
+	routeStatus, err := repository.AssignUnifiedDriver(ctx, routeID, request.DriverRef, actor)
 	switch {
 	case errors.Is(err, ErrNotFound):
 		writeError(w, http.StatusNotFound, "route not found")
@@ -957,7 +957,7 @@ func (s *Server) assignDriverToRoute(w http.ResponseWriter, r *http.Request) {
 		s.databaseError(w, err)
 	default:
 		writeJSON(w, http.StatusOK, map[string]string{
-			"routeId": routeID, "driverRef": request.DriverRef, "status": "routed",
+			"routeId": routeID, "driverRef": request.DriverRef, "status": routeStatus,
 		})
 	}
 }
@@ -2351,22 +2351,24 @@ func (p *PostgresRepository) DriverActiveRoute(
 
 func (p *PostgresRepository) AssignUnifiedDriver(
 	ctx context.Context, routeID, driverRef, assignedBy string,
-) error {
-	_, err := p.db.ExecContext(ctx,
-		`SELECT assign_unified_driver($1, $2, $3)`, routeID, driverRef, assignedBy)
+) (string, error) {
+	var routeStatus string
+	err := p.db.QueryRowContext(ctx,
+		`SELECT assign_unified_driver($1, $2, $3)`, routeID, driverRef, assignedBy,
+	).Scan(&routeStatus)
 	if err == nil {
-		return nil
+		return routeStatus, nil
 	}
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
 		switch pgErr.Code {
 		case "P0002":
-			return ErrNotFound
+			return "", ErrNotFound
 		case "P0001", "23505":
-			return ErrConflict
+			return "", ErrConflict
 		}
 	}
-	return err
+	return "", err
 }
 
 func (p *PostgresRepository) RecordDriverLocation(

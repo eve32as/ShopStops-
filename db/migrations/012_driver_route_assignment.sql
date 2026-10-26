@@ -2,7 +2,7 @@ CREATE FUNCTION assign_unified_driver(
     p_route_id uuid,
     p_driver_ref text,
     p_assigned_by text
-) RETURNS uuid
+) RETURNS text
 LANGUAGE plpgsql
 AS $$
 DECLARE
@@ -11,8 +11,10 @@ DECLARE
 BEGIN
     IF p_route_id IS NULL
        OR p_driver_ref IS NULL OR btrim(p_driver_ref) = ''
+       OR btrim(p_driver_ref) <> p_driver_ref
        OR length(p_driver_ref) > 200
        OR p_assigned_by IS NULL OR btrim(p_assigned_by) = ''
+       OR btrim(p_assigned_by) <> p_assigned_by
        OR length(p_assigned_by) > 200 THEN
         RAISE EXCEPTION 'route, driver, and assigning actor are required';
     END IF;
@@ -28,14 +30,14 @@ BEGIN
     IF NOT FOUND THEN
         RAISE EXCEPTION 'route not found' USING ERRCODE = 'P0002';
     END IF;
-    IF v_route.status <> 'routed' THEN
-        RAISE EXCEPTION 'route is not ready for assignment';
-    END IF;
     IF v_route.driver_ref IS NOT NULL THEN
         IF v_route.driver_ref = p_driver_ref THEN
-            RETURN v_route.id;
+            RETURN v_route.status;
         END IF;
         RAISE EXCEPTION 'route is already assigned';
+    END IF;
+    IF v_route.status <> 'routed' THEN
+        RAISE EXCEPTION 'route is not ready for assignment';
     END IF;
 
     SELECT id INTO v_active_route_id
@@ -60,6 +62,6 @@ BEGIN
             'assignedBy', p_assigned_by
         )
     );
-    RETURN p_route_id;
+    RETURN 'routed';
 END;
 $$;

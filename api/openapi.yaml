@@ -871,7 +871,7 @@ paths:
                     type: string
                   status:
                     type: string
-                    enum: [routed]
+                    enum: [routed, in_progress, completed]
         '400':
           description: Invalid route ID or driver identity
         '401':

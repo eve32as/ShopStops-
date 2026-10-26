@@ -325,6 +325,15 @@ export default function HomeScreen() {
       setMessage("Enter a complete delivery address (5–256 characters).");
       return;
     }
+    if (Platform.OS === "android") {
+      const permission = await run(() => Location.requestForegroundPermissionsAsync());
+      if (!permission || permission.status !== "granted") {
+        if (permission) {
+          setMessage("Android requires foreground location permission for address lookup. You can still enter your destination by using current location.");
+        }
+        return;
+      }
+    }
     const locations = await run(() => Location.geocodeAsync(address));
     const location = locations?.find((item) =>
       Number.isFinite(item.latitude) && item.latitude >= -90 && item.latitude <= 90 &&
@@ -999,7 +1008,7 @@ export default function HomeScreen() {
               <Text style={styles.sectionEyebrow}>01 / DISCOVER</Text>
               <Text style={styles.sectionTitle}>Good things, close by.</Text>
               <Text style={styles.helpText}>
-                Search by delivery address or use your location to find restaurants within 5 km.
+                Search by delivery address or use your location to find restaurants within 5 km. Android may request location permission for address lookup.
               </Text>
               <TextInput
                 accessibilityLabel="Delivery address"

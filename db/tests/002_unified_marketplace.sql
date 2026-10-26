@@ -476,6 +476,45 @@ SELECT assign_unified_driver(:'route_id', 'driver-test', 'dispatch-test');
 UPDATE unified_delivery_routes
 SET status = 'in_progress'
 WHERE id = :'route_id';
+SELECT set_config(
+    'shopstops.test_assignment_replay_status',
+    assign_unified_driver(:'route_id', 'driver-test', 'dispatch-test'),
+    true
+);
+DO $$
+BEGIN
+    IF current_setting('shopstops.test_assignment_replay_status') <> 'in_progress' THEN
+        RAISE EXCEPTION 'assignment retry should return the route current status';
+    END IF;
+END;
+$$;
+UPDATE unified_checkouts
+SET status = 'paid'
+WHERE id = :'api_checkout_id';
+SELECT create_unified_route(:'api_checkout_id', 'route-assignment-conflict-key', 'osrm')
+    AS competing_route_id \gset
+UPDATE unified_delivery_routes
+SET status = 'routed'
+WHERE id = :'competing_route_id';
+SELECT set_config('shopstops.test_competing_route_id', :'competing_route_id', true);
+DO $$
+DECLARE
+    v_message text;
+BEGIN
+    BEGIN
+        PERFORM assign_unified_driver(
+            current_setting('shopstops.test_competing_route_id')::uuid,
+            'driver-test', 'dispatch-test'
+        );
+        RAISE EXCEPTION 'driver with an active route was assigned another route';
+    EXCEPTION WHEN OTHERS THEN
+        GET STACKED DIAGNOSTICS v_message = MESSAGE_TEXT;
+        IF v_message NOT LIKE '%driver already has an active route%' THEN
+            RAISE;
+        END IF;
+    END;
+END;
+$$;
 SELECT set_config('shopstops.test_route_id', :'route_id', true);
 SELECT set_config('shopstops.test_partner_store_id', :'partner_store_id', true);
 SELECT id AS route_stop_1 FROM unified_route_stops
