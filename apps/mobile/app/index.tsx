@@ -136,6 +136,8 @@ export default function HomeScreen() {
   const [anchorStore, setAnchorStore] = useState("");
   const [latitude, setLatitude] = useState("");
   const [longitude, setLongitude] = useState("");
+  const [deliveryAddress, setDeliveryAddress] = useState("");
+  const [destinationLabel, setDestinationLabel] = useState("");
   const [routeId, setRouteId] = useState("");
   const [tracking, setTracking] = useState(false);
   const [trackingOrderID, setTrackingOrderID] = useState("");
@@ -308,12 +310,36 @@ export default function HomeScreen() {
       });
       setLatitude(String(position.coords.latitude));
       setLongitude(String(position.coords.longitude));
+      setDestinationLabel("Current location");
       checkoutAttempt.current = null;
       setNearbyRestaurants([]);
       setMessage("Current location selected for nearby-store search and delivery destination.");
     } catch {
       setMessage("Could not read your location. Check device location services and try again.");
     }
+  }
+
+  async function geocodeDeliveryAddress() {
+    const address = deliveryAddress.trim();
+    if (address.length < 5 || address.length > 256) {
+      setMessage("Enter a complete delivery address (5–256 characters).");
+      return;
+    }
+    const locations = await run(() => Location.geocodeAsync(address));
+    const location = locations?.find((item) =>
+      Number.isFinite(item.latitude) && item.latitude >= -90 && item.latitude <= 90 &&
+      Number.isFinite(item.longitude) && item.longitude >= -180 && item.longitude <= 180,
+    );
+    if (!location) {
+      if (locations) setMessage("That address could not be located. Check it or use your current location.");
+      return;
+    }
+    setLatitude(String(location.latitude));
+    setLongitude(String(location.longitude));
+    setDestinationLabel(address);
+    checkoutAttempt.current = null;
+    setNearbyRestaurants([]);
+    setMessage("Delivery address located. Confirm the map pin is in your delivery area.");
   }
 
   async function findNearbyRestaurants() {
@@ -973,9 +999,25 @@ export default function HomeScreen() {
               <Text style={styles.sectionEyebrow}>01 / DISCOVER</Text>
               <Text style={styles.sectionTitle}>Good things, close by.</Text>
               <Text style={styles.helpText}>
-                Choose your location to find restaurants within 5 km, then add nearby grocery and
-                retail partners.
+                Search by delivery address or use your location to find restaurants within 5 km.
               </Text>
+              <TextInput
+                accessibilityLabel="Delivery address"
+                autoComplete="street-address"
+                autoCorrect={false}
+                editable={!checkout}
+                onChangeText={setDeliveryAddress}
+                placeholder="Street address, city, state, ZIP"
+                placeholderTextColor="#94a3b8"
+                returnKeyType="search"
+                style={styles.input}
+                value={deliveryAddress}
+              />
+              <ActionButton
+                disabled={busy || Boolean(checkout) || deliveryAddress.trim().length < 5}
+                label="Use this delivery address"
+                onPress={() => void geocodeDeliveryAddress()}
+              />
               <ActionButton
                 disabled={busy || Boolean(checkout)}
                 label={latitude && longitude ? "Update my location" : "Use my current location"}
@@ -983,11 +1025,11 @@ export default function HomeScreen() {
               />
               {latitude && longitude ? (
                 <Text style={styles.tinyNote}>
-                  Delivery destination · {Number(latitude).toFixed(4)}, {Number(longitude).toFixed(4)}
+                  Delivery destination · {destinationLabel || `${Number(latitude).toFixed(4)}, ${Number(longitude).toFixed(4)}`}
                 </Text>
               ) : (
                 <Text style={styles.tinyNote}>
-                  Your precise location is used to search nearby restaurants and set this order’s drop-off.
+                  The selected address is geocoded on this device; only its coordinates are sent to ShopStops.
                 </Text>
               )}
               <ActionButton

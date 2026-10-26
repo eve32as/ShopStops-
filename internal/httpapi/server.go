@@ -80,6 +80,10 @@ type UnifiedRouteRepository interface {
 	CreateUnifiedRoute(context.Context, string, string, []routing.Route) (string, error)
 }
 
+type DriverAssignmentRepository interface {
+	AssignUnifiedDriver(context.Context, string, string, string) error
+}
+
 type DriverRerouteRepository interface {
 	DriverReroutePlan(context.Context, string, string) (driverReroutePlan, error)
 	SaveDriverReroute(
@@ -193,6 +197,10 @@ type bundleRequest struct {
 	MaxOrders           *int    `json:"maxOrders"`
 	PickupRadiusMeters  *int    `json:"pickupRadiusMeters"`
 	DropoffRadiusMeters *int    `json:"dropoffRadiusMeters"`
+}
+
+type driverAssignmentRequest struct {
+	DriverRef string `json:"driverRef"`
 }
 
 type bundleStop struct {
@@ -341,6 +349,7 @@ func (s *Server) handler() http.Handler {
 	mux.Handle("POST /merchant/catalog", s.authorized(http.HandlerFunc(s.createMerchantCatalogItem)))
 	mux.Handle("PATCH /merchant/catalog/{itemId}", s.authorized(http.HandlerFunc(s.updateMerchantCatalogItem)))
 	mux.Handle("POST /dispatch/bundles", s.authorized(http.HandlerFunc(s.createBundle)))
+	mux.Handle("POST /dispatch/routes/{routeId}/assign", s.authorized(http.HandlerFunc(s.assignDriverToRoute)))
 	mux.Handle("GET /driver/routes/{routeId}", s.authorized(http.HandlerFunc(s.getDriverRoute)))
 	mux.Handle("GET /driver/routes/active", s.authorized(http.HandlerFunc(s.getActiveDriverRoute)))
 	mux.Handle("POST /driver/routes/{routeId}/location", s.authorized(http.HandlerFunc(s.recordDriverLocation)))
@@ -900,6 +909,55 @@ func (s *Server) createUnifiedRoute(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, http.StatusCreated, map[string]string{
 			"routeId": routeID, "checkoutId": checkoutID, "routingProvider": "osrm",
+		})
+	}
+}
+
+func (s *Server) assignDriverToRoute(w http.ResponseWriter, r *http.Request) {
+	actor, ok := s.authorizedActorRoles(w, r, "dispatch", "admin")
+	if !ok {
+		return
+	}
+	routeID := r.PathValue("routeId")
+	if !isUUID(routeID) {
+		writeError(w, http.StatusBadRequest, "valid route ID is required")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 8*1024)
+	var request driverAssignmentRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "request body must contain one JSON object")
+		return
+	}
+	request.DriverRef = strings.TrimSpace(request.DriverRef)
+	if request.DriverRef == "" || len(request.DriverRef) > 200 {
+		writeError(w, http.StatusBadRequest, "valid driver identity is required")
+		return
+	}
+	repository, ok := s.repo.(DriverAssignmentRepository)
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "driver assignment is unavailable")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	err := repository.AssignUnifiedDriver(ctx, routeID, request.DriverRef, actor)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		writeError(w, http.StatusNotFound, "route not found")
+	case errors.Is(err, ErrConflict):
+		writeError(w, http.StatusConflict, "route or driver is not available for assignment")
+	case err != nil:
+		s.databaseError(w, err)
+	default:
+		writeJSON(w, http.StatusOK, map[string]string{
+			"routeId": routeID, "driverRef": request.DriverRef, "status": "routed",
 		})
 	}
 }
@@ -2289,6 +2347,26 @@ func (p *PostgresRepository) DriverActiveRoute(
 		return "", err
 	}
 	return routeID, nil
+}
+
+func (p *PostgresRepository) AssignUnifiedDriver(
+	ctx context.Context, routeID, driverRef, assignedBy string,
+) error {
+	_, err := p.db.ExecContext(ctx,
+		`SELECT assign_unified_driver($1, $2, $3)`, routeID, driverRef, assignedBy)
+	if err == nil {
+		return nil
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		switch pgErr.Code {
+		case "P0002":
+			return ErrNotFound
+		case "P0001", "23505":
+			return ErrConflict
+		}
+	}
+	return err
 }
 
 func (p *PostgresRepository) RecordDriverLocation(

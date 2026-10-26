@@ -469,7 +469,12 @@ $$;
 SELECT create_unified_route(:'checkout_id', 'route-test-key', 'osrm')
     AS route_id \gset
 UPDATE unified_delivery_routes
-SET driver_ref = 'driver-test', status = 'in_progress'
+SET status = 'routed'
+WHERE id = :'route_id';
+SELECT assign_unified_driver(:'route_id', 'driver-test', 'dispatch-test');
+SELECT assign_unified_driver(:'route_id', 'driver-test', 'dispatch-test');
+UPDATE unified_delivery_routes
+SET status = 'in_progress'
 WHERE id = :'route_id';
 SELECT set_config('shopstops.test_route_id', :'route_id', true);
 SELECT set_config('shopstops.test_partner_store_id', :'partner_store_id', true);
@@ -596,6 +601,11 @@ BEGIN
     IF (SELECT count(*) FROM driver_location_samples
         WHERE route_id = v_route_id) <> 3 THEN
         RAISE EXCEPTION 'driver GPS samples were not recorded';
+    END IF;
+    IF (SELECT count(*) FROM outbox_events
+        WHERE aggregate_id = v_route_id
+          AND event_type = 'delivery.route.assigned') <> 1 THEN
+        RAISE EXCEPTION 'route assignment must emit one audit event, including on retry';
     END IF;
     IF (SELECT count(*) FROM driver_fraud_alerts
         WHERE route_id = v_route_id AND alert_type = 'impossible_speed'

@@ -57,6 +57,10 @@ type fakeRepository struct {
 	activeRouteID         string
 	activeRouteErr        error
 	activeRouteDriver     string
+	assignedRouteID       string
+	assignedDriverRef     string
+	assignedBy            string
+	assignDriverErr       error
 	driverRef             string
 	locationID            int64
 	locationErr           error
@@ -233,6 +237,13 @@ func (f *fakeRepository) DriverActiveRoute(
 ) (string, error) {
 	f.activeRouteDriver = driverRef
 	return f.activeRouteID, f.activeRouteErr
+}
+func (f *fakeRepository) AssignUnifiedDriver(
+	_ context.Context, routeID, driverRef, assignedBy string,
+) error {
+	f.assignedRouteID, f.assignedDriverRef, f.assignedBy =
+		routeID, driverRef, assignedBy
+	return f.assignDriverErr
 }
 func (f *fakeRepository) RecordDriverLocation(
 	_ context.Context, routeID, driverRef string, location driverLocationRequest,
@@ -420,6 +431,71 @@ func TestGetActiveDriverRouteUsesAuthenticatedDriver(t *testing.T) {
 		repository.routeID != repository.activeRouteID {
 		t.Fatalf("status/driver/route = %d/%q/%q",
 			recorder.Code, repository.activeRouteDriver, repository.routeID)
+	}
+}
+
+func TestAssignDriverToRouteRequiresDispatchRole(t *testing.T) {
+	handler := New(&fakeRepository{}, strings.Repeat("t", 32),
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	request := httptest.NewRequest(http.MethodPost,
+		"/dispatch/routes/00000000-0000-0000-0000-000000000010/assign",
+		strings.NewReader(`{"driverRef":"driver-1"}`))
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "customer-1")
+	request.Header.Set("X-ShopStops-Actor-Role", "customer")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusForbidden)
+	}
+}
+
+func TestAssignDriverToRouteUsesDispatchActorAndValidatesInput(t *testing.T) {
+	repository := &fakeRepository{}
+	handler := New(repository, strings.Repeat("t", 32),
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	request := httptest.NewRequest(http.MethodPost,
+		"/dispatch/routes/00000000-0000-0000-0000-000000000010/assign",
+		strings.NewReader(`{"driverRef":" driver-42 "}`))
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "dispatcher-5")
+	request.Header.Set("X-ShopStops-Actor-Role", "dispatch")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || repository.assignedRouteID !=
+		"00000000-0000-0000-0000-000000000010" ||
+		repository.assignedDriverRef != "driver-42" || repository.assignedBy != "dispatcher-5" {
+		t.Fatalf("status/assignment = %d/%q/%q/%q",
+			recorder.Code, repository.assignedRouteID,
+			repository.assignedDriverRef, repository.assignedBy)
+	}
+}
+
+func TestAssignDriverToRouteMapsConflictsAndNotFound(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		err  error
+		want int
+	}{
+		{name: "driver unavailable", err: ErrConflict, want: http.StatusConflict},
+		{name: "route missing", err: ErrNotFound, want: http.StatusNotFound},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repository := &fakeRepository{assignDriverErr: test.err}
+			handler := New(repository, strings.Repeat("t", 32),
+				slog.New(slog.NewTextHandler(io.Discard, nil)))
+			request := httptest.NewRequest(http.MethodPost,
+				"/dispatch/routes/00000000-0000-0000-0000-000000000010/assign",
+				strings.NewReader(`{"driverRef":"driver-42"}`))
+			request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+			request.Header.Set("X-ShopStops-Actor", "admin-1")
+			request.Header.Set("X-ShopStops-Actor-Role", "admin")
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, request)
+			if recorder.Code != test.want {
+				t.Fatalf("status = %d, want %d; body=%s", recorder.Code, test.want, recorder.Body)
+			}
+		})
 	}
 }
 

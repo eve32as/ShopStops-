@@ -96,7 +96,7 @@ function App() {
   const [reason, setReason] = useState('requested_by_customer')
   const [idempotencyKey, setIdempotencyKey] = useState('')
   const [refund, setRefund] = useState<RefundResult | null>(null)
-  const [activeView, setActiveView] = useState<'refunds' | 'driver-alerts' | 'notifications'>('refunds')
+  const [activeView, setActiveView] = useState<'refunds' | 'driver-alerts' | 'dispatch' | 'notifications'>('refunds')
   const [fraudAlerts, setFraudAlerts] = useState<FraudAlert[]>([])
   const [fraudStatus, setFraudStatus] = useState<'open' | 'reviewed' | 'dismissed' | ''>('open')
   const [fraudError, setFraudError] = useState('')
@@ -110,6 +110,11 @@ function App() {
   const [payoutDriverRef, setPayoutDriverRef] = useState('')
   const [payoutEmail, setPayoutEmail] = useState('')
   const [profileSaved, setProfileSaved] = useState('')
+  const [assignmentRouteId, setAssignmentRouteId] = useState('')
+  const [assignmentDriverRef, setAssignmentDriverRef] = useState('')
+  const [assignmentMessage, setAssignmentMessage] = useState('')
+  const [assignmentError, setAssignmentError] = useState('')
+  const [assignmentLoading, setAssignmentLoading] = useState(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
@@ -211,6 +216,38 @@ function App() {
     }
   }
 
+  async function assignDriver(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setAssignmentMessage('')
+    setAssignmentError('')
+    const routeId = assignmentRouteId.trim()
+    const driverRef = assignmentDriverRef.trim()
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(routeId)) {
+      setAssignmentError('Enter a valid route UUID.')
+      return
+    }
+    if (!driverRef || driverRef.length > 200) {
+      setAssignmentError('Enter a valid driver identity (1–200 characters).')
+      return
+    }
+    setAssignmentLoading(true)
+    try {
+      await fraudRequest<{ routeId: string; driverRef: string; status: string }>(
+        gatewayUrl,
+        sessionToken,
+        `dispatch/routes/${encodeURIComponent(routeId)}/assign`,
+        { method: 'POST', body: JSON.stringify({ driverRef }) },
+      )
+      setAssignmentMessage(`Route ${routeId} assigned to ${driverRef}.`)
+    } catch (requestError) {
+      setAssignmentError(requestError instanceof Error
+        ? requestError.message
+        : 'Could not assign this route.')
+    } finally {
+      setAssignmentLoading(false)
+    }
+  }
+
   useEffect(() => {
     if (activeView !== 'notifications' || !gatewayUrl.trim() || !sessionToken.trim()) return
     const initialLoad = window.setTimeout(() => void loadNotificationLogs(), 0)
@@ -304,6 +341,11 @@ function App() {
           onClick={() => setActiveView('driver-alerts')}
           type="button"
         ><span className="nav-icon">⚑</span>Driver alerts</button>
+        <button
+          className={`nav-item ${activeView === 'dispatch' ? 'nav-active' : 'nav-muted'}`}
+          onClick={() => setActiveView('dispatch')}
+          type="button"
+        ><span className="nav-icon">↗</span>Route assignment</button>
         <button
           className={`nav-item ${activeView === 'notifications' ? 'nav-active' : 'nav-muted'}`}
           onClick={() => setActiveView('notifications')}
@@ -568,6 +610,51 @@ function App() {
             <footer className="page-footer">
               <span>SHOPSTOPS ADMIN · DRIVER MONITORING</span>
               <span>Alerts are review-only</span>
+            </footer>
+          </> : activeView === 'dispatch' ? <>
+            <div className="page-heading">
+              <div>
+                <div className="eyebrow">DELIVERY OPERATIONS</div>
+                <h1>Assign a driver</h1>
+                <p>Assign a routed, unstarted delivery to an authenticated driver identity.</p>
+              </div>
+              <div className="status-pill"><span /> DISPATCH CONTROL</div>
+            </div>
+            <section className="panel">
+              <div className="panel-header">
+                <div>
+                  <div className="eyebrow">ROUTE HANDOFF</div>
+                  <h2>Dispatch a delivery</h2>
+                </div>
+                <span className="lock-mark" aria-label="Dispatch or admin only">⌑</span>
+              </div>
+              <div className="notice">
+                <span className="notice-icon">i</span>
+                <p>Only routed, unstarted deliveries can be assigned. A driver can have one active route; assignment changes are locked after handoff.</p>
+              </div>
+              <form onSubmit={(event) => void assignDriver(event)}>
+                <label>
+                  Route ID
+                  <input autoComplete="off" value={assignmentRouteId}
+                    onChange={(event) => setAssignmentRouteId(event.target.value)}
+                    placeholder="Route UUID from dispatch" required />
+                </label>
+                <label>
+                  Driver identity
+                  <input autoComplete="off" value={assignmentDriverRef}
+                    onChange={(event) => setAssignmentDriverRef(event.target.value)}
+                    placeholder="Authenticated driver reference" required />
+                </label>
+                <button className="submit-button" disabled={assignmentLoading} type="submit">
+                  {assignmentLoading ? 'Assigning…' : 'Assign route'}
+                </button>
+              </form>
+              {assignmentError ? <div className="alert alert-error" role="alert">{assignmentError}</div> : null}
+              {assignmentMessage ? <div className="alert alert-success" role="status">{assignmentMessage}</div> : null}
+            </section>
+            <footer className="page-footer">
+              <span>SHOPSTOPS ADMIN · ROUTE DISPATCH</span>
+              <span>Assignment is recorded in the delivery outbox</span>
             </footer>
           </> : <>
             <div className="page-heading">

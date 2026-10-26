@@ -830,6 +830,58 @@ paths:
           description: Dispatch/admin role required
         '409':
           description: Seed order is unavailable or reserved
+  /dispatch/routes/{routeId}/assign:
+    post:
+      operationId: assignDriverToRoute
+      summary: Assign one available driver to a routed delivery
+      description: Requires an authenticated dispatch or admin role. Assignment is transactional, audited through the outbox, and idempotent for the same driver. Drivers with an active route and routes already started cannot be reassigned.
+      parameters:
+        - in: path
+          name: routeId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [driverRef]
+              properties:
+                driverRef:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+      responses:
+        '200':
+          description: Route assigned or returned for an identical retry
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [routeId, driverRef, status]
+                properties:
+                  routeId:
+                    type: string
+                    format: uuid
+                  driverRef:
+                    type: string
+                  status:
+                    type: string
+                    enum: [routed]
+        '400':
+          description: Invalid route ID or driver identity
+        '401':
+          description: Authentication required
+        '403':
+          description: Dispatch/admin role required
+        '404':
+          description: Route not found
+        '409':
+          description: Route is not ready or driver already has an active route
   /driver/bundles/{bundleId}:
     get:
       operationId: getDriverBundle
