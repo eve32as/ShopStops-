@@ -1098,7 +1098,7 @@ export default function HomeScreen() {
                 onPress={() => void createCustomerOrder()}
               />
               {createdOrders.length > 0 ? (
-                <View style={styles.cartSummary}>
+                <View style={styles.checkoutBox}>
                   <Text style={styles.checkoutLabel}>YOUR BASKET · {createdOrders.length} STORE ORDER{createdOrders.length === 1 ? "" : "S"}</Text>
                   {createdOrders.map((order) => (
                     <View key={order.id} style={styles.invoiceRow}>
