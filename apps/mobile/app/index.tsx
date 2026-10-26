@@ -164,6 +164,12 @@ const configuredGatewayUrl = process.env.EXPO_PUBLIC_GATEWAY_URL?.trim() ?? "";
 const shopperOrderIDsKey = "shopstops.shopper-order-ids.v1";
 const userSessionKey = "shopstops.user-session.v1";
 
+function hasStripeClientSecret(value: unknown, intentPrefix: "pi" | "seti"): value is string {
+  return typeof value === "string" &&
+    value.startsWith(`${intentPrefix}_`) &&
+    value.includes("_secret_");
+}
+
 function createDeliveryWindow(): DeliveryWindow {
   const start = new Date(Date.now() + 15 * 60 * 1000);
   return {
@@ -197,6 +203,7 @@ export default function HomeScreen() {
   const [connectionOpen, setConnectionOpen] = useState(true);
   const [gatewayUrl, setGatewayUrl] = useState(configuredGatewayUrl);
   const [sessionToken, setSessionToken] = useState("");
+  const [sessionExpiresAt, setSessionExpiresAt] = useState(0);
   const settings = useMemo<ApiSettings>(
     () => ({ baseUrl: gatewayUrl, sessionToken }),
     [gatewayUrl, sessionToken],
@@ -346,7 +353,12 @@ export default function HomeScreen() {
     try {
       return await action();
     } catch (error) {
-      setMessage(error instanceof ApiError ? error.message : "The request could not be completed.");
+      if (error instanceof ApiError && error.status === 401) {
+        clearRejectedSession();
+        setMessage("Your session expired or was revoked. Sign in again to continue.");
+      } else {
+        setMessage(error instanceof ApiError ? error.message : "The request could not be completed.");
+      }
       return undefined;
     } finally {
       setBusy(false);
@@ -401,6 +413,7 @@ export default function HomeScreen() {
         ) {
           setGatewayUrl(stored.gatewayUrl);
           setSessionToken(stored.accessToken);
+          setSessionExpiresAt(stored.expiresAt);
         } else {
           void SecureStore.deleteItemAsync(userSessionKey).catch(() => undefined);
         }
@@ -414,7 +427,7 @@ export default function HomeScreen() {
   }, []);
 
   async function acceptSignIn(accessToken: string, expiresAt: number) {
-    if (!expiresAt || expiresAt <= Date.now()) {
+    if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
       throw new Error("The identity provider did not return a usable token expiry.");
     }
     await SecureStore.setItemAsync(userSessionKey, JSON.stringify({
@@ -423,11 +436,34 @@ export default function HomeScreen() {
       gatewayUrl: gatewayUrl.trim(),
     }));
     setSessionToken(accessToken);
+    setSessionExpiresAt(expiresAt);
   }
 
   async function signOut() {
     await SecureStore.deleteItemAsync(userSessionKey).catch(() => undefined);
     setSessionToken("");
+    setSessionExpiresAt(0);
+  }
+
+  useEffect(() => {
+    if (!sessionToken || !sessionExpiresAt) return;
+    let timer: ReturnType<typeof setTimeout>;
+    const expireWhenDue = () => {
+      const remaining = sessionExpiresAt - Date.now();
+      if (remaining <= 0) {
+        void signOut();
+        return;
+      }
+      timer = setTimeout(expireWhenDue, Math.min(remaining, 2_147_000_000));
+    };
+    expireWhenDue();
+    return () => clearTimeout(timer);
+  }, [sessionToken, sessionExpiresAt]);
+
+  function clearRejectedSession() {
+    void SecureStore.deleteItemAsync(userSessionKey).catch(() => undefined);
+    setSessionToken("");
+    setSessionExpiresAt(0);
   }
 
   useEffect(() => {
@@ -636,6 +672,12 @@ export default function HomeScreen() {
       ),
     );
     if (!intent) return;
+    if (!hasStripeClientSecret(intent.clientSecret, "pi") ||
+      intent.amountCents !== checkout.totalCents ||
+      intent.currency.toLowerCase() !== checkout.currency.toLowerCase()) {
+      setMessage("Payment details did not match this checkout. Please try again or contact support.");
+      return;
+    }
     const initialized = await initPaymentSheet({
       merchantDisplayName: "ShopStops",
       paymentIntentClientSecret: intent.clientSecret,
@@ -1117,6 +1159,10 @@ export default function HomeScreen() {
       }),
     );
     if (!intent) return;
+    if (!hasStripeClientSecret(intent.clientSecret, "seti")) {
+      setMessage("The payment provider returned invalid setup details. Please try again.");
+      return;
+    }
     const initialized = await initPaymentSheet({
       merchantDisplayName: "ShopStops Merchant",
       setupIntentClientSecret: intent.clientSecret,

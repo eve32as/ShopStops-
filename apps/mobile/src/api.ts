@@ -1,3 +1,5 @@
+import * as Crypto from "expo-crypto";
+
 export type ApiSettings = {
   baseUrl: string;
   sessionToken: string;
@@ -65,5 +67,5 @@ export async function apiRequest<T>(
 }
 
 export function idempotencyKey() {
-  return `mobile-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `mobile-${Crypto.randomUUID()}`;
 }

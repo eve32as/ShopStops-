@@ -1,3 +1,4 @@
+import * as Crypto from "expo-crypto";
 import { useEffect, useRef, useState } from "react";
 import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 
@@ -19,8 +20,7 @@ type Props = {
 };
 
 function newSessionToken() {
-  return globalThis.crypto?.randomUUID?.()
-    ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return Crypto.randomUUID();
 }
 
 export function AddressAutocomplete({ apiKey, disabled, onAddressSelected }: Props) {
