@@ -211,6 +211,17 @@ variable "alarm_email" {
   default     = ""
 }
 
+variable "alb_access_log_retention_days" {
+  description = "Retention period for ALB access logs in days; set to meet the environment's approved retention policy."
+  type        = number
+  default     = 365
+
+  validation {
+    condition     = var.alb_access_log_retention_days >= 1 && floor(var.alb_access_log_retention_days) == var.alb_access_log_retention_days
+    error_message = "alb_access_log_retention_days must be a positive whole number."
+  }
+}
+
 variable "ecs_cpu_alarm_percent" {
   description = "Average ECS service CPU utilization percentage that triggers an alarm."
   type        = number

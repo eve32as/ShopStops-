@@ -129,6 +129,9 @@ new plan artifact, and approve the protected environment. The apply job waits
 for that approval and applies only the plan generated in its own run. For
 application rollout, first populate secrets and complete the
 migration/bootstrap steps below; only then select `deploy_application`.
+Choose the approved ALB access-log retention period in the workflow input; it
+defaults to 365 days and is applied through Terraform's
+`alb_access_log_retention_days` variable.
 
 This workflow is scaffolding, not evidence of production readiness. It does not
 create the AWS account, state bucket, IAM roles, OIDC application/users, ECR
@@ -303,9 +306,10 @@ not a CI bypass.
   dashboards before launch.
 - CloudWatch application and RDS log groups use a rotated customer-managed KMS
   key. ALB access logs are enabled to an environment-specific private S3 bucket
-  using SSE-S3 because ALB log delivery does not support SSE-KMS. Set and review
-  the bucket's approved retention/lifecycle policy, then verify delivery and
-  access controls in the target AWS account before launch.
+  using SSE-S3 because ALB log delivery does not support SSE-KMS. The bucket
+  lifecycle expires logs after `alb_access_log_retention_days` (365 days by
+  default); set this to the approved policy and verify delivery and access
+  controls in the target AWS account before launch.
 - The migration runner is tested on a fresh database and a data-preserving
   008-to-009 upgrade in CI. A production owner must still validate its behavior
   against the selected RDS version and rehearse restore and rollback.

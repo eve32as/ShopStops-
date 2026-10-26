@@ -81,6 +81,23 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "alb_access_logs" 
   }
 }
 
+resource "aws_s3_bucket_lifecycle_configuration" "alb_access_logs" {
+  bucket = aws_s3_bucket.alb_access_logs.id
+
+  rule {
+    id     = "expire-alb-access-logs"
+    status = "Enabled"
+
+    filter {
+      prefix = "alb/"
+    }
+
+    expiration {
+      days = var.alb_access_log_retention_days
+    }
+  }
+}
+
 resource "aws_s3_bucket_policy" "alb_access_logs" {
   bucket = aws_s3_bucket.alb_access_logs.id
   policy = jsonencode({

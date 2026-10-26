@@ -30,6 +30,11 @@ on:
         required: true
         type: boolean
         default: false
+      alb_access_log_retention_days:
+        description: Approved ALB access-log retention period in days
+        required: true
+        type: number
+        default: 365
 
 permissions:
   contents: read
@@ -61,6 +66,7 @@ jobs:
       TF_VAR_gateway_image: ${{ vars.TF_VAR_gateway_image }}
       TF_VAR_migration_image: ${{ vars.TF_VAR_migration_image }}
       TF_VAR_db_engine_version: ${{ vars.TF_VAR_db_engine_version }}
+      TF_VAR_alb_access_log_retention_days: ${{ inputs.alb_access_log_retention_days }}
       TF_VAR_enable_stripe: ${{ inputs.enable_stripe }}
       TF_VAR_deploy_application: ${{ inputs.deploy_application }}
     steps:
@@ -132,6 +138,7 @@ jobs:
       TF_VAR_gateway_image: ${{ vars.TF_VAR_gateway_image }}
       TF_VAR_migration_image: ${{ vars.TF_VAR_migration_image }}
       TF_VAR_db_engine_version: ${{ vars.TF_VAR_db_engine_version }}
+      TF_VAR_alb_access_log_retention_days: ${{ inputs.alb_access_log_retention_days }}
       TF_VAR_enable_stripe: ${{ inputs.enable_stripe }}
       TF_VAR_deploy_application: ${{ inputs.deploy_application }}
     steps:
