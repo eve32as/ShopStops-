@@ -152,8 +152,9 @@ returned to the authenticated customer.
 
 Starter clients are in `apps/mobile` (Expo iOS/Android) and `apps/admin` (Vite
 web). The mobile client provides nearby-store discovery, checkout/payment,
-assigned-route viewing and foreground GPS sharing, and merchant subscription
-setup. The admin client provides the existing full-refund operation. Both
+shopper delivery tracking on native maps, assigned-stop maps and foreground GPS
+sharing for drivers, and merchant subscription setup. The admin client provides
+the existing full-refund operation. Both
 expect an identity-aware public gateway to validate user session tokens and
 inject backend actor/role headers. Neither client may receive the backend
 Stripe secret or internal API token.
@@ -162,7 +163,9 @@ Run the mobile client from `apps/mobile` with `npm ci`, then use
 `npx expo run:ios` or `npx expo run:android` to create a development build.
 Run the admin client from `apps/admin` with `npm ci` and `npm run dev`. Configure
 `EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY` for mobile PaymentSheet flows. Checkout
-requires existing order IDs because catalog/order-creation endpoints and an
-identity gateway are not implemented here. Driver progress actions, background
-GPS, full merchant operations, admin transaction/dispute search, and real-time
-updates also remain follow-on work.
+requires existing order IDs. The native map uses the platform's default map
+provider without binding the map UI to a vendor. iOS uses Apple Maps; Android
+requires a restricted Google Maps API key supplied as `GOOGLE_MAPS_API_KEY` when
+building the native app. Do not commit the key. Driver stop maps show ordered
+stop context and can hand the next stop to an installed native navigation app;
+they do not provide turn-by-turn navigation.

@@ -5,6 +5,7 @@ import {
   Image,
   ActivityIndicator,
   KeyboardAvoidingView,
+  Linking,
   Platform,
   Pressable,
   ScrollView,
@@ -14,6 +15,7 @@ import {
   View,
 } from "react-native";
 import { ApiError, apiRequest, idempotencyKey, type ApiSettings } from "../src/api";
+import { DeliveryMap, type DeliveryMapMarker, type MapCoordinate } from "../src/DeliveryMap";
 
 type Role = "Shopper" | "Driver" | "Merchant";
 type NearbyMerchant = {
@@ -137,7 +139,7 @@ export default function HomeScreen() {
   const [shopperTracking, setShopperTracking] = useState<ShopperTracking | null>(null);
   const [shopperTrackingEnabled, setShopperTrackingEnabled] = useState(false);
   const [shopperTrackingError, setShopperTrackingError] = useState("");
-  const [trackingMapSize, setTrackingMapSize] = useState({ width: 0, height: 0 });
+  const [liveDriverLocation, setLiveDriverLocation] = useState<MapCoordinate | null>(null);
   const [reroutedCoordinates, setReroutedCoordinates] = useState<
     { latitude: number; longitude: number }[]
   >([]);
@@ -215,6 +217,7 @@ export default function HomeScreen() {
       setShopperTracking(null);
       setShopperTrackingEnabled(false);
       setTrackingOrderID("");
+      setLiveDriverLocation(null);
       setSubscription(null);
       setMerchantCatalog([]);
       setMerchantCatalogDrafts({});
@@ -439,7 +442,10 @@ export default function HomeScreen() {
     const result = await run(() =>
       apiRequest<Route>(settings, `driver/routes/${encodeURIComponent(routeId.trim())}`),
     );
-    if (result) setRoute(result);
+    if (result) {
+      setRoute(result);
+      setReroutedCoordinates([]);
+    }
   }
 
   async function updateRouteStop(stopId: string, type: "arrive" | "complete") {
@@ -506,6 +512,10 @@ export default function HomeScreen() {
       routeLocation.current = await Location.getCurrentPositionAsync({
         accuracy: Location.Accuracy.Balanced,
       });
+      setLiveDriverLocation({
+        latitude: routeLocation.current.coords.latitude,
+        longitude: routeLocation.current.coords.longitude,
+      });
       routeSubscription.current = await Location.watchPositionAsync(
         {
           accuracy: Location.Accuracy.Balanced,
@@ -514,6 +524,10 @@ export default function HomeScreen() {
         },
         (position) => {
           routeLocation.current = position;
+          setLiveDriverLocation({
+            latitude: position.coords.latitude,
+            longitude: position.coords.longitude,
+          });
         },
       );
       setTracking(true);
@@ -528,6 +542,7 @@ export default function HomeScreen() {
     routeSubscription.current = null;
     routeLocation.current = null;
     lastReportedAt.current = 0;
+    setLiveDriverLocation(null);
     setTracking(false);
     setMessage("Location sharing stopped.");
   }
@@ -739,53 +754,75 @@ export default function HomeScreen() {
     .slice()
     .sort((a, b) => a.sequence - b.sequence)
     .find((stop) => stop.status !== "completed");
-  const liveMapCoordinates = shopperTracking?.routeCoordinates ?? [];
-  const sampledMapCoordinates = liveMapCoordinates.length > 100
-    ? liveMapCoordinates.filter((_, index) =>
-        index % Math.ceil(liveMapCoordinates.length / 100) === 0)
-    : liveMapCoordinates;
-  const mapCoordinates = shopperTracking?.driverLocation
-    ? [shopperTracking.driverLocation, ...sampledMapCoordinates]
-    : sampledMapCoordinates;
-  const mapBounds = mapCoordinates.reduce(
-    (bounds, point) => ({
-      minLatitude: Math.min(bounds.minLatitude, point.latitude),
-      maxLatitude: Math.max(bounds.maxLatitude, point.latitude),
-      minLongitude: Math.min(bounds.minLongitude, point.longitude),
-      maxLongitude: Math.max(bounds.maxLongitude, point.longitude),
-    }),
-    {
-      minLatitude: Number.POSITIVE_INFINITY,
-      maxLatitude: Number.NEGATIVE_INFINITY,
-      minLongitude: Number.POSITIVE_INFINITY,
-      maxLongitude: Number.NEGATIVE_INFINITY,
-    },
-  );
-  const mapPositions = mapCoordinates.map((point) => {
-    const longitudeSpan = mapBounds.maxLongitude - mapBounds.minLongitude || 0.001;
-    const latitudeSpan = mapBounds.maxLatitude - mapBounds.minLatitude || 0.001;
-    return {
-      x: 14 + ((point.longitude - mapBounds.minLongitude) / longitudeSpan) * 72,
-      y: 14 + (1 - (point.latitude - mapBounds.minLatitude) / latitudeSpan) * 72,
-    };
-  });
-  const routeSegments = mapPositions.slice(1).map((point, index) => {
-    const previous = mapPositions[index];
-    const x1 = (previous.x / 100) * trackingMapSize.width;
-    const y1 = (previous.y / 100) * trackingMapSize.height;
-    const x2 = (point.x / 100) * trackingMapSize.width;
-    const y2 = (point.y / 100) * trackingMapSize.height;
-    const dx = x2 - x1;
-    const dy = y2 - y1;
-    const length = Math.hypot(dx, dy);
-    return {
-      key: `segment-${index}`,
-      left: (x1 + x2 - length) / 2,
-      top: (y1 + y2) / 2,
-      width: length,
-      angle: Math.atan2(dy, dx),
-    };
-  });
+  const shopperRouteCoordinates = shopperTracking?.routeCoordinates ?? [];
+  const shopperDriverLocation = shopperTracking?.driverLocation;
+  const locationAge = shopperTracking?.lastUpdatedAt
+    ? Date.now() - Date.parse(shopperTracking.lastUpdatedAt)
+    : Number.POSITIVE_INFINITY;
+  const shopperLocationIsStale = !shopperDriverLocation ||
+    !Number.isFinite(locationAge) || locationAge > 60_000;
+  const shopperMapMarkers: DeliveryMapMarker[] = [
+    ...(shopperDriverLocation
+      ? [{
+          id: "driver",
+          coordinate: shopperDriverLocation,
+          title: "Your driver",
+          description: shopperLocationIsStale ? "Last location is more than 60 seconds old" : "Current driver location",
+          kind: "driver" as const,
+        }]
+      : []),
+    ...(shopperRouteCoordinates.length > 0
+      ? [{
+          id: "dropoff",
+          coordinate: shopperRouteCoordinates[shopperRouteCoordinates.length - 1],
+          title: "Delivery destination",
+          kind: "dropoff" as const,
+        }]
+      : []),
+  ];
+  const driverRouteCoordinates = reroutedCoordinates.length > 1
+    ? reroutedCoordinates
+    : (route?.stops ?? []).map(({ latitude: stopLatitude, longitude: stopLongitude }) => ({
+        latitude: stopLatitude,
+        longitude: stopLongitude,
+      }));
+  const driverMapMarkers: DeliveryMapMarker[] = [
+    ...(liveDriverLocation
+      ? [{
+          id: "driver",
+          coordinate: liveDriverLocation,
+          title: "Your location",
+          description: tracking ? "Location sharing is active" : "Current device location",
+          kind: "driver" as const,
+        }]
+      : []),
+    ...(route?.stops ?? []).map((stop) => ({
+      id: stop.id,
+      coordinate: { latitude: stop.latitude, longitude: stop.longitude },
+      title: `${stop.type === "dropoff" ? "Drop-off" : "Pickup"} · stop ${stop.sequence}`,
+      description: stop.status === "completed"
+        ? "Completed"
+        : stop.id === activeStop?.id
+          ? "Next stop"
+          : stop.status,
+      kind: (stop.type === "dropoff" ? "dropoff" : "pickup") as "dropoff" | "pickup",
+      active: stop.id === activeStop?.id,
+      sequence: stop.sequence,
+    })),
+  ];
+
+  async function openActiveStopDirections() {
+    if (!activeStop) return;
+    const destination = `${activeStop.latitude},${activeStop.longitude}`;
+    const url = Platform.OS === "ios"
+      ? `maps://?daddr=${destination}&dirflg=d`
+      : `geo:${destination}?q=${destination}`;
+    try {
+      await Linking.openURL(url);
+    } catch {
+      setMessage("No compatible maps app is available for directions to the next stop.");
+    }
+  }
 
   return (
     <KeyboardAvoidingView
@@ -1065,55 +1102,29 @@ export default function HomeScreen() {
                   ) : (
                     <Text style={styles.resultSub}>Driver location is not available yet.</Text>
                   )}
-                  {shopperTracking.driverLocation ? (
-                    <Text style={styles.resultSub}>
-                      Driver · {shopperTracking.driverLocation.latitude.toFixed(5)},{" "}
-                      {shopperTracking.driverLocation.longitude.toFixed(5)}
-                    </Text>
-                  ) : null}
-                  {shopperTracking.driverLocation ? (
-                    <View
-                      accessibilityLabel="Approximate delivery route map"
-                      onLayout={(event) => setTrackingMapSize({
-                        width: event.nativeEvent.layout.width,
-                        height: event.nativeEvent.layout.height,
-                      })}
-                      style={styles.trackingMap}
-                    >
-                      {routeSegments.map((segment) => (
-                        <View
-                          key={segment.key}
-                          style={[
-                            styles.trackingMapLine,
-                            {
-                              left: segment.left,
-                              top: segment.top,
-                              width: segment.width,
-                              transform: [{ rotate: `${segment.angle}rad` }],
-                            },
-                          ]}
-                        />
-                      ))}
-                      {mapPositions.map((point, index) => (
-                        <View
-                          key={`point-${index}`}
-                          style={[
-                            styles.trackingMapPoint,
-                            index === 0 && styles.trackingMapDriver,
-                            { left: `${point.x}%`, top: `${point.y}%` },
-                          ]}
-                        />
-                      ))}
-                    </View>
-                  ) : null}
+                  <Text style={styles.resultSub}>
+                    {shopperDriverLocation
+                      ? shopperLocationIsStale
+                        ? "Driver location is stale · waiting for a fresh update."
+                        : "Driver location is current."
+                      : "No recent driver location is available yet."}
+                  </Text>
+                  <DeliveryMap
+                    accessibleLabel="Live delivery route map"
+                    coordinates={shopperRouteCoordinates}
+                    markers={shopperMapMarkers}
+                    fitKey={`shopper-${trackingOrderID}-${shopperRouteCoordinates.length}`}
+                    emptyMessage="A map will appear when route coordinates or a recent driver location are available."
+                  />
                   {shopperTracking.lastUpdatedAt ? (
-                    <Text style={styles.tinyNote}>
-                      Location updated {new Date(shopperTracking.lastUpdatedAt).toLocaleTimeString()}
+                    <Text style={styles.tinyNote} accessibilityLiveRegion="polite">
+                      {shopperLocationIsStale ? "Last known location" : "Location updated"}{" "}
+                      {new Date(shopperTracking.lastUpdatedAt).toLocaleTimeString()}
                     </Text>
                   ) : null}
                   {shopperTracking.routeCoordinates?.length ? (
                     <Text style={styles.tinyNote}>
-                      Route path refreshed · {shopperTracking.routeCoordinates.length} points
+                      Route path · {shopperTracking.routeCoordinates.length} points
                     </Text>
                   ) : null}
                 </View>
@@ -1130,11 +1141,47 @@ export default function HomeScreen() {
               Load your assigned route and share location every five seconds while this screen is
               open. Stop sequencing is controlled by the server.
             </Text>
-            <Field label="Assigned route ID" onChangeText={setRouteId} value={routeId} />
+            <Field
+              label="Assigned route ID"
+              onChangeText={(value) => {
+                setRouteId(value);
+                setRoute(null);
+                setReroutedCoordinates([]);
+              }}
+              value={routeId}
+            />
             <ActionButton disabled={busy} label="Load route" onPress={() => void loadRoute()} />
             {route ? (
               <View style={styles.routeBox}>
                 <Text style={styles.checkoutLabel}>ROUTE · {route.status.toUpperCase()}</Text>
+                {activeStop ? (
+                  <View style={styles.activeStopCard}>
+                    <Text style={styles.activeStopEyebrow}>NEXT STOP · {activeStop.sequence}</Text>
+                    <Text style={styles.resultTitle}>
+                      {activeStop.type === "dropoff" ? "Customer drop-off" : "Pickup"}
+                    </Text>
+                    <Text style={styles.resultSub}>
+                      {activeStop.status} · {activeStop.latitude.toFixed(5)}, {activeStop.longitude.toFixed(5)}
+                    </Text>
+                    <ActionButton
+                      label="Open directions"
+                      onPress={() => void openActiveStopDirections()}
+                      secondary
+                    />
+                  </View>
+                ) : null}
+                <DeliveryMap
+                  accessibleLabel="Assigned driver route map"
+                  coordinates={driverRouteCoordinates}
+                  markers={driverMapMarkers}
+                  fitKey={`driver-${route.id}-${route.status}-${reroutedCoordinates.length}`}
+                  emptyMessage="This assigned route has no mappable stop coordinates."
+                />
+                {reroutedCoordinates.length < 2 ? (
+                  <Text style={styles.tinyNote}>
+                    The line connects assigned stops in order; it is not turn-by-turn road navigation.
+                  </Text>
+                ) : null}
                 {route.stops
                   .slice()
                   .sort((a, b) => a.sequence - b.sequence)
@@ -1464,11 +1511,9 @@ const styles = StyleSheet.create({
   trackingCard: { backgroundColor: "#f8f9f7", borderRadius: 13, padding: 14, marginTop: 16 },
   trackingEta: { color: "#19352f", fontSize: 22, fontWeight: "900", marginBottom: 7 },
   trackingError: { color: "#a13c2a", fontSize: 12, lineHeight: 17, marginTop: 10 },
-  trackingMap: { height: 190, backgroundColor: "#e8eee9", borderRadius: 12, marginTop: 12, overflow: "hidden" },
-  trackingMapLine: { position: "absolute", height: 3, backgroundColor: "#397457", borderRadius: 2 },
-  trackingMapPoint: { position: "absolute", width: 8, height: 8, marginLeft: -4, marginTop: -4, borderRadius: 4, backgroundColor: "#e5653d", borderWidth: 1, borderColor: "#fff" },
-  trackingMapDriver: { width: 14, height: 14, marginLeft: -7, marginTop: -7, borderRadius: 7, backgroundColor: "#19352f", borderWidth: 2, borderColor: "#fff" },
   routeBox: { backgroundColor: "#f8f9f7", borderRadius: 13, padding: 14, marginTop: 14 },
+  activeStopCard: { backgroundColor: "#e7f1eb", borderRadius: 11, padding: 12, marginBottom: 5 },
+  activeStopEyebrow: { color: "#397457", fontSize: 9, fontWeight: "900", letterSpacing: 1, marginBottom: 5 },
   stopActions: { marginTop: 3 },
   checkoutLabel: { color: "#77857f", fontSize: 9, fontWeight: "800", letterSpacing: 1.2, marginBottom: 11 },
   invoiceRow: { flexDirection: "row", justifyContent: "space-between", paddingVertical: 7 },

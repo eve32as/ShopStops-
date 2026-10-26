@@ -294,14 +294,18 @@ worker requires `DATABASE_URL`, `SHOPSTOPS_DRIVER_MILEAGE_RATE_CENTS_PER_MILE`,
 SMTP username/password are optional but must be configured together.
 
 The OpenAPI contract describes subscription, refund, and webhook flows. The
-`apps/mobile` Expo client targets iOS and Android and exposes current shopper,
-driver, and merchant billing API flows; `apps/admin` provides the full-refund
-operation and driver-alert review queue. Both expect an external trusted identity gateway and
-Stripe publishable key configuration. The clients are API-backed MVP
-foundations, not complete consumer, driver, merchant, or admin products.
-Native identity, background location, admin search/zone/reporting controls,
-production routing, and
-real-time integrations remain unimplemented.
+`apps/mobile` Expo client targets iOS and Android and includes shopper delivery
+tracking and assigned-driver stop maps using a provider-neutral native map
+component. It fits route/stop geometry, displays fresh or stale driver location,
+and can hand the active stop to an installed navigation app; it does not provide
+turn-by-turn navigation. iOS uses its platform map provider, while Android
+builds require a restricted `GOOGLE_MAPS_API_KEY` provided through Expo config.
+The admin client provides the full-refund operation and driver-alert review
+queue. Both clients expect an external trusted identity gateway, and the mobile
+client also requires Stripe publishable key configuration. The clients are
+API-backed MVP foundations, not complete consumer, driver, merchant, or admin
+products. Native identity, background location, admin search/zone/reporting
+controls, production routing, and real-time integrations remain unimplemented.
 
 For rollout, configure the initial Union Market corridor as the only enabled
 zone and cap onboarding operationally at 15 merchants and 30 screened drivers.
