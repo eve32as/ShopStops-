@@ -160,6 +160,7 @@ type DriverCashoutSummary = {
 
 const stripeKeyConfigured = Boolean(process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY);
 const googleMapsApiKey = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY?.trim() ?? "";
+const configuredGatewayUrl = process.env.EXPO_PUBLIC_GATEWAY_URL?.trim() ?? "";
 const shopperOrderIDsKey = "shopstops.shopper-order-ids.v1";
 const userSessionKey = "shopstops.user-session.v1";
 
@@ -194,7 +195,7 @@ export default function HomeScreen() {
   const [role, setRole] = useState<Role>("Shopper");
   const [appActive, setAppActive] = useState(AppState.currentState === "active");
   const [connectionOpen, setConnectionOpen] = useState(true);
-  const [gatewayUrl, setGatewayUrl] = useState("");
+  const [gatewayUrl, setGatewayUrl] = useState(configuredGatewayUrl);
   const [sessionToken, setSessionToken] = useState("");
   const settings = useMemo<ApiSettings>(
     () => ({ baseUrl: gatewayUrl, sessionToken }),

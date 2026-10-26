@@ -311,9 +311,14 @@ Stripe secret or internal API token.
 Run the mobile client from `apps/mobile` with `npm ci`, then use
 `npx expo run:ios` or `npx expo run:android` to create a development build.
 Run the admin client from `apps/admin` with `npm ci` and `npm run dev`. Configure
-`EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY` for mobile PaymentSheet flows. The shopper
-client can browse visible store catalogs and create orders before checkout; it
-requires `EXPO_PUBLIC_OIDC_ISSUER` and `EXPO_PUBLIC_OIDC_CLIENT_ID` for native
+`EXPO_PUBLIC_GATEWAY_URL` in the mobile build environment to prefill the HTTPS
+staging gateway URL; users can still edit it in the app. Configure
+`EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY` for mobile PaymentSheet flows. These
+`EXPO_PUBLIC_*` values are embedded in the client bundle and must never contain
+secrets; restrict public API keys to the required APIs and app identifiers.
+The shopper client can browse visible store catalogs and create orders before
+checkout; it requires `EXPO_PUBLIC_OIDC_ISSUER` and
+`EXPO_PUBLIC_OIDC_CLIENT_ID` for native
 authorization-code-with-PKCE sign-in. Register the `shopstops://auth` redirect URI
 for the iOS/Android public client and configure the provider to issue access tokens
 with the audience and role/actor claims expected by the gateway. The app keeps
