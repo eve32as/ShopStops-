@@ -50,6 +50,46 @@ paths:
                   $ref: '#/components/schemas/NearbyMerchant'
         '404':
           description: Anchor store not found
+  /stores/nearby-restaurants:
+    get:
+      operationId: findNearbyRestaurants
+      summary: Find eligible restaurants near the authenticated shopper
+      description: Returns visible restaurants inside enabled delivery zones, ordered by distance. Requires the customer role. Coordinates are used only for this request.
+      parameters:
+        - in: query
+          name: latitude
+          required: true
+          schema:
+            type: number
+            minimum: -90
+            maximum: 90
+        - in: query
+          name: longitude
+          required: true
+          schema:
+            type: number
+            minimum: -180
+            maximum: 180
+        - in: query
+          name: radiusMeters
+          schema:
+            type: integer
+            minimum: 100
+            maximum: 20000
+            default: 5000
+      responses:
+        '200':
+          description: Nearby active restaurants with visible storefronts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/NearbyMerchant'
+        '400':
+          description: Invalid coordinates or search radius
+        '403':
+          description: Customer role required
   /stores/{storeLocationId}/catalog:
     get:
       operationId: getStoreCatalog
@@ -346,6 +386,18 @@ paths:
           description: Driver role is missing or route is not assigned to this driver
         '404':
           description: Route not found
+  /driver/routes/active:
+    get:
+      operationId: getActiveDriverRoute
+      summary: Find the authenticated driver's active assigned route
+      description: Prefers an in-progress route over a routed-but-not-started assignment.
+      responses:
+        '200':
+          description: The active assigned route and ordered stops
+        '403':
+          description: Driver role required
+        '404':
+          description: No active assigned route
   /driver/routes/{routeId}/location:
     post:
       operationId: recordDriverLocation
@@ -934,13 +986,13 @@ components:
           type: string
         merchantType:
           type: string
-          enum: [retail, grocery]
+          enum: [restaurant, retail, grocery]
         storeLocationId:
           type: string
           format: uuid
         distanceMeters:
           type: number
-          maximum: 500
+          maximum: 20000
     CatalogItem:
       type: object
       required: [id, name, description, unitPriceCents, volumeLiters]

@@ -22,6 +22,11 @@ type fakeRepository struct {
 	nearbyErr             error
 	nearbyStoreID         string
 	nearbyRadius          int
+	restaurants           []NearbyMerchant
+	restaurantsErr        error
+	restaurantsLatitude   float64
+	restaurantsLongitude  float64
+	restaurantsRadius     int
 	catalog               []CatalogItem
 	catalogErr            error
 	catalogStoreID        string
@@ -49,6 +54,9 @@ type fakeRepository struct {
 	route                 routeResponse
 	routeErr              error
 	routeID               string
+	activeRouteID         string
+	activeRouteErr        error
+	activeRouteDriver     string
 	driverRef             string
 	locationID            int64
 	locationErr           error
@@ -119,6 +127,13 @@ func (f *fakeRepository) NearbyMerchants(
 ) ([]NearbyMerchant, error) {
 	f.nearbyStoreID, f.nearbyRadius = storeID, radius
 	return f.nearby, f.nearbyErr
+}
+func (f *fakeRepository) NearbyRestaurants(
+	_ context.Context, latitude, longitude float64, radius int,
+) ([]NearbyMerchant, error) {
+	f.restaurantsLatitude, f.restaurantsLongitude, f.restaurantsRadius =
+		latitude, longitude, radius
+	return f.restaurants, f.restaurantsErr
 }
 func (f *fakeRepository) CatalogItems(
 	_ context.Context, storeID string,
@@ -213,6 +228,12 @@ func (f *fakeRepository) DriverRoute(
 	f.routeID, f.driverRef = routeID, driverRef
 	return f.route, f.routeErr
 }
+func (f *fakeRepository) DriverActiveRoute(
+	_ context.Context, driverRef string,
+) (string, error) {
+	f.activeRouteDriver = driverRef
+	return f.activeRouteID, f.activeRouteErr
+}
 func (f *fakeRepository) RecordDriverLocation(
 	_ context.Context, routeID, driverRef string, location driverLocationRequest,
 ) (int64, error) {
@@ -299,6 +320,90 @@ func TestSensitiveEndpointsRequireMatchingActorRole(t *testing.T) {
 		{name: "dispatch bundle", method: http.MethodPost, path: "/dispatch/bundles", role: "customer"},
 		{name: "route creation", method: http.MethodPost, path: "/checkouts/00000000-0000-0000-0000-000000000001/route", role: "customer"},
 		{name: "missing customer role", method: http.MethodPost, path: "/orders", role: ""},
+	}
+
+	func TestNearbyRestaurantsUsesCustomerLocationAndBounds(t *testing.T) {
+		repository := &fakeRepository{
+			restaurants: []NearbyMerchant{{MerchantID: "merchant-1", StoreLocation: "store-1"}},
+		}
+		handler := New(repository, strings.Repeat("t", 32),
+			slog.New(slog.NewTextHandler(io.Discard, nil)))
+		request := httptest.NewRequest(http.MethodGet,
+			"/stores/nearby-restaurants?latitude=38.9&longitude=-77.0&radiusMeters=2500", nil)
+		request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+		request.Header.Set("X-ShopStops-Actor", "customer-1")
+		request.Header.Set("X-ShopStops-Actor-Role", "customer")
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusOK || repository.restaurantsLatitude != 38.9 ||
+			repository.restaurantsLongitude != -77 || repository.restaurantsRadius != 2500 {
+			t.Fatalf("status/location/radius = %d/%.2f/%.2f/%d",
+				recorder.Code, repository.restaurantsLatitude,
+				repository.restaurantsLongitude, repository.restaurantsRadius)
+		}
+	}
+
+	func TestNearbyRestaurantsRejectsInvalidLocationAndRole(t *testing.T) {
+		handler := New(&fakeRepository{}, strings.Repeat("t", 32),
+			slog.New(slog.NewTextHandler(io.Discard, nil)))
+		for _, test := range []struct {
+			name string
+			path string
+			role string
+			want int
+		}{
+			{name: "invalid latitude", path: "/stores/nearby-restaurants?latitude=91&longitude=0", role: "customer", want: http.StatusBadRequest},
+			{name: "invalid radius", path: "/stores/nearby-restaurants?latitude=0&longitude=0&radiusMeters=30000", role: "customer", want: http.StatusBadRequest},
+			{name: "wrong role", path: "/stores/nearby-restaurants?latitude=0&longitude=0", role: "driver", want: http.StatusForbidden},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				request := httptest.NewRequest(http.MethodGet, test.path, nil)
+				request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+				request.Header.Set("X-ShopStops-Actor", "actor-1")
+				request.Header.Set("X-ShopStops-Actor-Role", test.role)
+				recorder := httptest.NewRecorder()
+				handler.ServeHTTP(recorder, request)
+				if recorder.Code != test.want {
+					t.Fatalf("status = %d, want %d; body=%s", recorder.Code, test.want, recorder.Body)
+				}
+			})
+		}
+	}
+
+	func TestGetActiveDriverRouteRejectsNonDriverRole(t *testing.T) {
+		handler := New(&fakeRepository{}, strings.Repeat("t", 32),
+			slog.New(slog.NewTextHandler(io.Discard, nil)))
+		request := httptest.NewRequest(http.MethodGet, "/driver/routes/active", nil)
+		request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+		request.Header.Set("X-ShopStops-Actor", "customer-1")
+		request.Header.Set("X-ShopStops-Actor-Role", "customer")
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want %d", recorder.Code, http.StatusForbidden)
+		}
+	}
+
+	func TestGetActiveDriverRouteUsesAuthenticatedDriver(t *testing.T) {
+		repository := &fakeRepository{
+			activeRouteID: "00000000-0000-0000-0000-000000000010",
+			route: routeResponse{
+				ID: "00000000-0000-0000-0000-000000000010", Status: "in_progress",
+			},
+		}
+		handler := New(repository, strings.Repeat("t", 32),
+			slog.New(slog.NewTextHandler(io.Discard, nil)))
+		request := httptest.NewRequest(http.MethodGet, "/driver/routes/active", nil)
+		request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+		request.Header.Set("X-ShopStops-Actor", "driver-42")
+		request.Header.Set("X-ShopStops-Actor-Role", "driver")
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusOK || repository.activeRouteDriver != "driver-42" ||
+			repository.routeID != repository.activeRouteID {
+			t.Fatalf("status/driver/route = %d/%q/%q",
+				recorder.Code, repository.activeRouteDriver, repository.routeID)
+		}
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

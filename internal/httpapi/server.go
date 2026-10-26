@@ -46,6 +46,7 @@ type OSRMRouter interface {
 type Repository interface {
 	PingContext(context.Context) error
 	NearbyMerchants(context.Context, string, int) ([]NearbyMerchant, error)
+	NearbyRestaurants(context.Context, float64, float64, int) ([]NearbyMerchant, error)
 	CatalogItems(context.Context, string) ([]CatalogItem, error)
 	MerchantStoreLocations(context.Context, string) ([]MerchantStoreLocation, error)
 	MerchantCatalog(context.Context, string) ([]MerchantCatalogItem, error)
@@ -61,6 +62,7 @@ type Repository interface {
 	CreateBundle(context.Context, bundleRequest, string) (bundleResponse, error)
 	CreateCheckout(context.Context, checkoutRequest, string, string) (checkoutResponse, error)
 	DriverRoute(context.Context, string, string) (routeResponse, error)
+	DriverActiveRoute(context.Context, string) (string, error)
 	RecordDriverLocation(context.Context, string, string, driverLocationRequest) (int64, error)
 	RecordDriverStopEvent(
 		context.Context, string, string, string, driverStopEventRequest,
@@ -331,6 +333,7 @@ func (s *Server) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.Handle("GET /stores/{storeLocationId}/nearby-merchants", s.authorized(http.HandlerFunc(s.nearbyMerchants)))
+	mux.Handle("GET /stores/nearby-restaurants", s.authorized(http.HandlerFunc(s.nearbyRestaurants)))
 	mux.Handle("GET /stores/{storeLocationId}/catalog", s.authorized(http.HandlerFunc(s.catalogItems)))
 	mux.Handle("POST /orders", s.authorized(http.HandlerFunc(s.createCustomerOrder)))
 	mux.Handle("GET /merchant/store-locations", s.authorized(http.HandlerFunc(s.merchantStoreLocations)))
@@ -339,6 +342,7 @@ func (s *Server) handler() http.Handler {
 	mux.Handle("PATCH /merchant/catalog/{itemId}", s.authorized(http.HandlerFunc(s.updateMerchantCatalogItem)))
 	mux.Handle("POST /dispatch/bundles", s.authorized(http.HandlerFunc(s.createBundle)))
 	mux.Handle("GET /driver/routes/{routeId}", s.authorized(http.HandlerFunc(s.getDriverRoute)))
+	mux.Handle("GET /driver/routes/active", s.authorized(http.HandlerFunc(s.getActiveDriverRoute)))
 	mux.Handle("POST /driver/routes/{routeId}/location", s.authorized(http.HandlerFunc(s.recordDriverLocation)))
 	mux.Handle("POST /driver/routes/{routeId}/stops/{stopId}/events", s.authorized(http.HandlerFunc(s.recordDriverStopEvent)))
 	mux.Handle("POST /driver/routes/{routeId}/reroute", s.authorized(http.HandlerFunc(s.rerouteDriver)))
@@ -414,6 +418,37 @@ func (s *Server) nearbyMerchants(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, merchants)
+}
+
+func (s *Server) nearbyRestaurants(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.authorizedActorRole(w, r, "customer"); !ok {
+		return
+	}
+	latitude, latErr := strconv.ParseFloat(r.URL.Query().Get("latitude"), 64)
+	longitude, lonErr := strconv.ParseFloat(r.URL.Query().Get("longitude"), 64)
+	if latErr != nil || lonErr != nil || math.IsNaN(latitude) || math.IsInf(latitude, 0) ||
+		math.IsNaN(longitude) || math.IsInf(longitude, 0) ||
+		latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180 {
+		writeError(w, http.StatusBadRequest, "valid latitude and longitude are required")
+		return
+	}
+	radius := 5000
+	if raw := r.URL.Query().Get("radiusMeters"); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < 100 || value > 20000 {
+			writeError(w, http.StatusBadRequest, "radiusMeters must be between 100 and 20000")
+			return
+		}
+		radius = value
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	restaurants, err := s.repo.NearbyRestaurants(ctx, latitude, longitude, radius)
+	if err != nil {
+		s.databaseError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, restaurants)
 }
 
 func (s *Server) catalogItems(w http.ResponseWriter, r *http.Request) {
@@ -999,6 +1034,7 @@ func (s *Server) getDriverRoute(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+
 	if !isUUID(routeID) {
 		writeError(w, http.StatusBadRequest, "valid route and authenticated driver are required")
 		return
@@ -1019,6 +1055,33 @@ func (s *Server) getDriverRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, route)
+}
+
+func (s *Server) getActiveDriverRoute(w http.ResponseWriter, r *http.Request) {
+	driverRef, ok := s.authorizedActorRole(w, r, "driver")
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	routeID, err := s.repo.DriverActiveRoute(ctx, driverRef)
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, http.StatusNotFound, "no active assigned route")
+		return
+	}
+	if err != nil {
+		s.databaseError(w, err)
+		return
+	}
+	route, err := s.repo.DriverRoute(ctx, routeID, driverRef)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		writeError(w, http.StatusNotFound, "no active assigned route")
+	case err != nil:
+		s.databaseError(w, err)
+	default:
+		writeJSON(w, http.StatusOK, route)
+	}
 }
 
 func (s *Server) recordDriverLocation(w http.ResponseWriter, r *http.Request) {
@@ -1246,6 +1309,56 @@ func (p *PostgresRepository) NearbyMerchants(
 		return nil, err
 	}
 	return merchants, nil
+}
+
+func (p *PostgresRepository) NearbyRestaurants(
+	ctx context.Context, latitude, longitude float64, radius int,
+) ([]NearbyMerchant, error) {
+	rows, err := p.db.QueryContext(ctx, `
+		SELECT merchant.id::text, merchant.name, merchant.merchant_type,
+		       store.id::text,
+		       ST_Distance(
+		           store.location,
+		           ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography
+		       )
+		FROM store_locations store
+		JOIN merchants merchant
+		  ON merchant.id = store.merchant_id AND merchant.active
+		JOIN merchant_storefront_visibility visibility
+		  ON visibility.merchant_id = merchant.id AND visibility.visible
+		WHERE store.active
+		  AND merchant.merchant_type = 'restaurant'
+		  AND ST_DWithin(
+		      store.location,
+		      ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography,
+		      $3
+		  )
+		  AND EXISTS (
+		      SELECT 1 FROM delivery_zones zone
+		      WHERE zone.enabled AND ST_Covers(zone.boundary, store.location::geometry)
+		  )
+		ORDER BY store.location <-> ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography,
+		         store.id
+		LIMIT 50`, longitude, latitude, radius)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	restaurants := make([]NearbyMerchant, 0)
+	for rows.Next() {
+		var restaurant NearbyMerchant
+		if err := rows.Scan(
+			&restaurant.MerchantID, &restaurant.Name, &restaurant.MerchantType,
+			&restaurant.StoreLocation, &restaurant.DistanceMeters,
+		); err != nil {
+			return nil, err
+		}
+		restaurants = append(restaurants, restaurant)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return restaurants, nil
 }
 
 func (p *PostgresRepository) CatalogItems(
@@ -2156,6 +2269,26 @@ func (p *PostgresRepository) DriverRoute(
 		return routeResponse{}, err
 	}
 	return response, nil
+}
+
+func (p *PostgresRepository) DriverActiveRoute(
+	ctx context.Context, driverRef string,
+) (string, error) {
+	var routeID string
+	err := p.db.QueryRowContext(ctx, `
+		SELECT id::text
+		FROM unified_delivery_routes
+		WHERE driver_ref = $1 AND status IN ('routed', 'in_progress')
+		ORDER BY CASE WHEN status = 'in_progress' THEN 0 ELSE 1 END,
+		         created_at DESC, id
+		LIMIT 1`, driverRef).Scan(&routeID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	return routeID, nil
 }
 
 func (p *PostgresRepository) RecordDriverLocation(

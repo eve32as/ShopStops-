@@ -115,6 +115,10 @@ export default function HomeScreen() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [nearby, setNearby] = useState<NearbyMerchant[]>([]);
+  const [nearbyRestaurants, setNearbyRestaurants] = useState<NearbyMerchant[]>([]);
+  const [createdOrders, setCreatedOrders] = useState<
+    { id: string; storeLocationId: string; itemSubtotalCents: number }[]
+  >([]);
   const [catalog, setCatalog] = useState<CatalogItem[]>([]);
   const [catalogStoreID, setCatalogStoreID] = useState("");
   const [quantities, setQuantities] = useState<Record<string, number>>({});
@@ -130,7 +134,6 @@ export default function HomeScreen() {
   const [newItemPrice, setNewItemPrice] = useState("");
   const [newItemVolume, setNewItemVolume] = useState("");
   const [anchorStore, setAnchorStore] = useState("");
-  const [orderIds, setOrderIds] = useState("");
   const [latitude, setLatitude] = useState("");
   const [longitude, setLongitude] = useState("");
   const [routeId, setRouteId] = useState("");
@@ -208,10 +211,11 @@ export default function HomeScreen() {
       checkoutAttempt.current = null;
       orderAttempt.current = null;
       setNearby([]);
+      setNearbyRestaurants([]);
       setCatalog([]);
       setCatalogStoreID("");
       setQuantities({});
-      setOrderIds("");
+      setCreatedOrders([]);
       setCheckout(null);
       setRoute(null);
       setShopperTracking(null);
@@ -292,14 +296,63 @@ export default function HomeScreen() {
     };
   }, [role, settings, shopperTrackingEnabled, trackingOrderID]);
 
-  async function findNearby() {
+  async function useCurrentLocation() {
+    try {
+      const permission = await Location.requestForegroundPermissionsAsync();
+      if (permission.status !== "granted") {
+        setMessage("Allow location access to find nearby stores and set your delivery destination.");
+        return;
+      }
+      const position = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+      setLatitude(String(position.coords.latitude));
+      setLongitude(String(position.coords.longitude));
+      checkoutAttempt.current = null;
+      setNearbyRestaurants([]);
+      setMessage("Current location selected for nearby-store search and delivery destination.");
+    } catch {
+      setMessage("Could not read your location. Check device location services and try again.");
+    }
+  }
+
+  async function findNearbyRestaurants() {
+    const lat = Number(latitude);
+    const lon = Number(longitude);
+    if (!Number.isFinite(lat) || lat < -90 || lat > 90 ||
+        !Number.isFinite(lon) || lon < -180 || lon > 180) {
+      setMessage("Choose your location before searching nearby restaurants.");
+      return;
+    }
     const results = await run(() =>
       apiRequest<NearbyMerchant[]>(
         settings,
-        `stores/${encodeURIComponent(anchorStore)}/nearby-merchants?radiusMeters=500`,
+        `stores/nearby-restaurants?${new URLSearchParams({
+          latitude: String(lat),
+          longitude: String(lon),
+          radiusMeters: "5000",
+        })}`,
+      ),
+    );
+    if (results) setNearbyRestaurants(results);
+  }
+
+  async function findNearby(storeID = anchorStore) {
+    const results = await run(() =>
+      apiRequest<NearbyMerchant[]>(
+        settings,
+        `stores/${encodeURIComponent(storeID)}/nearby-merchants?radiusMeters=500`,
       ),
     );
     if (results) setNearby(results);
+  }
+
+  async function selectRestaurant(restaurant: NearbyMerchant) {
+    checkoutAttempt.current = null;
+    setAnchorStore(restaurant.storeLocationId);
+    setCatalogStoreID(restaurant.storeLocationId);
+    await loadCatalog(restaurant.storeLocationId);
+    await findNearby(restaurant.storeLocationId);
   }
 
   async function loadCatalog(storeID = catalogStoreID) {
@@ -323,7 +376,7 @@ export default function HomeScreen() {
 
   async function createCustomerOrder() {
     if (checkout) {
-      setMessage("Start a new basket before creating another order.");
+      setMessage("Start a new basket before adding another order.");
       return;
     }
     const lat = Number(latitude);
@@ -364,25 +417,26 @@ export default function HomeScreen() {
     if (result) {
       orderAttempt.current = null;
       checkoutAttempt.current = null;
-      const currentIDs = orderIds.split(/[\s,]+/).map((id) => id.trim()).filter(Boolean);
-      if (!currentIDs.includes(result.id)) {
-        setOrderIds([...currentIDs, result.id].join(", "));
-      }
+      setCreatedOrders((current) => current.some((order) => order.id === result.id)
+        ? current
+        : [...current, {
+            id: result.id,
+            storeLocationId: catalogStoreID.trim(),
+            itemSubtotalCents: result.itemSubtotalCents,
+          }]);
       setTrackingOrderID(result.id);
+      setShopperTrackingEnabled(true);
       setQuantities({});
       setMessage(`Order created · $${(result.itemSubtotalCents / 100).toFixed(2)} items.`);
     }
   }
 
   async function createCheckout() {
-    const ids = orderIds
-      .split(/[\s,]+/)
-      .map((id) => id.trim())
-      .filter(Boolean);
+    const ids = createdOrders.map((order) => order.id);
     const lat = Number(latitude);
     const lon = Number(longitude);
     if (!anchorStore.trim() || ids.length === 0 || !Number.isFinite(lat) || !Number.isFinite(lon)) {
-      setMessage("Enter the anchor store, order IDs, and delivery coordinates.");
+      setMessage("Choose a nearby restaurant, create at least one order, and set your delivery location.");
       return;
     }
     if (!checkoutAttempt.current) {
@@ -445,6 +499,18 @@ export default function HomeScreen() {
     if (result) {
       setRoute(result);
       setReroutedCoordinates([]);
+    }
+  }
+
+  async function loadActiveRoute() {
+    const result = await run(() =>
+      apiRequest<Route>(settings, "driver/routes/active"),
+    );
+    if (result) {
+      setRoute(result);
+      setRouteId(result.id);
+      setReroutedCoordinates([]);
+      setMessage(`Assigned route loaded · ${result.stops.length} stops.`);
     }
   }
 
@@ -907,27 +973,54 @@ export default function HomeScreen() {
               <Text style={styles.sectionEyebrow}>01 / DISCOVER</Text>
               <Text style={styles.sectionTitle}>Good things, close by.</Text>
               <Text style={styles.helpText}>
-                Find subscription-active grocery and retail partners within 500 meters of your
-                restaurant.
+                Choose your location to find restaurants within 5 km, then add nearby grocery and
+                retail partners.
               </Text>
-              <Field
-                editable={!checkout && !orderIds.trim()}
-                label="Anchor restaurant store ID"
-                onChangeText={(value) => {
-                  checkoutAttempt.current = null;
-                  setAnchorStore(value);
-                  setCatalogStoreID(value);
-                }}
-                value={anchorStore}
+              <ActionButton
+                disabled={busy || Boolean(checkout)}
+                label={latitude && longitude ? "Update my location" : "Use my current location"}
+                onPress={() => void useCurrentLocation()}
               />
+              {latitude && longitude ? (
+                <Text style={styles.tinyNote}>
+                  Delivery destination · {Number(latitude).toFixed(4)}, {Number(longitude).toFixed(4)}
+                </Text>
+              ) : (
+                <Text style={styles.tinyNote}>
+                  Your precise location is used to search nearby restaurants and set this order’s drop-off.
+                </Text>
+              )}
+              <ActionButton
+                disabled={busy || !latitude || !longitude || Boolean(checkout)}
+                label="Find restaurants near me"
+                onPress={() => void findNearbyRestaurants()}
+                secondary
+              />
+              {nearbyRestaurants.map((restaurant) => (
+                <Pressable
+                  accessibilityRole="button"
+                  key={restaurant.storeLocationId}
+                  onPress={() => void selectRestaurant(restaurant)}
+                  style={[
+                    styles.locationChoice,
+                    anchorStore === restaurant.storeLocationId && styles.locationChoiceActive,
+                  ]}
+                >
+                  <Text style={styles.resultTitle}>{restaurant.name}</Text>
+                  <Text style={styles.resultSub}>
+                    {Math.round(restaurant.distanceMeters)} m away · Restaurant
+                  </Text>
+                </Pressable>
+              ))}
+              {nearbyRestaurants.length === 0 ? (
+                <Text style={styles.tinyNote}>Search near your location to choose an anchor restaurant.</Text>
+              ) : null}
+              {anchorStore ? (
+                <Text style={styles.tinyNote}>Selected restaurant · {anchorStore}</Text>
+              ) : null}
               <View style={styles.actionRow}>
-                <ActionButton disabled={busy} label="Find nearby shops" onPress={() => void findNearby()} />
-                <ActionButton
-                  disabled={busy}
-                  label="Browse anchor catalog"
-                  onPress={() => void loadCatalog(anchorStore)}
-                  secondary
-                />
+                <ActionButton disabled={busy || !anchorStore || Boolean(checkout)} label="Find nearby shops" onPress={() => void findNearby()} />
+                <ActionButton disabled={busy || !anchorStore || Boolean(checkout)} label="Browse restaurant catalog" onPress={() => void loadCatalog(anchorStore)} secondary />
               </View>
               {nearby.map((merchant) => (
                 <View key={merchant.merchantId}>
@@ -999,35 +1092,37 @@ export default function HomeScreen() {
                   </View>
                 );
               })}
-              <View style={styles.fieldGrid}>
-                <Field editable={!checkout && !orderIds.trim()} label="Drop-off latitude" keyboardType="decimal-pad" onChangeText={setLatitude} value={latitude} />
-                <Field editable={!checkout && !orderIds.trim()} label="Drop-off longitude" keyboardType="decimal-pad" onChangeText={setLongitude} value={longitude} />
-              </View>
               <ActionButton
-                disabled={busy || Boolean(checkout) || catalog.length === 0}
+                disabled={busy || Boolean(checkout) || catalog.length === 0 || !latitude || !longitude}
                 label="Create order from selected items"
                 onPress={() => void createCustomerOrder()}
               />
+              {createdOrders.length > 0 ? (
+                <View style={styles.cartSummary}>
+                  <Text style={styles.checkoutLabel}>YOUR BASKET · {createdOrders.length} STORE ORDER{createdOrders.length === 1 ? "" : "S"}</Text>
+                  {createdOrders.map((order) => (
+                    <View key={order.id} style={styles.invoiceRow}>
+                      <Text style={styles.invoiceLabel}>${(order.itemSubtotalCents / 100).toFixed(2)} items</Text>
+                      <Text style={styles.invoiceAmount}>{order.storeLocationId.slice(0, 8)}</Text>
+                    </View>
+                  ))}
+                </View>
+              ) : null}
             </View>
 
             <View style={styles.card}>
               <Text style={styles.sectionEyebrow}>03 / CHECKOUT</Text>
               <Text style={styles.sectionTitle}>Bring the whole block together.</Text>
               <Text style={styles.helpText}>
-                Create one order from each store catalog you want to include, then create one unified checkout.
+                Orders you create are added automatically. Confirm your delivery destination before checkout.
               </Text>
-              <Field
-                editable={!checkout}
-                label="Order IDs (comma separated)"
-                onChangeText={(value) => {
-                  checkoutAttempt.current = null;
-                  setOrderIds(value);
-                }}
-                value={orderIds}
-              />
+              <Text style={styles.resultSub}>
+                {createdOrders.length} order{createdOrders.length === 1 ? "" : "s"} ready ·{" "}
+                {latitude && longitude ? "delivery location set" : "delivery location needed"}
+              </Text>
               <ActionButton
-                disabled={busy || Boolean(checkout)}
-                label={checkout ? "Basket created" : "Create basket"}
+                disabled={busy || Boolean(checkout) || createdOrders.length === 0 || !anchorStore || !latitude || !longitude}
+                label={checkout ? "Basket created" : "Review and create checkout"}
                 onPress={() => void createCheckout()}
               />
               {checkout ? (
@@ -1141,8 +1236,14 @@ export default function HomeScreen() {
               Load your assigned route and share location every five seconds while this screen is
               open. Stop sequencing is controlled by the server.
             </Text>
+            <ActionButton
+              disabled={busy}
+              label="Find my assigned route"
+              onPress={() => void loadActiveRoute()}
+            />
+            <Text style={styles.tinyNote}>If no route is assigned, you can load one by route ID:</Text>
             <Field
-              label="Assigned route ID"
+              label="Route ID"
               onChangeText={(value) => {
                 setRouteId(value);
                 setRoute(null);
