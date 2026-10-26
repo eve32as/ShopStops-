@@ -816,7 +816,7 @@ export default function HomeScreen() {
     const destination = `${activeStop.latitude},${activeStop.longitude}`;
     const url = Platform.OS === "ios"
       ? `maps://?daddr=${destination}&dirflg=d`
-      : `geo:${destination}?q=${destination}`;
+      : `https://www.google.com/maps/dir/?api=1&destination=${destination}`;
     try {
       await Linking.openURL(url);
     } catch {

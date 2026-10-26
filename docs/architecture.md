@@ -297,8 +297,8 @@ The OpenAPI contract describes subscription, refund, and webhook flows. The
 `apps/mobile` Expo client targets iOS and Android and includes shopper delivery
 tracking and assigned-driver stop maps using a provider-neutral native map
 component. It fits route/stop geometry, displays fresh or stale driver location,
-and can hand the active stop to an installed navigation app; it does not provide
-turn-by-turn navigation. iOS uses its platform map provider, while Android
+and can open an external directions link for the active stop; it does not
+provide turn-by-turn navigation. iOS uses its platform map provider, while Android
 builds require a restricted `GOOGLE_MAPS_API_KEY` provided through Expo config.
 The admin client provides the full-refund operation and driver-alert review
 queue. Both clients expect an external trusted identity gateway, and the mobile

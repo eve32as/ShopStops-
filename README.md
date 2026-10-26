@@ -167,5 +167,5 @@ requires existing order IDs. The native map uses the platform's default map
 provider without binding the map UI to a vendor. iOS uses Apple Maps; Android
 requires a restricted Google Maps API key supplied as `GOOGLE_MAPS_API_KEY` when
 building the native app. Do not commit the key. Driver stop maps show ordered
-stop context and can hand the next stop to an installed native navigation app;
-they do not provide turn-by-turn navigation.
+stop context and open an external directions link for the next stop; they do not
+provide turn-by-turn navigation.
