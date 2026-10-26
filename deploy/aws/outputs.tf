@@ -66,6 +66,11 @@ output "ecs_cluster_name" {
   value = aws_ecs_cluster.main.name
 }
 
+output "alb_access_log_bucket" {
+  description = "Private S3 bucket receiving ALB access logs; configure approved retention and review access."
+  value       = aws_s3_bucket.alb_access_logs.id
+}
+
 output "alarm_topic_arn" {
   description = "Subscribe the operations on-call rotation to this topic."
   value       = aws_sns_topic.alarms.arn

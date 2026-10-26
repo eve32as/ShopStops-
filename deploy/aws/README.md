@@ -301,11 +301,11 @@ not a CI bypass.
 - Metrics alarms are only a starting point. Subscribe and test the alarm topic,
   set service-specific SLO thresholds, and add tracing and operational
   dashboards before launch.
-- The Terraform source currently creates CloudWatch log groups without a
-  customer-managed KMS key and the public ALB without access-log delivery.
-  Decide and implement the production log encryption, retention, and access-log
-  bucket/policy design before launch; then verify delivery and access controls
-  in AWS.
+- CloudWatch application and RDS log groups use a rotated customer-managed KMS
+  key. ALB access logs are enabled to an environment-specific private S3 bucket
+  using SSE-S3 because ALB log delivery does not support SSE-KMS. Set and review
+  the bucket's approved retention/lifecycle policy, then verify delivery and
+  access controls in the target AWS account before launch.
 - The migration runner is tested on a fresh database and a data-preserving
   008-to-009 upgrade in CI. A production owner must still validate its behavior
   against the selected RDS version and rehearse restore and rollback.

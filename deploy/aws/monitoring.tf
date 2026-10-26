@@ -5,11 +5,13 @@ resource "aws_sns_topic" "alarms" {
 resource "aws_cloudwatch_log_group" "database_postgresql" {
   name              = "/aws/rds/instance/${local.name}/postgresql"
   retention_in_days = 90
+  kms_key_id        = aws_kms_key.logs.arn
 }
 
 resource "aws_cloudwatch_log_group" "database_upgrade" {
   name              = "/aws/rds/instance/${local.name}/upgrade"
   retention_in_days = 90
+  kms_key_id        = aws_kms_key.logs.arn
 }
 
 resource "aws_sns_topic_subscription" "alarm_email" {

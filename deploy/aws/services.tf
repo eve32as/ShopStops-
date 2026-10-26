@@ -29,16 +29,19 @@ locals {
 resource "aws_cloudwatch_log_group" "api" {
   name              = "/ecs/${local.name}/api"
   retention_in_days = 90
+  kms_key_id        = aws_kms_key.logs.arn
 }
 
 resource "aws_cloudwatch_log_group" "gateway" {
   name              = "/ecs/${local.name}/gateway"
   retention_in_days = 90
+  kms_key_id        = aws_kms_key.logs.arn
 }
 
 resource "aws_cloudwatch_log_group" "migrator" {
   name              = "/ecs/${local.name}/db-migrator"
   retention_in_days = 90
+  kms_key_id        = aws_kms_key.logs.arn
 }
 
 resource "aws_iam_role" "ecs_execution" {
@@ -323,6 +326,18 @@ resource "aws_lb" "gateway" {
   subnets                    = [for subnet in aws_subnet.public : subnet.id]
   drop_invalid_header_fields = true
   idle_timeout               = 60
+
+  access_logs {
+    bucket  = aws_s3_bucket.alb_access_logs.id
+    prefix  = "alb"
+    enabled = true
+  }
+
+  depends_on = [
+    aws_s3_bucket_policy.alb_access_logs,
+    aws_s3_bucket_server_side_encryption_configuration.alb_access_logs,
+    aws_s3_bucket_ownership_controls.alb_access_logs
+  ]
 }
 
 resource "aws_lb_target_group" "gateway" {
