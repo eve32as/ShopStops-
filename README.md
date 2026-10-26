@@ -322,8 +322,9 @@ checkout; it requires `EXPO_PUBLIC_OIDC_ISSUER` and
 authorization-code-with-PKCE sign-in. Register the `shopstops://auth` redirect URI
 for the iOS/Android public client and configure the provider to issue access tokens
 with the audience and role/actor claims expected by the gateway. The app keeps
-access tokens in OS secure storage until their reported expiry; it does not store
-a client secret or refresh token. The shopper also requires a valid customer
+access tokens in OS secure storage until their reported expiry and clears the local
+session when the token expires or the gateway rejects it; it does not store a
+client secret or refresh token. The shopper also requires a valid customer
 delivery location. Shopper progress resumes from a device-secure per-order
 cursor and stops polling on completion, screen blur, app backgrounding, or
 account changes. Push/WebSocket delivery remain follow-on work.
