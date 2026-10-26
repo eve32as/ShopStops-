@@ -52,7 +52,11 @@ function decodePolyline(encoded: string): RouteCoordinate[] {
 function parseDurationSeconds(value: string) {
   const match = /^(\d+(?:\.\d+)?)s$/.exec(value);
   if (!match) throw new Error("Google Routes returned an invalid duration.");
-  return Math.round(Number(match[1]));
+  const seconds = Math.round(Number(match[1]));
+  if (!Number.isSafeInteger(seconds)) {
+    throw new Error("Google Routes returned an out-of-range duration.");
+  }
+  return seconds;
 }
 
 export async function getTrafficAwareETAs(

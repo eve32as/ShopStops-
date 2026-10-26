@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -178,7 +179,10 @@ func (g *StripeGateway) VerifyWebhook(
 		if err := json.Unmarshal(event.Data.Raw, &session); err != nil {
 			return StripePaymentEvent{}, nil, err
 		}
-		result.PaymentIntentID = stripeObjectID(session.PaymentIntent)
+		result.PaymentIntentID, err = stripeObjectIDChecked(session.PaymentIntent)
+		if err != nil {
+			return StripePaymentEvent{}, nil, fmt.Errorf("parse Stripe checkout session payment intent: %w", err)
+		}
 		result.CheckoutID = session.Metadata["shopstops_checkout_id"]
 		if result.CheckoutID == "" {
 			result.CheckoutID = session.ClientReferenceID
@@ -283,43 +287,86 @@ func parseStripeLifecycleEvent(
 	if err := json.Unmarshal(raw, &object); err != nil {
 		return StripePaymentEvent{}, err
 	}
-	readString := func(key string) string {
+	if object == nil {
+		return StripePaymentEvent{}, errors.New("Stripe lifecycle event object is missing")
+	}
+	readString := func(key string) (string, error) {
 		var value string
-		_ = json.Unmarshal(object[key], &value)
-		return value
+		if err := unmarshalOptional(object[key], &value); err != nil {
+			return "", fmt.Errorf("parse Stripe %s field %s: %w", event.Type, key, err)
+		}
+		return value, nil
 	}
-	readID := func(key string) string {
-		return stripeObjectID(object[key])
+	readID := func(key string) (string, error) {
+		value, err := stripeObjectIDChecked(object[key])
+		if err != nil {
+			return "", fmt.Errorf("parse Stripe %s field %s: %w", event.Type, key, err)
+		}
+		return value, nil
 	}
-	readAmount := func(key string) int64 {
+	readAmount := func(key string) (int64, error) {
 		var value int64
-		_ = json.Unmarshal(object[key], &value)
-		return value
+		if err := unmarshalOptional(object[key], &value); err != nil {
+			return 0, fmt.Errorf("parse Stripe %s field %s: %w", event.Type, key, err)
+		}
+		return value, nil
 	}
-	event.CustomerID = readID("customer")
-	event.PaymentIntentID = readID("payment_intent")
-	event.Currency = strings.ToLower(readString("currency"))
-	metadata := map[string]string{}
-	_ = json.Unmarshal(object["metadata"], &metadata)
+	readMetadata := func() (map[string]string, error) {
+		metadata := map[string]string{}
+		if err := unmarshalOptional(object["metadata"], &metadata); err != nil {
+			return nil, fmt.Errorf("parse Stripe %s metadata: %w", event.Type, err)
+		}
+		return metadata, nil
+	}
+	var err error
+	if event.CustomerID, err = readID("customer"); err != nil {
+		return StripePaymentEvent{}, err
+	}
+	if event.PaymentIntentID, err = readID("payment_intent"); err != nil {
+		return StripePaymentEvent{}, err
+	}
+	currency, err := readString("currency")
+	if err != nil {
+		return StripePaymentEvent{}, err
+	}
+	event.Currency = strings.ToLower(currency)
+	metadata, err := readMetadata()
+	if err != nil {
+		return StripePaymentEvent{}, err
+	}
 	event.MerchantID = metadata["shopstops_merchant_id"]
 	event.CheckoutID = metadata["shopstops_checkout_id"]
 	switch event.Type {
 	case "customer.subscription.created", "customer.subscription.updated",
 		"customer.subscription.deleted":
-		event.SubscriptionID = readString("id")
-		event.SubscriptionStatus = readString("status")
-		event.PeriodEnd = stripePeriodEnd(object)
+		if event.SubscriptionID, err = readString("id"); err != nil {
+			return StripePaymentEvent{}, err
+		}
+		if event.SubscriptionStatus, err = readString("status"); err != nil {
+			return StripePaymentEvent{}, err
+		}
+		if event.PeriodEnd, err = stripePeriodEnd(object); err != nil {
+			return StripePaymentEvent{}, fmt.Errorf("parse Stripe %s period: %w", event.Type, err)
+		}
 	case "invoice.payment_succeeded", "invoice.payment_failed":
-		event.SubscriptionID = stripeInvoiceSubscriptionID(object)
-		event.PeriodEnd = stripeInvoicePeriodEnd(object)
+		if event.SubscriptionID, err = stripeInvoiceSubscriptionID(object); err != nil {
+			return StripePaymentEvent{}, fmt.Errorf("parse Stripe %s subscription: %w", event.Type, err)
+		}
+		if event.PeriodEnd, err = stripeInvoicePeriodEnd(object); err != nil {
+			return StripePaymentEvent{}, fmt.Errorf("parse Stripe %s period: %w", event.Type, err)
+		}
 		if event.MerchantID == "" {
 			var parent struct {
-				SubscriptionDetails struct {
+				SubscriptionDetails *struct {
 					Metadata map[string]string `json:"metadata"`
 				} `json:"subscription_details"`
 			}
-			_ = json.Unmarshal(object["parent"], &parent)
-			event.MerchantID = parent.SubscriptionDetails.Metadata["shopstops_merchant_id"]
+			if err := unmarshalOptional(object["parent"], &parent); err != nil {
+				return StripePaymentEvent{}, fmt.Errorf("parse Stripe %s parent: %w", event.Type, err)
+			}
+			if parent.SubscriptionDetails != nil {
+				event.MerchantID = parent.SubscriptionDetails.Metadata["shopstops_merchant_id"]
+			}
 		}
 		if event.Type == "invoice.payment_failed" {
 			event.PaymentStatus = "failed"
@@ -327,21 +374,43 @@ func parseStripeLifecycleEvent(
 			event.PaymentStatus = "succeeded"
 		}
 	case "setup_intent.succeeded":
-		event.PaymentMethodID = readID("payment_method")
+		if event.PaymentMethodID, err = readID("payment_method"); err != nil {
+			return StripePaymentEvent{}, err
+		}
 	case "refund.created", "refund.updated":
-		event.RefundID = readString("id")
-		event.RefundStatus = readString("status")
-		event.AmountCents = readAmount("amount")
+		if event.RefundID, err = readString("id"); err != nil {
+			return StripePaymentEvent{}, err
+		}
+		if event.RefundStatus, err = readString("status"); err != nil {
+			return StripePaymentEvent{}, err
+		}
+		if event.AmountCents, err = readAmount("amount"); err != nil {
+			return StripePaymentEvent{}, err
+		}
 		event.RefundIdempotencyKey = metadata["shopstops_refund_key"]
 	case "charge.dispute.created", "charge.dispute.updated", "charge.dispute.closed":
-		event.DisputeID = readString("id")
-		event.DisputeStatus = readString("status")
-		event.DisputeReason = readString("reason")
-		event.AmountCents = readAmount("amount")
+		if event.DisputeID, err = readString("id"); err != nil {
+			return StripePaymentEvent{}, err
+		}
+		if event.DisputeStatus, err = readString("status"); err != nil {
+			return StripePaymentEvent{}, err
+		}
+		if event.DisputeReason, err = readString("reason"); err != nil {
+			return StripePaymentEvent{}, err
+		}
+		if event.AmountCents, err = readAmount("amount"); err != nil {
+			return StripePaymentEvent{}, err
+		}
+		var evidence struct {
+			DueBy json.RawMessage `json:"due_by"`
+		}
+		if err := unmarshalOptional(object["evidence_details"], &evidence); err != nil {
+			return StripePaymentEvent{}, fmt.Errorf("parse Stripe %s evidence details: %w", event.Type, err)
+		}
 		var dueBy int64
-		var evidence map[string]json.RawMessage
-		_ = json.Unmarshal(object["evidence_details"], &evidence)
-		_ = json.Unmarshal(evidence["due_by"], &dueBy)
+		if err := unmarshalOptional(evidence.DueBy, &dueBy); err != nil {
+			return StripePaymentEvent{}, fmt.Errorf("parse Stripe %s evidence deadline: %w", event.Type, err)
+		}
 		if dueBy > 0 {
 			event.EvidenceDueBy = time.Unix(dueBy, 0).UTC()
 		}
@@ -349,57 +418,86 @@ func parseStripeLifecycleEvent(
 	return event, nil
 }
 
-func stripeObjectID(raw json.RawMessage) string {
+func unmarshalOptional(raw json.RawMessage, value any) error {
 	if len(raw) == 0 || string(raw) == "null" {
-		return ""
+		return nil
+	}
+	return json.Unmarshal(raw, value)
+}
+
+func stripeObjectIDChecked(raw json.RawMessage) (string, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return "", nil
 	}
 	var value string
-	if json.Unmarshal(raw, &value) == nil {
-		return value
+	if err := json.Unmarshal(raw, &value); err == nil {
+		return value, nil
 	}
 	var object struct {
 		ID string `json:"id"`
 	}
-	_ = json.Unmarshal(raw, &object)
-	return object.ID
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return "", err
+	}
+	if object.ID == "" {
+		return "", errors.New("Stripe object ID is missing")
+	}
+	return object.ID, nil
 }
 
-func stripePeriodEnd(object map[string]json.RawMessage) time.Time {
+func stripePeriodEnd(object map[string]json.RawMessage) (time.Time, error) {
 	var items struct {
 		Data []struct {
-			CurrentPeriodEnd int64 `json:"current_period_end"`
+			CurrentPeriodEnd json.RawMessage `json:"current_period_end"`
 		} `json:"data"`
 	}
-	_ = json.Unmarshal(object["items"], &items)
-	if len(items.Data) == 0 || items.Data[0].CurrentPeriodEnd <= 0 {
-		return time.Time{}
+	if err := unmarshalOptional(object["items"], &items); err != nil {
+		return time.Time{}, err
 	}
-	return time.Unix(items.Data[0].CurrentPeriodEnd, 0).UTC()
+	if len(items.Data) == 0 {
+		return time.Time{}, nil
+	}
+	return stripeTimestamp(items.Data[0].CurrentPeriodEnd)
 }
 
-func stripeInvoiceSubscriptionID(object map[string]json.RawMessage) string {
+func stripeInvoiceSubscriptionID(object map[string]json.RawMessage) (string, error) {
 	var parent struct {
 		SubscriptionDetails struct {
 			Subscription json.RawMessage `json:"subscription"`
 		} `json:"subscription_details"`
 	}
-	_ = json.Unmarshal(object["parent"], &parent)
-	return stripeObjectID(parent.SubscriptionDetails.Subscription)
+	if err := unmarshalOptional(object["parent"], &parent); err != nil {
+		return "", err
+	}
+	return stripeObjectIDChecked(parent.SubscriptionDetails.Subscription)
 }
 
-func stripeInvoicePeriodEnd(object map[string]json.RawMessage) time.Time {
+func stripeInvoicePeriodEnd(object map[string]json.RawMessage) (time.Time, error) {
 	var lines struct {
 		Data []struct {
 			Period struct {
-				End int64 `json:"end"`
+				End json.RawMessage `json:"end"`
 			} `json:"period"`
 		} `json:"data"`
 	}
-	_ = json.Unmarshal(object["lines"], &lines)
-	if len(lines.Data) == 0 || lines.Data[0].Period.End <= 0 {
-		return time.Time{}
+	if err := unmarshalOptional(object["lines"], &lines); err != nil {
+		return time.Time{}, err
 	}
-	return time.Unix(lines.Data[0].Period.End, 0).UTC()
+	if len(lines.Data) == 0 {
+		return time.Time{}, nil
+	}
+	return stripeTimestamp(lines.Data[0].Period.End)
+}
+
+func stripeTimestamp(raw json.RawMessage) (time.Time, error) {
+	var timestamp int64
+	if err := unmarshalOptional(raw, &timestamp); err != nil {
+		return time.Time{}, err
+	}
+	if timestamp <= 0 {
+		return time.Time{}, nil
+	}
+	return time.Unix(timestamp, 0).UTC(), nil
 }
 
 func (g *StripeGateway) ProcessingFee(ctx context.Context, paymentIntentID string) (int64, error) {

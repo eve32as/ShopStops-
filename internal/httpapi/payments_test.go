@@ -695,3 +695,42 @@ func TestStripeLifecycleEventParserExtractsMerchantPaymentSetup(t *testing.T) {
 		t.Fatalf("event=%+v err=%v", event, err)
 	}
 }
+
+func TestStripeLifecycleEventParserRejectsMalformedPresentFields(t *testing.T) {
+	tests := []struct {
+		name string
+		typ  string
+		raw  string
+	}{
+		{
+			name: "refund amount",
+			typ:  "refund.updated",
+			raw:  `{"id":"re_test","amount":"100","status":"succeeded"}`,
+		},
+		{
+			name: "dispute deadline",
+			typ:  "charge.dispute.updated",
+			raw:  `{"id":"dp_test","evidence_details":{"due_by":"tomorrow"}}`,
+		},
+		{
+			name: "invoice parent",
+			typ:  "invoice.payment_succeeded",
+			raw:  `{"parent":"invalid"}`,
+		},
+		{
+			name: "metadata",
+			typ:  "setup_intent.succeeded",
+			raw:  `{"metadata":{"shopstops_merchant_id":42}}`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := parseStripeLifecycleEvent(
+				StripePaymentEvent{Type: test.typ},
+				json.RawMessage(test.raw),
+			); err == nil {
+				t.Fatal("expected malformed Stripe lifecycle data to be rejected")
+			}
+		})
+	}
+}
