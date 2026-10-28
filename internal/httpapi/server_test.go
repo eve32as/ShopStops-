@@ -61,6 +61,16 @@ type fakeRepository struct {
 	assignedDriverRef     string
 	assignedBy            string
 	assignDriverErr       error
+	driverProfiles        []DriverProfile
+	driverProfilesErr     error
+	driverProfileStatus   string
+	driverProfileLimit    int
+	driverProfile         DriverProfile
+	setDriverProfileErr   error
+	setDriverRef          string
+	setDriverName         string
+	setDriverStatus       string
+	setDriverActor        string
 	driverRef             string
 	locationID            int64
 	locationErr           error
@@ -244,6 +254,19 @@ func (f *fakeRepository) AssignUnifiedDriver(
 	f.assignedRouteID, f.assignedDriverRef, f.assignedBy =
 		routeID, driverRef, assignedBy
 	return "routed", f.assignDriverErr
+}
+func (f *fakeRepository) ListDriverProfiles(
+	_ context.Context, status string, limit int,
+) ([]DriverProfile, error) {
+	f.driverProfileStatus, f.driverProfileLimit = status, limit
+	return f.driverProfiles, f.driverProfilesErr
+}
+func (f *fakeRepository) SetDriverProfile(
+	_ context.Context, driverRef, displayName, status, actor string,
+) (DriverProfile, error) {
+	f.setDriverRef, f.setDriverName, f.setDriverStatus, f.setDriverActor =
+		driverRef, displayName, status, actor
+	return f.driverProfile, f.setDriverProfileErr
 }
 func (f *fakeRepository) RecordDriverLocation(
 	_ context.Context, routeID, driverRef string, location driverLocationRequest,
@@ -499,6 +522,101 @@ func TestAssignDriverToRouteMapsConflictsAndNotFound(t *testing.T) {
 				t.Fatalf("status = %d, want %d; body=%s", recorder.Code, test.want, recorder.Body)
 			}
 		})
+	}
+}
+
+func TestDriverDirectoryRequiresAdmin(t *testing.T) {
+	handler := New(&fakeRepository{}, strings.Repeat("t", 32),
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	for _, path := range []string{
+		"/admin/drivers", "/admin/drivers/driver-1",
+	} {
+		method := http.MethodGet
+		body := ""
+		if path != "/admin/drivers" {
+			method = http.MethodPut
+			body = `{"displayName":"Driver One","status":"pending"}`
+		}
+		request := httptest.NewRequest(method, path, strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+		request.Header.Set("X-ShopStops-Actor", "driver-1")
+		request.Header.Set("X-ShopStops-Actor-Role", "driver")
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusForbidden {
+			t.Fatalf("%s %s status = %d, want %d", method, path, recorder.Code, http.StatusForbidden)
+		}
+	}
+}
+
+func TestListDriverProfilesValidatesFiltersAndBounds(t *testing.T) {
+	repository := &fakeRepository{}
+	handler := New(repository, strings.Repeat("t", 32),
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	for _, test := range []struct {
+		query string
+		want  int
+	}{
+		{query: "?status=active&limit=25", want: http.StatusOK},
+		{query: "?status=unknown", want: http.StatusBadRequest},
+		{query: "?limit=101", want: http.StatusBadRequest},
+	} {
+		request := httptest.NewRequest(http.MethodGet, "/admin/drivers"+test.query, nil)
+		request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+		request.Header.Set("X-ShopStops-Actor", "admin-1")
+		request.Header.Set("X-ShopStops-Actor-Role", "admin")
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		if recorder.Code != test.want {
+			t.Fatalf("query %s status=%d want=%d", test.query, recorder.Code, test.want)
+		}
+	}
+	if repository.driverProfileStatus != "active" || repository.driverProfileLimit != 25 {
+		t.Fatalf("repository filter/limit = %q/%d", repository.driverProfileStatus, repository.driverProfileLimit)
+	}
+}
+
+func TestSetDriverProfileValidatesAndAuditsAdmin(t *testing.T) {
+	repository := &fakeRepository{
+		driverProfile: DriverProfile{
+			DriverRef: "subject-42", DisplayName: "Driver Forty Two", Status: "active",
+		},
+	}
+	handler := New(repository, strings.Repeat("t", 32),
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	request := httptest.NewRequest(http.MethodPut, "/admin/drivers/subject-42",
+		strings.NewReader(`{"displayName":"  Driver Forty Two  ","status":"active"}`))
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "admin-9")
+	request.Header.Set("X-ShopStops-Actor-Role", "admin")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || repository.setDriverRef != "subject-42" ||
+		repository.setDriverName != "Driver Forty Two" ||
+		repository.setDriverStatus != "active" || repository.setDriverActor != "admin-9" {
+		t.Fatalf("status/profile update = %d/%q/%q/%q/%q",
+			recorder.Code, repository.setDriverRef, repository.setDriverName,
+			repository.setDriverStatus, repository.setDriverActor)
+	}
+}
+
+func TestSetDriverProfileRejectsInvalidStatusAndExtraJSON(t *testing.T) {
+	for _, body := range []string{
+		`{"displayName":"Driver One","status":"eligible"}`,
+		`{"displayName":"Driver One","status":"pending","extra":true}`,
+		`{"displayName":"Driver One","status":"pending"} {}`,
+	} {
+		request := httptest.NewRequest(http.MethodPut, "/admin/drivers/driver-1",
+			strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+		request.Header.Set("X-ShopStops-Actor", "admin-1")
+		request.Header.Set("X-ShopStops-Actor-Role", "admin")
+		recorder := httptest.NewRecorder()
+		New(&fakeRepository{}, strings.Repeat("t", 32),
+			slog.New(slog.NewTextHandler(io.Discard, nil))).ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("body %s status=%d want=%d", body, recorder.Code, http.StatusBadRequest)
+		}
 	}
 }
 

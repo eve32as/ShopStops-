@@ -84,6 +84,11 @@ type DriverAssignmentRepository interface {
 	AssignUnifiedDriver(context.Context, string, string, string) (string, error)
 }
 
+type DriverDirectoryRepository interface {
+	ListDriverProfiles(context.Context, string, int) ([]DriverProfile, error)
+	SetDriverProfile(context.Context, string, string, string, string) (DriverProfile, error)
+}
+
 type DriverRerouteRepository interface {
 	DriverReroutePlan(context.Context, string, string) (driverReroutePlan, error)
 	SaveDriverReroute(
@@ -350,6 +355,8 @@ func (s *Server) handler() http.Handler {
 	mux.Handle("PATCH /merchant/catalog/{itemId}", s.authorized(http.HandlerFunc(s.updateMerchantCatalogItem)))
 	mux.Handle("POST /dispatch/bundles", s.authorized(http.HandlerFunc(s.createBundle)))
 	mux.Handle("POST /dispatch/routes/{routeId}/assign", s.authorized(http.HandlerFunc(s.assignDriverToRoute)))
+	mux.Handle("GET /admin/drivers", s.authorized(http.HandlerFunc(s.listDriverProfiles)))
+	mux.Handle("PUT /admin/drivers/{driverRef}", s.authorized(http.HandlerFunc(s.setDriverProfile)))
 	mux.Handle("GET /driver/routes/{routeId}", s.authorized(http.HandlerFunc(s.getDriverRoute)))
 	mux.Handle("GET /driver/routes/active", s.authorized(http.HandlerFunc(s.getActiveDriverRoute)))
 	mux.Handle("POST /driver/routes/{routeId}/location", s.authorized(http.HandlerFunc(s.recordDriverLocation)))

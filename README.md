@@ -16,7 +16,8 @@ Apply `db/migrations/001_delivery_foundation.sql`,
 `db/migrations/008_driver_fraud_monitor.sql`,
 `db/migrations/010_driver_rerouting_tracking.sql`, and
 `db/migrations/011_weekly_payout_notifications.sql`, and
-`db/migrations/012_driver_route_assignment.sql` on PostgreSQL 14+ with PostGIS 3.x
+`db/migrations/012_driver_route_assignment.sql`, and
+`db/migrations/013_driver_eligibility.sql` on PostgreSQL 14+ with PostGIS 3.x
 installed. The migrations create dispatch, unified-basket, catalog, and order
 models; spatial queries; transaction-safe order/merchant limits; immutable
 multi-stop routes; payment/tax ledger records; outbox events; and weekly courier
@@ -58,8 +59,10 @@ ingestion with review-only fraud alerts for extreme GPS speeds and sustained
 route expansion. Admins can list and resolve these alerts in the control room.
 Dispatchers and admins can assign routed deliveries to drivers; the assignment
 is transactionally guarded against duplicate active routes and audited to the
-outbox. The mobile shopper can geocode a typed delivery address on-device or
-use current location; only coordinates are sent to the API.
+outbox. Admins must provision and verify driver identities in the directory;
+only active profiles are eligible, and profile status changes are audited.
+The mobile shopper can geocode a typed delivery address on-device or use current
+location; only coordinates are sent to the API.
 Merchant catalog endpoints let authenticated merchants manage item names,
 descriptions, prices, delivery volumes, and customer-facing availability.
 The admin dashboard also audits outbound notification attempts and can retry

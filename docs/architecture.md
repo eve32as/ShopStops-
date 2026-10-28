@@ -299,6 +299,14 @@ routed, unstarted routes, serialize concurrent assignments per driver, reject a
 second active route, and emit one outbox audit event. Repeating the same route
 and driver assignment is idempotent.
 
+Migration `013_driver_eligibility.sql` adds the admin-managed driver directory.
+Driver references must match the identity subject supplied by the trusted
+gateway. Profiles remain pending until an administrator explicitly verifies and
+activates them; suspended and pending drivers cannot be newly assigned. Profile
+changes are audit events, and the database enforces eligibility at route
+assignment time. This is an administrative verification step, not automated
+identity-provider provisioning or background screening.
+
 The OpenAPI contract describes subscription, refund, and webhook flows. The
 `apps/mobile` Expo client targets iOS and Android and includes shopper delivery
 tracking and assigned-driver stop maps using a provider-neutral native map
@@ -309,10 +317,10 @@ builds require a restricted `GOOGLE_MAPS_API_KEY` provided through Expo config.
 The shopper can enter a delivery address for on-device platform geocoding or use
 foreground GPS; only selected coordinates are sent to the API, not the typed
 address. The admin client provides the full-refund operation, driver-alert review
-queue, and route assignment control. Both clients expect an externally configured
-trusted identity gateway; native OIDC sign-in and issuer/role-claim mapping are
-not implemented. The mobile client also requires Stripe publishable key
-configuration. The clients are
+queue, route assignment control, and driver eligibility management. Both clients
+expect an externally configured trusted identity gateway; native OIDC sign-in
+and issuer/role-claim mapping are not implemented. The mobile client also
+requires Stripe publishable key configuration. The clients are
 API-backed MVP foundations, not complete consumer, driver, merchant, or admin
 products. Native identity, background location, admin search/zone/reporting
 controls, production routing, and real-time integrations remain unimplemented.

@@ -543,6 +543,77 @@ paths:
           description: Authenticated actor does not have the customer role
         '404':
           description: Order not found for the authenticated customer
+  /admin/drivers:
+    get:
+      operationId: listDriverProfiles
+      summary: List provisioned driver identities and dispatch eligibility
+      description: Admin-only. Active profiles have been explicitly verified for dispatch; pending and suspended profiles cannot be assigned.
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [pending, active, suspended]
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 100
+      responses:
+        '200':
+          description: Driver profiles ordered by review status and most recent update
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/DriverProfile'
+        '400':
+          description: Invalid status or limit
+        '403':
+          description: Admin role required
+  /admin/drivers/{driverRef}:
+    put:
+      operationId: setDriverProfile
+      summary: Provision, verify, or suspend a driver identity
+      description: Admin-only. The driver reference must exactly match the trusted identity gateway subject. Setting status to active is an explicit manual verification decision and enables dispatch assignments.
+      parameters:
+        - in: path
+          name: driverRef
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [displayName, status]
+              properties:
+                displayName:
+                  type: string
+                  minLength: 1
+                  maxLength: 120
+                status:
+                  type: string
+                  enum: [pending, active, suspended]
+      responses:
+        '200':
+          description: Driver profile created or updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriverProfile'
+        '400':
+          description: Invalid driver identity, name, or status
+        '403':
+          description: Admin role required
   /admin/driver-fraud-alerts:
     get:
       operationId: listDriverFraudAlerts
@@ -834,7 +905,7 @@ paths:
     post:
       operationId: assignDriverToRoute
       summary: Assign one available driver to a routed delivery
-      description: Requires an authenticated dispatch or admin role. Assignment is transactional, audited through the outbox, and idempotent for the same driver. Drivers with an active route and routes already started cannot be reassigned.
+      description: Requires an authenticated dispatch or admin role. The driver must have an active, admin-verified profile. Assignment is transactional, audited through the outbox, and idempotent for the same driver. Drivers with an active route and routes already started cannot be reassigned.
       parameters:
         - in: path
           name: routeId
@@ -1247,6 +1318,30 @@ components:
           type: string
           enum: [arrive, complete]
         observedAt:
+          type: string
+          format: date-time
+    DriverProfile:
+      type: object
+      required: [driverRef, displayName, status, createdAt, updatedAt]
+      properties:
+        driverRef:
+          type: string
+          minLength: 1
+          maxLength: 200
+        displayName:
+          type: string
+          minLength: 1
+          maxLength: 120
+        status:
+          type: string
+          enum: [pending, active, suspended]
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        verifiedAt:
           type: string
           format: date-time
     DriverFraudAlert:

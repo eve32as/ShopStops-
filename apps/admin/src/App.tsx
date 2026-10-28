@@ -21,6 +21,15 @@ type FraudAlert = {
   resolvedBy?: string
 }
 
+type DriverProfile = {
+  driverRef: string
+  displayName: string
+  status: 'pending' | 'active' | 'suspended'
+  createdAt: string
+  updatedAt: string
+  verifiedAt?: string
+}
+
 type NotificationAttempt = {
   status: string
   errorCode?: string
@@ -115,6 +124,13 @@ function App() {
   const [assignmentMessage, setAssignmentMessage] = useState('')
   const [assignmentError, setAssignmentError] = useState('')
   const [assignmentLoading, setAssignmentLoading] = useState(false)
+  const [driverProfiles, setDriverProfiles] = useState<DriverProfile[]>([])
+  const [driverDirectoryLoading, setDriverDirectoryLoading] = useState(false)
+  const [driverProfileRef, setDriverProfileRef] = useState('')
+  const [driverProfileName, setDriverProfileName] = useState('')
+  const [driverProfileStatus, setDriverProfileStatus] = useState<DriverProfile['status']>('pending')
+  const [driverDirectoryError, setDriverDirectoryError] = useState('')
+  const [driverDirectoryMessage, setDriverDirectoryMessage] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
@@ -245,6 +261,57 @@ function App() {
         : 'Could not assign this route.')
     } finally {
       setAssignmentLoading(false)
+    }
+  }
+
+  async function loadDriverProfiles() {
+    setDriverDirectoryError('')
+    setDriverDirectoryLoading(true)
+    try {
+      const profiles = await fraudRequest<DriverProfile[]>(
+        gatewayUrl, sessionToken, 'admin/drivers?limit=100',
+      )
+      setDriverProfiles(profiles)
+    } catch (requestError) {
+      setDriverDirectoryError(requestError instanceof Error
+        ? requestError.message
+        : 'Could not load driver profiles.')
+    } finally {
+      setDriverDirectoryLoading(false)
+    }
+  }
+
+  async function saveDriverProfile(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setDriverDirectoryError('')
+    setDriverDirectoryMessage('')
+    const driverRef = driverProfileRef.trim()
+    const displayName = driverProfileName.trim()
+    if (!driverRef || driverRef.length > 200 || !displayName || displayName.length > 120) {
+      setDriverDirectoryError('Enter an identity reference (1–200 characters) and display name (1–120 characters).')
+      return
+    }
+    setDriverDirectoryLoading(true)
+    try {
+      const profile = await fraudRequest<DriverProfile>(
+        gatewayUrl,
+        sessionToken,
+        `admin/drivers/${encodeURIComponent(driverRef)}`,
+        {
+          method: 'PUT',
+          body: JSON.stringify({ displayName, status: driverProfileStatus }),
+        },
+      )
+      setDriverDirectoryMessage(
+        `${profile.displayName} profile saved as ${profile.status}. Active status indicates the driver has been verified for dispatch.`,
+      )
+      await loadDriverProfiles()
+    } catch (requestError) {
+      setDriverDirectoryError(requestError instanceof Error
+        ? requestError.message
+        : 'Could not save driver profile.')
+    } finally {
+      setDriverDirectoryLoading(false)
     }
   }
 
@@ -630,8 +697,60 @@ function App() {
               </div>
               <div className="notice">
                 <span className="notice-icon">i</span>
-                <p>Only routed, unstarted deliveries can be assigned. A driver can have one active route; assignment changes are locked after handoff.</p>
+                <p>Only active, admin-verified driver profiles can receive routed, unstarted deliveries. A driver can have one active route; assignment changes are locked after handoff.</p>
               </div>
+              <div className="alert-toolbar">
+                <span>{driverProfiles.filter((driver) => driver.status === 'active').length} eligible driver profiles loaded</span>
+                <button className="submit-button alert-load" disabled={driverDirectoryLoading}
+                  onClick={() => void loadDriverProfiles()} type="button">
+                  {driverDirectoryLoading ? 'Loading…' : 'Load driver directory'}
+                </button>
+              </div>
+              {driverDirectoryError ? <div className="alert alert-error" role="alert">{driverDirectoryError}</div> : null}
+              {driverDirectoryMessage ? <div className="alert alert-success" role="status">{driverDirectoryMessage}</div> : null}
+              <form onSubmit={(event) => void saveDriverProfile(event)}>
+                <label>
+                  Driver identity reference
+                  <input autoComplete="off" value={driverProfileRef}
+                    onChange={(event) => setDriverProfileRef(event.target.value)}
+                    placeholder="Exact identity-provider subject" required />
+                </label>
+                <label>
+                  Driver display name
+                  <input autoComplete="name" value={driverProfileName}
+                    onChange={(event) => setDriverProfileName(event.target.value)}
+                    placeholder="Name for operations" required />
+                </label>
+                <label>
+                  Verification status
+                  <select value={driverProfileStatus}
+                    onChange={(event) => setDriverProfileStatus(event.target.value as DriverProfile['status'])}>
+                    <option value="pending">Pending review</option>
+                    <option value="active">Active · verified for dispatch</option>
+                    <option value="suspended">Suspended</option>
+                  </select>
+                </label>
+                <button className="submit-button" disabled={driverDirectoryLoading} type="submit">
+                  {driverDirectoryLoading ? 'Saving…' : 'Save driver profile'}
+                </button>
+              </form>
+              {driverProfiles.length > 0 ? (
+                <div className="fraud-alert-list">
+                  {driverProfiles.map((driver) => (
+                    <article className="fraud-alert" key={driver.driverRef}>
+                      <div className="fraud-alert-heading">
+                        <div><h3>{driver.displayName}</h3><span>{driver.driverRef}</span></div>
+                        <span className={`alert-state state-${driver.status === 'active' ? 'reviewed' : driver.status}`}>
+                          {driver.status}
+                        </span>
+                      </div>
+                      <p className="resolved-note">
+                        {driver.verifiedAt ? `Verified ${new Date(driver.verifiedAt).toLocaleString()}` : 'Not verified for dispatch'}
+                      </p>
+                    </article>
+                  ))}
+                </div>
+              ) : null}
               <form onSubmit={(event) => void assignDriver(event)}>
                 <label>
                   Route ID
@@ -640,12 +759,21 @@ function App() {
                     placeholder="Route UUID from dispatch" required />
                 </label>
                 <label>
-                  Driver identity
-                  <input autoComplete="off" value={assignmentDriverRef}
-                    onChange={(event) => setAssignmentDriverRef(event.target.value)}
-                    placeholder="Authenticated driver reference" required />
+                  Eligible driver
+                  <select required value={assignmentDriverRef}
+                    onChange={(event) => setAssignmentDriverRef(event.target.value)}>
+                    <option value="">Select an active verified driver</option>
+                    {driverProfiles.filter((driver) => driver.status === 'active').map((driver) => (
+                      <option key={driver.driverRef} value={driver.driverRef}>
+                        {driver.displayName} · {driver.driverRef}
+                      </option>
+                    ))}
+                  </select>
                 </label>
-                <button className="submit-button" disabled={assignmentLoading} type="submit">
+                <button className="submit-button"
+                  disabled={assignmentLoading || !driverProfiles.some((driver) =>
+                    driver.driverRef === assignmentDriverRef && driver.status === 'active')}
+                  type="submit">
                   {assignmentLoading ? 'Assigning…' : 'Assign route'}
                 </button>
               </form>

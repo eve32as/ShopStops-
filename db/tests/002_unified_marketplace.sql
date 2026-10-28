@@ -471,6 +471,28 @@ SELECT create_unified_route(:'checkout_id', 'route-test-key', 'osrm')
 UPDATE unified_delivery_routes
 SET status = 'routed'
 WHERE id = :'route_id';
+SELECT set_driver_profile('driver-test', 'Test Driver', 'active', 'admin-test');
+SELECT set_driver_profile('driver-test', 'Test Driver', 'active', 'admin-test');
+SELECT set_driver_profile('driver-pending', 'Pending Driver', 'pending', 'admin-test');
+SELECT set_config('shopstops.test_route_id', :'route_id', true);
+DO $$
+DECLARE
+    v_message text;
+BEGIN
+    BEGIN
+        PERFORM assign_unified_driver(
+            current_setting('shopstops.test_route_id')::uuid,
+            'driver-pending', 'dispatch-test'
+        );
+        RAISE EXCEPTION 'pending driver profile was assigned';
+    EXCEPTION WHEN OTHERS THEN
+        GET STACKED DIAGNOSTICS v_message = MESSAGE_TEXT;
+        IF v_message NOT LIKE '%driver is not active and verified%' THEN
+            RAISE;
+        END IF;
+    END;
+END;
+$$;
 SELECT assign_unified_driver(:'route_id', 'driver-test', 'dispatch-test');
 SELECT assign_unified_driver(:'route_id', 'driver-test', 'dispatch-test');
 UPDATE unified_delivery_routes
@@ -645,6 +667,18 @@ BEGIN
         WHERE aggregate_id = v_route_id
           AND event_type = 'delivery.route.assigned') <> 1 THEN
         RAISE EXCEPTION 'route assignment must emit one audit event, including on retry';
+    END IF;
+    IF (SELECT count(*) FROM outbox_events
+        WHERE aggregate_type = 'driver_profile'
+          AND event_type = 'driver.profile.created'
+          AND payload ->> 'driverRef' = 'driver-test') <> 1
+       OR (SELECT status FROM driver_profiles WHERE driver_ref = 'driver-test') <> 'active'
+       OR (SELECT verified_by FROM driver_profiles WHERE driver_ref = 'driver-test') <> 'admin-test'
+       OR (SELECT count(*) FROM outbox_events
+           WHERE aggregate_type = 'driver_profile'
+             AND event_type = 'driver.profile.created'
+             AND payload ->> 'driverRef' = 'driver-pending') <> 1 THEN
+        RAISE EXCEPTION 'driver profile verification and audit event must persist idempotently';
     END IF;
     IF (SELECT count(*) FROM driver_fraud_alerts
         WHERE route_id = v_route_id AND alert_type = 'impossible_speed'
