@@ -313,12 +313,13 @@ not a CI bypass.
 - The migration runner is tested on a fresh database and a data-preserving
   008-to-009 upgrade in CI. A production owner must still validate its behavior
   against the selected RDS version and rehearse restore and rollback.
-- The current mobile dependency graph reports high-severity npm audit findings
-  in the Expo/Metro toolchain, including braces and node-forge advisories with
-  no upstream patched versions yet. Expo was refreshed to the latest patch in
-  SDK 58 and its compatible package versions; this did not clear the advisories.
-  The CI audit intentionally blocks release until compatible fixes are
-  published and the native build is verified.
+- The mobile dependency graph still reports Expo toolchain audit findings:
+  three high and five low at the last audit, including Zod and deepmerge.
+  `node-forge` was overridden to patched 1.4.2. The remaining findings require
+  compatible upstream fixes or an explicit security-owner exception; do not
+  force a major Expo downgrade to clear the audit. CI intentionally blocks
+  release until findings are resolved or formally excepted and the native build
+  is verified.
 - This baseline does not make the shopper, merchant, driver, or admin clients
   release-complete. See `../../docs/architecture.md` for the role-specific
   release gates.
