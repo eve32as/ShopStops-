@@ -23,21 +23,23 @@ RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 BEGIN
-    IF NEW.driver_ref IS NOT NULL
-       AND NEW.driver_ref IS DISTINCT FROM OLD.driver_ref
-       AND NOT EXISTS (
-           SELECT 1 FROM driver_profiles
-           WHERE driver_profiles.driver_ref = NEW.driver_ref
-             AND driver_profiles.status = 'active'
-       ) THEN
-        RAISE EXCEPTION 'driver is not active and verified';
+    IF NEW.driver_ref IS NOT NULL THEN
+        IF TG_OP = 'INSERT' OR NEW.driver_ref IS DISTINCT FROM OLD.driver_ref THEN
+            IF NOT EXISTS (
+                SELECT 1 FROM driver_profiles
+                WHERE driver_profiles.driver_ref = NEW.driver_ref
+                  AND driver_profiles.status = 'active'
+            ) THEN
+                RAISE EXCEPTION 'driver is not active and verified';
+            END IF;
+        END IF;
     END IF;
     RETURN NEW;
 END;
 $$;
 
 CREATE TRIGGER unified_route_driver_eligibility_guard
-BEFORE UPDATE OF driver_ref ON unified_delivery_routes
+BEFORE INSERT OR UPDATE OF driver_ref ON unified_delivery_routes
 FOR EACH ROW EXECUTE FUNCTION enforce_driver_route_eligibility();
 
 CREATE FUNCTION set_driver_profile(

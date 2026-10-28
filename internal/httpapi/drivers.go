@@ -15,12 +15,12 @@ import (
 )
 
 type DriverProfile struct {
-	DriverRef  string     `json:"driverRef"`
-	DisplayName string    `json:"displayName"`
-	Status     string     `json:"status"`
-	CreatedAt  time.Time  `json:"createdAt"`
-	UpdatedAt  time.Time  `json:"updatedAt"`
-	VerifiedAt *time.Time `json:"verifiedAt,omitempty"`
+	DriverRef   string     `json:"driverRef"`
+	DisplayName string     `json:"displayName"`
+	Status      string     `json:"status"`
+	CreatedAt   time.Time  `json:"createdAt"`
+	UpdatedAt   time.Time  `json:"updatedAt"`
+	VerifiedAt  *time.Time `json:"verifiedAt,omitempty"`
 }
 
 func (s *Server) listDriverProfiles(w http.ResponseWriter, r *http.Request) {
