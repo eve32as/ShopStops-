@@ -313,13 +313,13 @@ not a CI bypass.
 - The migration runner is tested on a fresh database and a data-preserving
   008-to-009 upgrade in CI. A production owner must still validate its behavior
   against the selected RDS version and rehearse restore and rollback.
-- The mobile dependency graph still reports Expo toolchain audit findings:
-  three high and five low at the last audit, including Zod and deepmerge.
-  `node-forge` was overridden to patched 1.4.2. The remaining findings require
-  compatible upstream fixes or an explicit security-owner exception; do not
-  force a major Expo downgrade to clear the audit. CI intentionally blocks
-  release until findings are resolved or formally excepted and the native build
-  is verified.
+- The mobile dependency graph uses npm overrides for `node-forge` 1.4.2, Zod
+  4.6.7, and the `@afeisite/deepmerge-clone` 4.3.2 fork to address advisories
+  in Expo's tooling tree. `npm audit` is clean with the current lockfile. The
+  deepmerge replacement is a third-party fork because upstream has not
+  published a patched release; review this override when upstream publishes a
+  fix. Keep dependency audits blocking and verify Expo native builds after
+  dependency changes.
 - This baseline does not make the shopper, merchant, driver, or admin clients
   release-complete. See `../../docs/architecture.md` for the role-specific
   release gates.
