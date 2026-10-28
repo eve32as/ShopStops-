@@ -66,7 +66,7 @@ func New(ctx context.Context, config Config, logger *slog.Logger) (*Gateway, err
 	jwksContext := context.WithValue(context.Background(), oauth2.HTTPClient, oidcClient)
 	verifier := provider.VerifierContext(jwksContext, &oidc.Config{
 		ClientID:             config.Audience,
-		SupportedSigningAlgs: []string{"RS256"},
+		SupportedSigningAlgs: []string{"RS256", "ES256"},
 	})
 	upstream, _ := url.Parse(config.UpstreamURL)
 	proxy := &httputil.ReverseProxy{
@@ -84,7 +84,6 @@ func New(ctx context.Context, config Config, logger *slog.Logger) (*Gateway, err
 			}
 		},
 		Transport: &http.Transport{
-			Proxy:                 http.ProxyFromEnvironment,
 			DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
 			ForceAttemptHTTP2:     true,
 			MaxConnsPerHost:       100,

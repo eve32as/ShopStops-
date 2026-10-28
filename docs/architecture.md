@@ -318,9 +318,14 @@ The shopper can enter a delivery address for on-device platform geocoding or use
 foreground GPS; only selected coordinates are sent to the API, not the typed
 address. The admin client provides the full-refund operation, driver-alert review
 queue, route assignment control, and driver eligibility management. Both clients
-expect an externally configured trusted identity gateway; native OIDC sign-in
-and issuer/role-claim mapping are not implemented. The mobile client also
-requires Stripe publishable key configuration. The clients are
+expect the operator-configured OIDC gateway, which validates JWT signatures,
+issuer, audience, expiry, and mapped role claims before injecting verified
+identity headers. The repository does not select an identity provider or
+configure its issuer, audience, or role mapping; operators must supply those
+values. Native OIDC sign-in is not implemented. Driver activation remains an
+explicit administrator verification decision; automated background screening
+is not included. The mobile client also requires Stripe publishable key
+configuration. The clients are
 API-backed MVP foundations, not complete consumer, driver, merchant, or admin
 products. Native identity, background location, admin search/zone/reporting
 controls, production routing, and real-time integrations remain unimplemented.

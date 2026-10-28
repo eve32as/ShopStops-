@@ -218,6 +218,29 @@ func TestGatewayPublicEndpointsStripClientIdentity(t *testing.T) {
 	}
 }
 
+func TestGatewayOnlyAllowsExactPublicRoutesAndMethods(t *testing.T) {
+	harness := newGatewayHarness(t)
+	tests := []struct {
+		method string
+		path   string
+	}{
+		{method: http.MethodGet, path: "/webhooks/stripe"},
+		{method: http.MethodPost, path: "/healthz"},
+		{method: http.MethodGet, path: "/healthz/"},
+		{method: http.MethodPost, path: "/webhooks/stripe/"},
+	}
+	for _, test := range tests {
+		request := httptest.NewRequest(test.method, test.path, nil)
+		response := httptest.NewRecorder()
+
+		harness.gateway.ServeHTTP(response, request)
+
+		if response.Code != http.StatusUnauthorized {
+			t.Errorf("%s %s status = %d, want %d", test.method, test.path, response.Code, http.StatusUnauthorized)
+		}
+	}
+}
+
 func TestGatewayRequiresSingleBearerTokenHeader(t *testing.T) {
 	harness := newGatewayHarness(t)
 	tests := []struct {

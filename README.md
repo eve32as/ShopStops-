@@ -97,11 +97,56 @@ Configure a driver's statement recipient in the admin dashboard before the
 worker runs. Statement creation is unique per driver and UTC week; separate
 worker replicas safely claim messages using database row locks and expiring
 leases.
-Protected endpoints use a shared internal bearer token and must be placed
-behind a gateway that authenticates users, enforces roles, strips client-supplied
-`X-ShopStops-Actor` and `X-ShopStops-Actor-Role` headers, and injects verified
-actor identity and role. Do not distribute this internal token to client
-applications.
+## OIDC identity gateway
+
+Run the provider-neutral gateway as the only public path to the API. It validates
+OIDC-issued JWT bearer tokens against the configured issuer's discovery metadata
+and signing keys, checks the exact issuer, audience, expiry and RS256/ES256
+signature, maps the configured role claim to ShopStops roles, and uses the
+verified token subject as the actor. Role claims may be nested paths such as
+`realm_access.roles` and may be a string or an array of strings. Unknown roles
+are ignored; tokens without an allowed role are denied. A token mapping to more
+than one ShopStops role must select one with `X-ShopStops-Role-Selection`; the
+selection is accepted only when present in the verified token's mapped roles.
+Client-supplied actor, role, authorization, cookie, and forwarding headers are
+never trusted or forwarded. The gateway replaces actor/role headers and injects
+the internal API bearer token.
+
+Choose the identity provider and configure its exact issuer, API audience, role
+claim, and provider-role mappings for your deployment. No identity provider or
+role vocabulary is selected by this repository. The issuer must use HTTPS;
+HTTP is accepted only for loopback development. Configure the API upstream as a
+private service URL, and restrict network access so clients cannot reach the API
+directly. The gateway listens on `:8081` by default; set
+`SHOPSTOPS_GATEWAY_HTTP_ADDR` to override it. Configure both TLS certificate and
+key file variables for gateway-managed TLS, or terminate TLS at a trusted
+ingress. Do not expose the gateway over plaintext HTTP to untrusted networks.
+For gateway-managed TLS, set both `SHOPSTOPS_GATEWAY_TLS_CERT_FILE` and
+`SHOPSTOPS_GATEWAY_TLS_KEY_FILE`.
+
+```sh
+export SHOPSTOPS_OIDC_ISSUER='https://identity.example/tenant'
+export SHOPSTOPS_OIDC_AUDIENCE='shopstops-api'
+export SHOPSTOPS_OIDC_ROLE_CLAIM='realm_access.roles'
+export SHOPSTOPS_OIDC_ROLE_MAPPINGS='{"shopstops-admin":"admin","shopstops-driver":"driver","shopstops-customer":"customer","shopstops-merchant":"merchant","shopstops-dispatch":"dispatch"}'
+export SHOPSTOPS_API_UPSTREAM_URL='http://shopstops-api.internal:8080'
+# Set the same secret used by the API through your server-side secret manager.
+export SHOPSTOPS_INTERNAL_API_TOKEN
+go run ./cmd/shopstops-gateway
+```
+
+`GET /healthz` and `POST /webhooks/stripe` are the only unauthenticated
+pass-through routes. Stripe webhook signatures are still verified by the API.
+The API and gateway share the internal bearer token; store it in a secret manager
+and do not distribute it to client applications. The gateway authenticates
+tokens but does not implement user sign-in or choose/configure an identity
+provider for you.
+
+Driver eligibility remains a separate explicit administrator decision.
+Administrators must review and verify driver identities before activating a
+profile; automated background screening and provider integrations are not
+included.
+
 Delivery/service fee configuration is in integer cents and defaults to zero if
 unset. The checkout endpoint builds the merchant item lines from each order's
 `item_subtotal_cents` snapshot and applies the D.C. surcharge from the configured
@@ -163,9 +208,8 @@ web). The mobile client provides nearby-store discovery, checkout/payment,
 shopper delivery tracking on native maps, assigned-stop maps and foreground GPS
 sharing for drivers, and merchant subscription setup. The admin client provides
 the existing full-refund operation. Both
-expect an identity-aware public gateway to validate user session tokens and
-inject backend actor/role headers. Neither client may receive the backend
-Stripe secret or internal API token.
+expect the operator-configured identity gateway described above. Neither client
+may receive the backend Stripe secret or internal API token.
 
 Run the mobile client from `apps/mobile` with `npm ci`, then use
 `npx expo run:ios` or `npx expo run:android` to create a development build.
