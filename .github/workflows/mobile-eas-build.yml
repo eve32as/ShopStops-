@@ -1,0 +1,57 @@
+name: Mobile EAS build
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Platform to build
+        required: true
+        type: choice
+        options:
+          - all
+          - android
+          - ios
+      profile:
+        description: Build profile (production creates store-ready binaries, not a submission)
+        required: true
+        type: choice
+        options:
+          - preview
+          - production
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mobile-eas-${{ inputs.profile }}-${{ inputs.platform }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: EAS ${{ inputs.profile }} build (${{ inputs.platform }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: mobile-build-${{ inputs.profile }}
+    env:
+      BUILD_PLATFORM: ${{ inputs.platform }}
+      BUILD_PROFILE: ${{ inputs.profile }}
+      EAS_PROJECT_ID: ${{ vars.EAS_PROJECT_ID }}
+      EXPO_PUBLIC_GOOGLE_MAPS_API_KEY: ${{ vars.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY }}
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/mobile/package-lock.json
+      - name: Validate EAS configuration
+        run: |
+          test -n "$EXPO_TOKEN" || { echo "Configure EXPO_TOKEN in this GitHub environment."; exit 1; }
+          test -n "$EAS_PROJECT_ID" || { echo "Configure EAS_PROJECT_ID in this GitHub environment."; exit 1; }
+        working-directory: apps/mobile
+      - run: npm ci
+        working-directory: apps/mobile
+      - name: Build on EAS
+        run: npx --yes eas-cli@27.2.0 build --platform "$BUILD_PLATFORM" --profile "$BUILD_PROFILE" --non-interactive
+        working-directory: apps/mobile
