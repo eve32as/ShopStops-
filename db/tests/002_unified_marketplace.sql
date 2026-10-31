@@ -488,11 +488,12 @@ BEGIN
 END;
 $$;
 INSERT INTO driver_screenings (
-    driver_ref, idempotency_key, package_id, status, provider_status,
+    driver_ref, idempotency_key, package_id, work_location_city,
+    work_location_region, work_location_country, status, provider_status,
     provider_result, requested_by
 ) VALUES (
-    'driver-test', 'driver-test-screening', 'test-package', 'complete',
-    'complete', 'clear', 'admin-test'
+    'driver-test', 'driver-test-screening', 'test-package', 'Washington',
+    'DC', 'US', 'complete', 'complete', 'clear', 'admin-test'
 ) RETURNING id AS screening_id \gset
 SELECT * FROM record_driver_screening_review(
     :'screening_id', 'driver-test', 'approved', 'admin-test'
@@ -889,5 +890,33 @@ BEGIN
     ) THEN
         RAISE EXCEPTION 'order state changes should publish an outbox event';
     END IF;
+END;
+$$;
+
+DO $$
+DECLARE
+    v_screening_id uuid;
+    v_message text;
+BEGIN
+    INSERT INTO driver_screenings (
+        driver_ref, idempotency_key, package_id, work_location_city,
+        work_location_region, work_location_country, status, requested_by
+    ) VALUES (
+        'driver-test', 'driver-test-reconciliation', 'test-package',
+        'Washington', 'DC', 'US', 'reconciliation_required', 'admin-test'
+    )
+    RETURNING id INTO v_screening_id;
+
+    BEGIN
+        PERFORM resolve_driver_screening_reconciliation(
+            v_screening_id, 'driver-test', 'admin-test', 'no_active_check'
+        );
+        RAISE EXCEPTION 'a recent ambiguous request was reconciled';
+    EXCEPTION WHEN OTHERS THEN
+        GET STACKED DIAGNOSTICS v_message = MESSAGE_TEXT;
+        IF v_message NOT LIKE '%only the latest unresolved screening can be reconciled%' THEN
+            RAISE;
+        END IF;
+    END;
 END;
 $$;

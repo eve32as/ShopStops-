@@ -377,6 +377,7 @@ func (s *Server) handler() http.Handler {
 	mux.Handle("POST /admin/drivers/{driverRef}/screenings", s.authorized(http.HandlerFunc(s.startDriverScreening)))
 	mux.Handle("POST /admin/drivers/{driverRef}/screenings/refresh", s.authorized(http.HandlerFunc(s.refreshDriverScreening)))
 	mux.Handle("PUT /admin/drivers/{driverRef}/screenings/review", s.authorized(http.HandlerFunc(s.reviewDriverScreening)))
+	mux.Handle("POST /admin/drivers/{driverRef}/screenings/{screeningId}/reconcile", s.authorized(http.HandlerFunc(s.reconcileDriverScreening)))
 	mux.Handle("GET /driver/routes/{routeId}", s.authorized(http.HandlerFunc(s.getDriverRoute)))
 	mux.Handle("GET /driver/routes/active", s.authorized(http.HandlerFunc(s.getActiveDriverRoute)))
 	mux.Handle("POST /driver/routes/{routeId}/location", s.authorized(http.HandlerFunc(s.recordDriverLocation)))

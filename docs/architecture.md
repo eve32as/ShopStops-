@@ -304,8 +304,15 @@ Driver references must match the identity subject supplied by the trusted
 gateway. Profiles remain pending until an administrator explicitly verifies and
 activates them; suspended and pending drivers cannot be newly assigned. Profile
 changes are audit events, and the database enforces eligibility at route
-assignment time. This is an administrative verification step, not automated
-identity-provider provisioning or background screening.
+assignment time. Migration `014_checkr_driver_screening.sql` adds the Checkr
+candidate/invitation/report lifecycle. Candidate contact details and raw reports
+are not persisted by ShopStops; the configured work location is retained for safe
+invitation retries. Administrators inspect reports with Checkr, record a separate
+screening decision, and then explicitly activate the profile. A new screening
+suspends dispatch eligibility until reviewed and reactivated. Provider
+results are never used to automatically approve a driver or take adverse action.
+Operators must configure Checkr credentials, package, production endpoint, work
+locations, and the legally required consent, dispute, and adverse-action process.
 
 The OpenAPI contract describes subscription, refund, and webhook flows. The
 `apps/mobile` Expo client targets iOS and Android and includes shopper delivery
@@ -317,15 +324,16 @@ builds require a restricted `GOOGLE_MAPS_API_KEY` provided through Expo config.
 The shopper can enter a delivery address for on-device platform geocoding or use
 foreground GPS; only selected coordinates are sent to the API, not the typed
 address. The admin client provides the full-refund operation, driver-alert review
-queue, route assignment control, and driver eligibility management. Both clients
+queue, route assignment control, driver eligibility management, and Checkr
+screening initiation/review. Both clients
 expect the operator-configured OIDC gateway, which validates JWT signatures,
 issuer, audience, expiry, and mapped role claims before injecting verified
 identity headers. The repository does not select an identity provider or
 configure its issuer, audience, or role mapping; operators must supply those
-values. Native OIDC sign-in is not implemented. Driver activation remains an
-explicit administrator verification decision; automated background screening
-is not included. The mobile client also requires Stripe publishable key
-configuration. The clients are
+values. Native OIDC sign-in is not implemented. Checkr screening uses server-side
+credentials and a configured package; driver activation remains a separate,
+explicit administrator decision after reviewing the completed screening. The
+mobile client also requires Stripe publishable key configuration. The clients are
 API-backed MVP foundations, not complete consumer, driver, merchant, or admin
 products. Native identity, background location, admin search/zone/reporting
 controls, production routing, and real-time integrations remain unimplemented.

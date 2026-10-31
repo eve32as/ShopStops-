@@ -614,6 +614,166 @@ paths:
           description: Invalid driver identity, name, or status
         '403':
           description: Admin role required
+  /admin/drivers/{driverRef}/screenings:
+    post:
+      operationId: createDriverScreening
+      summary: Create a Checkr candidate and hosted screening invitation
+      description: Admin-only. Candidate name, email, and work location are sent to Checkr and are not retained by ShopStops. The Idempotency-Key prevents duplicate requests; ambiguous provider outcomes require manual reconciliation.
+      parameters:
+        - in: path
+          name: driverRef
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DriverScreeningRequest'
+      responses:
+        '201':
+          description: Checkr invitation created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriverScreening'
+        '200':
+          description: Existing idempotent screening request
+        '400':
+          description: Invalid screening request or missing idempotency key
+        '403':
+          description: Admin role required
+        '404':
+          description: Driver profile not found
+        '409':
+          description: Another screening is in progress or requires reconciliation
+        '502':
+          description: Checkr request failed or requires reconciliation
+        '503':
+          description: Checkr screening is not configured
+  /admin/drivers/{driverRef}/screenings/refresh:
+    post:
+      operationId: refreshDriverScreening
+      summary: Refresh the latest Checkr invitation and report status
+      description: Admin-only. Polls Checkr for status and persists only provider status/result codes, not report details. A completed result still requires an administrator review.
+      parameters:
+        - in: path
+          name: driverRef
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+      responses:
+        '200':
+          description: Latest screening status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriverScreening'
+        '403':
+          description: Admin role required
+        '404':
+          description: Driver or screening not found
+        '502':
+          description: Checkr could not be reached
+        '503':
+          description: Checkr screening is not configured
+  /admin/drivers/{driverRef}/screenings/review:
+    put:
+      operationId: reviewDriverScreening
+      summary: Record an explicit admin decision on the latest completed screening
+      description: Admin-only. Approval only satisfies the screening review gate; activating the driver remains a separate admin profile change. This endpoint does not interpret Checkr results or take adverse action.
+      parameters:
+        - in: path
+          name: driverRef
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [screeningId, decision]
+              properties:
+                screeningId:
+                  type: string
+                  format: uuid
+                decision:
+                  type: string
+                  enum: [approved, denied]
+      responses:
+        '200':
+          description: Admin review recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriverScreening'
+        '400':
+          description: Invalid review request
+        '403':
+          description: Admin role required
+        '404':
+          description: Screening not found for this driver
+        '409':
+          description: Screening is not the latest completed screening
+  /admin/drivers/{driverRef}/screenings/{screeningId}/reconcile:
+    post:
+      operationId: reconcileDriverScreening
+      summary: Resolve an ambiguous Checkr request after manual provider reconciliation
+      description: Admin-only. Requests in flight must be inactive for two minutes. Requires confirmation that no active Checkr candidate check or invitation remains. This does not approve or activate the driver.
+      parameters:
+        - in: path
+          name: driverRef
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+        - in: path
+          name: screeningId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [resolution]
+              properties:
+                resolution:
+                  type: string
+                  enum: [no_active_check]
+      responses:
+        '200':
+          description: Ambiguous request reconciled; a new request may be created
+        '400':
+          description: Explicit no-active-check confirmation is required
+        '403':
+          description: Admin role required
+        '404':
+          description: Screening not found for this driver
+        '409':
+          description: Screening is not the latest unresolved request or is still within its request grace period
   /admin/driver-fraud-alerts:
     get:
       operationId: listDriverFraudAlerts
@@ -1342,6 +1502,69 @@ components:
           type: string
           format: date-time
         verifiedAt:
+          type: string
+          format: date-time
+        screening:
+          $ref: '#/components/schemas/DriverScreening'
+    DriverScreeningRequest:
+      type: object
+      additionalProperties: false
+      required: [firstName, lastName, email, workLocation]
+      properties:
+        firstName:
+          type: string
+          minLength: 1
+          maxLength: 100
+        lastName:
+          type: string
+          minLength: 1
+          maxLength: 100
+        email:
+          type: string
+          format: email
+          maxLength: 254
+        workLocation:
+          type: object
+          additionalProperties: false
+          required: [city, region, country]
+          properties:
+            city:
+              type: string
+              minLength: 1
+              maxLength: 100
+            region:
+              type: string
+              minLength: 2
+              maxLength: 3
+            country:
+              type: string
+              minLength: 2
+              maxLength: 2
+    DriverScreening:
+      type: object
+      required: [id, packageId, status, reviewDecision, requestedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        packageId:
+          type: string
+        status:
+          type: string
+          enum: [requested, candidate_created, invitation_submitting, invited, in_progress, complete, failed, reconciliation_required]
+        providerStatus:
+          type: string
+        providerResult:
+          type: string
+        reviewDecision:
+          type: string
+          enum: [pending, approved, denied]
+        requestedAt:
+          type: string
+          format: date-time
+        reviewedBy:
+          type: string
+        reviewedAt:
           type: string
           format: date-time
     DriverFraudAlert:

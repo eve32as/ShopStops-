@@ -24,9 +24,10 @@ type Client struct {
 }
 
 type Candidate struct {
-	FirstName string
-	LastName  string
-	Email     string
+	FirstName    string
+	LastName     string
+	Email        string
+	WorkLocation WorkLocation
 }
 
 type WorkLocation struct {
@@ -71,8 +72,12 @@ func NewClient(apiKey, packageID, baseURL string) (*Client, error) {
 		strings.TrimRight(parsed.Path, "/") != "" || strings.TrimSpace(baseURL) != baseURL {
 		return nil, errors.New("Checkr API base URL must be an absolute HTTP(S) origin")
 	}
-	if parsed.Scheme != "https" && !isLoopback(parsed.Hostname()) {
-		return nil, errors.New("Checkr API must use HTTPS except for loopback tests")
+	if !isLoopback(parsed.Hostname()) &&
+		(parsed.Scheme != "https" ||
+			(parsed.Hostname() != "api.checkr.com" &&
+				parsed.Hostname() != "api.checkr-staging.com") ||
+			(parsed.Port() != "" && parsed.Port() != "443")) {
+		return nil, errors.New("Checkr API URL must use an official HTTPS endpoint")
 	}
 	return &Client{
 		apiKey: apiKey, packageID: packageID, baseURL: strings.TrimRight(baseURL, "/"),
@@ -80,6 +85,13 @@ func NewClient(apiKey, packageID, baseURL string) (*Client, error) {
 			_ *http.Request, _ []*http.Request,
 		) error {
 			return http.ErrUseLastResponse
+		}, Transport: &http.Transport{
+			MaxConnsPerHost:       20,
+			MaxIdleConns:          20,
+			MaxIdleConnsPerHost:   10,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   5 * time.Second,
+			ResponseHeaderTimeout: 10 * time.Second,
 		}},
 	}, nil
 }
@@ -92,10 +104,15 @@ func (c *Client) CreateCandidate(ctx context.Context, candidate Candidate) (stri
 	var response struct {
 		ID string `json:"id"`
 	}
-	err := c.request(ctx, http.MethodPost, "/v1/candidates", map[string]string{
+	err := c.request(ctx, http.MethodPost, "/v1/candidates", map[string]any{
 		"first_name": candidate.FirstName,
 		"last_name":  candidate.LastName,
 		"email":      candidate.Email,
+		"work_locations": []map[string]string{{
+			"city":    candidate.WorkLocation.City,
+			"state":   candidate.WorkLocation.Region,
+			"country": candidate.WorkLocation.Country,
+		}},
 	}, &response)
 	if err != nil {
 		return "", err
@@ -174,6 +191,7 @@ func (c *Client) request(
 	}
 	defer response.Body.Close()
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64*1024))
 		return &APIError{StatusCode: response.StatusCode}
 	}
 	limited := io.LimitReader(response.Body, maxResponseBytes+1)

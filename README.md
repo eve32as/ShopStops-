@@ -14,10 +14,11 @@ Apply `db/migrations/001_delivery_foundation.sql`,
 `db/migrations/006_catalog_orders.sql`,
 `db/migrations/007_merchant_catalog_management.sql`,
 `db/migrations/008_driver_fraud_monitor.sql`,
-`db/migrations/010_driver_rerouting_tracking.sql`, and
-`db/migrations/011_weekly_payout_notifications.sql`, and
-`db/migrations/012_driver_route_assignment.sql`, and
-`db/migrations/013_driver_eligibility.sql` on PostgreSQL 14+ with PostGIS 3.x
+`db/migrations/010_driver_rerouting_tracking.sql`,
+`db/migrations/011_weekly_payout_notifications.sql`,
+`db/migrations/012_driver_route_assignment.sql`,
+`db/migrations/013_driver_eligibility.sql`, and
+`db/migrations/014_checkr_driver_screening.sql` on PostgreSQL 14+ with PostGIS 3.x
 installed. The migrations create dispatch, unified-basket, catalog, and order
 models; spatial queries; transaction-safe order/merchant limits; immutable
 multi-stop routes; payment/tax ledger records; outbox events; and weekly courier
@@ -47,6 +48,11 @@ export STRIPE_SECRET_KEY
 export STRIPE_WEBHOOK_SECRET
 # Configure a Stripe Price for USD 199/month to enable merchant subscriptions.
 export STRIPE_MERCHANT_MONTHLY_PRICE_ID
+# Optional Checkr screening; the default base URL is the Checkr staging API.
+# Production must explicitly configure https://api.checkr.com after onboarding.
+export CHECKR_API_KEY
+export CHECKR_PACKAGE_ID
+export CHECKR_BASE_URL
 go run ./cmd/shopstops-api
 ```
 
@@ -60,7 +66,9 @@ route expansion. Admins can list and resolve these alerts in the control room.
 Dispatchers and admins can assign routed deliveries to drivers; the assignment
 is transactionally guarded against duplicate active routes and audited to the
 outbox. Admins must provision and verify driver identities in the directory;
-only active profiles are eligible, and profile status changes are audited.
+driver screening must be completed and reviewed before explicit admin activation.
+Only active profiles with a current approved Checkr screening are eligible, and
+profile/screening status changes are audited.
 The mobile shopper can geocode a typed delivery address on-device or use current
 location; only coordinates are sent to the API.
 Merchant catalog endpoints let authenticated merchants manage item names,
@@ -142,10 +150,45 @@ and do not distribute it to client applications. The gateway authenticates
 tokens but does not implement user sign-in or choose/configure an identity
 provider for you.
 
-Driver eligibility remains a separate explicit administrator decision.
-Administrators must review and verify driver identities before activating a
-profile; automated background screening and provider integrations are not
-included.
+## Checkr driver screening
+
+The admin driver directory can create Checkr candidates and hosted invitations,
+refresh invitation/report status, and record a separate admin review. The
+candidate's name and email are sent to Checkr but not stored by ShopStops. The
+configured work city/region/country is retained with the screening request so
+invitation retries use the original location. Raw reports are not stored. The API
+stores provider IDs, package/status/result codes, request/review actors, and
+timestamps. Use Checkr's
+dashboard to inspect the full report before recording the review. Checkr package
+selection is configured by the operator and is not hard-coded by the application.
+
+Set both `CHECKR_API_KEY` and `CHECKR_PACKAGE_ID` to enable screening. If unset,
+the screening endpoints fail closed with `503`; if only one is set, API startup
+fails. `CHECKR_BASE_URL` defaults to Checkr staging (`https://api.checkr-staging.com`);
+production must explicitly configure `https://api.checkr.com` after Checkr
+onboarding and package approval. Keep the API key in a server-side secret manager.
+
+Screening requests require an `Idempotency-Key`. Ambiguous network/provider
+outcomes are marked for manual reconciliation and are not automatically retried,
+to avoid duplicate candidates or invitations. An administrator must inspect
+Checkr, cancel or otherwise resolve any existing invitation/check, then explicitly
+confirm no active check remains before another request can be created. Uncertain
+requests must be inactive for at least two minutes before they can be reconciled.
+Completed provider results do not
+activate a driver: an administrator must review and approve the latest completed
+screening, then separately set the driver's profile to active. Starting a new
+screening moves an active profile back to pending, and the database blocks new
+route assignment until the new result is reviewed and the administrator
+reactivates the profile.
+
+Before enabling production checks, complete Checkr onboarding, select the
+appropriate package and work-location requirements, determine applicable
+jurisdictions and screening policy, and implement the required notices,
+authorizations, dispute handling, and adverse-action process with qualified
+compliance counsel. The provider integration does not make legal decisions,
+adjudicate results, or automate adverse action. Checkr must be configured for its
+hosted candidate consent flow; do not order checks without required candidate
+disclosures and authorization.
 
 Delivery/service fee configuration is in integer cents and defaults to zero if
 unset. The checkout endpoint builds the merchant item lines from each order's

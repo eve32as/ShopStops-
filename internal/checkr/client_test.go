@@ -19,12 +19,23 @@ func TestClientCreatesCandidateInvitationAndFetchesReport(t *testing.T) {
 		}
 		switch r.URL.Path {
 		case "/v1/candidates":
-			var body map[string]string
+			var body struct {
+				FirstName    string `json:"first_name"`
+				LastName     string `json:"last_name"`
+				Email        string `json:"email"`
+				WorkLocation []struct {
+					City    string `json:"city"`
+					State   string `json:"state"`
+					Country string `json:"country"`
+				} `json:"work_locations"`
+			}
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Fatal(err)
 			}
-			if body["first_name"] != "Test" || body["last_name"] != "Driver" ||
-				body["email"] != "driver@example.test" {
+			if body.FirstName != "Test" || body.LastName != "Driver" ||
+				body.Email != "driver@example.test" || len(body.WorkLocation) != 1 ||
+				body.WorkLocation[0].City != "Washington" ||
+				body.WorkLocation[0].State != "DC" || body.WorkLocation[0].Country != "US" {
 				t.Errorf("candidate request fields = %#v", body)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]string{"id": "candidate-1"})
@@ -68,6 +79,9 @@ func TestClientCreatesCandidateInvitationAndFetchesReport(t *testing.T) {
 	}
 	candidateID, err := client.CreateCandidate(context.Background(), Candidate{
 		FirstName: "Test", LastName: "Driver", Email: "driver@example.test",
+		WorkLocation: WorkLocation{
+			City: "Washington", Region: "DC", Country: "US",
+		},
 	})
 	if err != nil || candidateID != "candidate-1" {
 		t.Fatalf("CreateCandidate = %q, %v", candidateID, err)
@@ -123,5 +137,8 @@ func TestClientConfigurationRequiresHTTPSOutsideLoopback(t *testing.T) {
 	}
 	if _, err := NewClient("key", "package", "http://127.0.0.1:8080"); err != nil {
 		t.Fatalf("loopback test URL rejected: %v", err)
+	}
+	if _, err := NewClient("key", "package", "https://checkr.example"); err == nil {
+		t.Fatal("NewClient accepted a non-Checkr HTTPS host")
 	}
 }

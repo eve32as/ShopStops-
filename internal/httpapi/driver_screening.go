@@ -37,10 +37,12 @@ type DriverScreeningProvider interface {
 
 type DriverScreeningRepository interface {
 	StartDriverScreening(
-		context.Context, string, string, string, string,
+		context.Context, string, string, string, checkr.WorkLocation, string,
 	) (DriverScreening, bool, error)
 	SetDriverScreeningCandidate(context.Context, string, string) error
-	ClaimDriverScreeningInvitation(context.Context, string) (string, error)
+	ClaimDriverScreeningInvitation(
+		context.Context, string,
+	) (string, checkr.WorkLocation, error)
 	SetDriverScreeningInvitation(context.Context, string, string) error
 	SetDriverScreeningFailure(context.Context, string, string) error
 	LatestDriverScreening(context.Context, string) (DriverScreening, string, error)
@@ -50,6 +52,7 @@ type DriverScreeningRepository interface {
 	ReviewDriverScreening(
 		context.Context, string, string, string, string,
 	) (DriverScreening, error)
+	ResolveDriverScreeningReconciliation(context.Context, string, string, string) error
 }
 
 type screeningStartRequest struct {
@@ -107,7 +110,11 @@ func (s *Server) startDriverScreening(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	screening, created, err := repository.StartDriverScreening(
-		ctx, driverRef, s.screening.PackageID(), idempotencyKey, actor,
+		ctx, driverRef, s.screening.PackageID(), idempotencyKey,
+		checkr.WorkLocation{
+			City: request.Location.City, Region: request.Location.Region,
+			Country: request.Location.Country,
+		}, actor,
 	)
 	if err != nil {
 		s.writeDriverScreeningError(w, err)
@@ -116,6 +123,10 @@ func (s *Server) startDriverScreening(w http.ResponseWriter, r *http.Request) {
 	if created {
 		candidateID, providerErr := s.screening.CreateCandidate(ctx, checkr.Candidate{
 			FirstName: request.FirstName, LastName: request.LastName, Email: request.Email,
+			WorkLocation: checkr.WorkLocation{
+				City: request.Location.City, Region: request.Location.Region,
+				Country: request.Location.Country,
+			},
 		})
 		if providerErr != nil {
 			status := "reconciliation_required"
@@ -143,15 +154,12 @@ func (s *Server) startDriverScreening(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	candidateID, err := repository.ClaimDriverScreeningInvitation(ctx, screening.ID)
+	candidateID, workLocation, err := repository.ClaimDriverScreeningInvitation(ctx, screening.ID)
 	if err != nil {
 		s.writeDriverScreeningError(w, err)
 		return
 	}
-	invitation, providerErr := s.screening.CreateInvitation(ctx, candidateID, checkr.WorkLocation{
-		City: request.Location.City, Region: request.Location.Region,
-		Country: request.Location.Country,
-	})
+	invitation, providerErr := s.screening.CreateInvitation(ctx, candidateID, workLocation)
 	if providerErr != nil {
 		var apiErr *checkr.APIError
 		if errors.As(providerErr, &apiErr) && apiErr.StatusCode >= 400 &&
@@ -277,6 +285,43 @@ func (s *Server) reviewDriverScreening(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, screening)
 }
 
+func (s *Server) reconcileDriverScreening(w http.ResponseWriter, r *http.Request) {
+	actor, ok := s.authorizedActorRole(w, r, "admin")
+	if !ok {
+		return
+	}
+	driverRef, screeningID := r.PathValue("driverRef"), r.PathValue("screeningId")
+	if !validDriverReference(driverRef) || !isUUID(screeningID) {
+		writeError(w, http.StatusBadRequest, "invalid driver or screening identity")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 8*1024)
+	var request struct {
+		Resolution string `json:"resolution"`
+	}
+	if err := decodeScreeningJSON(r, &request); err != nil ||
+		request.Resolution != "no_active_check" {
+		writeError(w, http.StatusBadRequest, "resolution must confirm no active Checkr check remains")
+		return
+	}
+	repository, ok := s.repo.(DriverScreeningRepository)
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "driver screening is unavailable")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	if err := repository.ResolveDriverScreeningReconciliation(
+		ctx, driverRef, screeningID, actor,
+	); err != nil {
+		s.writeDriverScreeningError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"screeningId": screeningID, "status": "failed",
+	})
+}
+
 func (s *Server) writeDriverScreeningError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ErrNotFound):
@@ -341,7 +386,8 @@ func safeProviderCode(value string) string {
 }
 
 func (p *PostgresRepository) StartDriverScreening(
-	ctx context.Context, driverRef, packageID, idempotencyKey, actor string,
+	ctx context.Context, driverRef, packageID, idempotencyKey string,
+	workLocation checkr.WorkLocation, actor string,
 ) (DriverScreening, bool, error) {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -375,12 +421,29 @@ func (p *PostgresRepository) StartDriverScreening(
 	if !errors.Is(err, sql.ErrNoRows) {
 		return DriverScreening{}, false, err
 	}
+	var latestStatus sql.NullString
+	if err := tx.QueryRowContext(ctx, `
+		SELECT status FROM driver_screenings
+		WHERE driver_ref = $1
+		ORDER BY created_at DESC, id DESC
+		LIMIT 1`, driverRef).Scan(&latestStatus); err != nil &&
+		!errors.Is(err, sql.ErrNoRows) {
+		return DriverScreening{}, false, err
+	}
+	if latestStatus.Valid && latestStatus.String != "complete" &&
+		latestStatus.String != "failed" {
+		return DriverScreening{}, false, ErrConflict
+	}
 	screening, err := scanDriverScreening(tx.QueryRowContext(ctx, `
-		INSERT INTO driver_screenings (driver_ref, idempotency_key, package_id, requested_by)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO driver_screenings (
+		    driver_ref, idempotency_key, package_id,
+		    work_location_city, work_location_region, work_location_country, requested_by
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING id::text, package_id, status, provider_status, provider_result,
 		          review_decision, requested_by, reviewed_by, created_at, reviewed_at`,
-		driverRef, idempotencyKey, packageID, actor))
+		driverRef, idempotencyKey, packageID, workLocation.City,
+		workLocation.Region, workLocation.Country, actor))
 	if err != nil {
 		return DriverScreening{}, false, err
 	}
@@ -392,13 +455,13 @@ func (p *PostgresRepository) StartDriverScreening(
 			WHERE driver_ref = $1`, driverRef, actor); err != nil {
 			return DriverScreening{}, false, err
 		}
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload)
-			VALUES ('driver_profile', $1::uuid, 'driver.screening.required',
-			        jsonb_build_object('driverRef', $2, 'actor', $3))`,
-			profileID, driverRef, actor); err != nil {
-			return DriverScreening{}, false, err
-		}
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload)
+		VALUES ('driver_profile', $1::uuid, 'driver.screening.requested',
+		        jsonb_build_object('driverRef', $2, 'screeningId', $3, 'actor', $4))`,
+		profileID, driverRef, screening.ID, actor); err != nil {
+		return DriverScreening{}, false, err
 	}
 	if err := tx.Commit(); err != nil {
 		return DriverScreening{}, false, err
@@ -445,17 +508,22 @@ func (p *PostgresRepository) SetDriverScreeningCandidate(
 
 func (p *PostgresRepository) ClaimDriverScreeningInvitation(
 	ctx context.Context, screeningID string,
-) (string, error) {
+) (string, checkr.WorkLocation, error) {
 	var candidateID string
+	var location checkr.WorkLocation
 	err := p.db.QueryRowContext(ctx, `
 		UPDATE driver_screenings
 		SET status = 'invitation_submitting', updated_at = now()
 		WHERE id = $1::uuid AND status = 'candidate_created'
-		RETURNING candidate_id`, screeningID).Scan(&candidateID)
+		RETURNING candidate_id, work_location_city,
+		          work_location_region, work_location_country`,
+		screeningID).Scan(
+		&candidateID, &location.City, &location.Region, &location.Country,
+	)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", ErrConflict
+		return "", checkr.WorkLocation{}, ErrConflict
 	}
-	return candidateID, err
+	return candidateID, location, err
 }
 
 func (p *PostgresRepository) SetDriverScreeningInvitation(
@@ -519,6 +587,18 @@ func (p *PostgresRepository) UpdateDriverScreeningProviderStatus(
 		return DriverScreening{}, err
 	}
 	defer tx.Rollback()
+	var driverRef, profileID string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT profile.driver_ref, profile.id::text
+		FROM driver_profiles profile
+		JOIN driver_screenings screening ON screening.driver_ref = profile.driver_ref
+		WHERE screening.id = $1::uuid
+		FOR UPDATE OF profile`, screeningID).Scan(&driverRef, &profileID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return DriverScreening{}, ErrNotFound
+		}
+		return DriverScreening{}, err
+	}
 	current, err := scanDriverScreening(tx.QueryRowContext(ctx, `
 		SELECT id::text, package_id, status, provider_status, provider_result,
 		       review_decision, requested_by, reviewed_by, created_at, reviewed_at
@@ -527,15 +607,6 @@ func (p *PostgresRepository) UpdateDriverScreeningProviderStatus(
 		if errors.Is(err, sql.ErrNoRows) {
 			return DriverScreening{}, ErrNotFound
 		}
-		return DriverScreening{}, err
-	}
-	var driverRef, profileID string
-	if err := tx.QueryRowContext(ctx, `
-		SELECT profile.driver_ref, profile.id::text
-		FROM driver_profiles profile
-		JOIN driver_screenings screening ON screening.driver_ref = profile.driver_ref
-		WHERE screening.id = $1::uuid
-		FOR UPDATE OF profile`, screeningID).Scan(&driverRef, &profileID); err != nil {
 		return DriverScreening{}, err
 	}
 	changed := current.Status != status ||
@@ -550,6 +621,15 @@ func (p *PostgresRepository) UpdateDriverScreeningProviderStatus(
 			    updated_at = now()
 			WHERE id = $1::uuid`, screeningID, reportID, status, providerStatus, providerResult)
 		if err != nil {
+			return DriverScreening{}, err
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload)
+			VALUES ('driver_profile', $1::uuid, 'driver.screening.status_updated',
+			        jsonb_build_object(
+			            'driverRef', $2, 'screeningId', $3, 'status', $4,
+			            'actor', 'system:checkr'
+			        ))`, profileID, driverRef, screeningID, status); err != nil {
 			return DriverScreening{}, err
 		}
 		var profileStatus string
@@ -591,39 +671,64 @@ func (p *PostgresRepository) UpdateDriverScreeningProviderStatus(
 func (p *PostgresRepository) ReviewDriverScreening(
 	ctx context.Context, driverRef, screeningID, decision, actor string,
 ) (DriverScreening, error) {
-	var screening DriverScreening
-	var reviewedBy sql.NullString
-	var reviewedAt sql.NullTime
-	err := p.db.QueryRowContext(ctx, `
-		SELECT screening_id::text, status, provider_result, review_decision,
-		       reviewed_by, reviewed_at
-		FROM record_driver_screening_review($1::uuid, $2, $3, $4)`,
-		screeningID, driverRef, decision, actor).Scan(
-		&screening.ID, &screening.Status, &screening.ProviderResult,
-		&screening.ReviewDecision, &reviewedBy, &reviewedAt,
-	)
-	if err == nil {
-		if reviewedBy.Valid {
-			screening.ReviewedBy = reviewedBy.String
-		}
-		if reviewedAt.Valid {
-			screening.ReviewedAt = &reviewedAt.Time
-		}
-		return screening, nil
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return DriverScreening{}, err
 	}
+	defer tx.Rollback()
+	var returnedID string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT screening_id::text
+		FROM record_driver_screening_review($1::uuid, $2, $3, $4)`,
+		screeningID, driverRef, decision, actor).Scan(&returnedID); err != nil {
+		err = mapScreeningFunctionError(err)
+		return DriverScreening{}, err
+	}
+	screening, err := scanDriverScreening(tx.QueryRowContext(ctx, `
+		SELECT id::text, package_id, status, provider_status, provider_result,
+		       review_decision, requested_by, reviewed_by, created_at, reviewed_at
+		FROM driver_screenings WHERE id = $1::uuid`, returnedID))
+	if err != nil {
+		return DriverScreening{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return DriverScreening{}, err
+	}
+	return screening, nil
+}
+
+func (p *PostgresRepository) ResolveDriverScreeningReconciliation(
+	ctx context.Context, driverRef, screeningID, actor string,
+) error {
+	var returnedID, status string
+	err := p.db.QueryRowContext(ctx, `
+		SELECT screening_id::text, status
+		FROM resolve_driver_screening_reconciliation(
+			$1::uuid, $2, $3, 'no_active_check'
+		)`, screeningID, driverRef, actor).Scan(&returnedID, &status)
+	if err != nil {
+		return mapScreeningFunctionError(err)
+	}
+	if status != "failed" {
+		return ErrConflict
+	}
+	return nil
+}
+
+func mapScreeningFunctionError(err error) error {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
 		switch pgErr.Code {
 		case "P0001":
-			return DriverScreening{}, ErrConflict
+			return ErrConflict
 		case "P0002":
-			return DriverScreening{}, ErrNotFound
+			return ErrNotFound
 		}
 	}
 	if errors.Is(err, sql.ErrNoRows) {
-		return DriverScreening{}, ErrNotFound
+		return ErrNotFound
 	}
-	return DriverScreening{}, err
+	return err
 }
 
 func requireOneScreeningRow(result sql.Result, err error) error {

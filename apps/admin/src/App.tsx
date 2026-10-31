@@ -212,6 +212,31 @@ function DriverScreeningControls({
     }
   }
 
+  async function reconcileScreening() {
+    if (!screening) return
+    const confirmed = globalThis.confirm(
+      'Confirm you checked Checkr, no candidate check or invitation remains for this request, and the request has been inactive for at least two minutes. Only then can another screening be started.',
+    )
+    if (!confirmed) return
+    setBusy(true)
+    setError('')
+    setMessage('')
+    try {
+      await fraudRequest<{ screeningId: string; status: string }>(
+        gatewayUrl,
+        sessionToken,
+        `admin/drivers/${encodeURIComponent(driverRef)}/screenings/${encodeURIComponent(screening.id)}/reconcile`,
+        { method: 'POST', body: JSON.stringify({ resolution: 'no_active_check' }) },
+      )
+      setMessage('Checkr request reconciled. A new screening can now be started.')
+      onUpdated()
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Could not reconcile Checkr screening.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <div className="driver-screening">
       <p className="resolved-note">
@@ -223,6 +248,15 @@ function DriverScreeningControls({
         <button className="review-button" disabled={busy} onClick={() => void refreshScreening()} type="button">
           {busy ? 'Working…' : 'Refresh Checkr status'}
         </button>
+      ) : null}
+      {screening && ['requested', 'candidate_created', 'invitation_submitting', 'reconciliation_required'].includes(screening.status) ? (
+        <div className="notice">
+          <span className="notice-icon">!</span>
+          <p>Checkr’s request may need reconciliation. Confirm in Checkr before starting another.</p>
+          <button className="review-button" disabled={busy} onClick={() => void reconcileScreening()} type="button">
+            Confirm no active Checkr check
+          </button>
+        </div>
       ) : null}
       {screening?.status === 'complete' && screening.reviewDecision === 'pending' ? (
         <div className="fraud-actions">

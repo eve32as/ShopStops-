@@ -25,10 +25,12 @@ type screeningTestRepository struct {
 	reviewedID       string
 	reviewedDecision string
 	updateStatus     string
+	reconciledID     string
 }
 
 func (r *screeningTestRepository) StartDriverScreening(
-	_ context.Context, driverRef, packageID, idempotencyKey, actor string,
+	_ context.Context, driverRef, packageID, idempotencyKey string,
+	location checkr.WorkLocation, actor string,
 ) (DriverScreening, bool, error) {
 	r.startCalls++
 	if r.screening.ID != "" {
@@ -52,9 +54,11 @@ func (r *screeningTestRepository) SetDriverScreeningCandidate(
 
 func (r *screeningTestRepository) ClaimDriverScreeningInvitation(
 	_ context.Context, _ string,
-) (string, error) {
+) (string, checkr.WorkLocation, error) {
 	r.screening.Status = "invitation_submitting"
-	return r.candidateID, nil
+	return r.candidateID, checkr.WorkLocation{
+		City: "Washington", Region: "DC", Country: "US",
+	}, nil
 }
 
 func (r *screeningTestRepository) SetDriverScreeningInvitation(
@@ -101,6 +105,14 @@ func (r *screeningTestRepository) ReviewDriverScreening(
 	return r.screening, nil
 }
 
+func (r *screeningTestRepository) ResolveDriverScreeningReconciliation(
+	_ context.Context, driverRef, screeningID, actor string,
+) error {
+	r.reconciledID = screeningID
+	r.screening.Status = "failed"
+	return nil
+}
+
 type screeningTestProvider struct {
 	candidate   checkr.Candidate
 	location    checkr.WorkLocation
@@ -115,6 +127,7 @@ func (p *screeningTestProvider) CreateCandidate(
 	_ context.Context, candidate checkr.Candidate,
 ) (string, error) {
 	p.candidate = candidate
+	p.location = candidate.WorkLocation
 	return "candidate-checkr-1", p.err
 }
 func (p *screeningTestProvider) CreateInvitation(
@@ -156,6 +169,9 @@ func TestStartDriverScreeningCreatesHostedInvitationAndIsIdempotent(t *testing.T
 	}
 	if provider.candidate != (checkr.Candidate{
 		FirstName: "Test", LastName: "Driver", Email: "driver@example.test",
+		WorkLocation: checkr.WorkLocation{
+			City: "Washington", Region: "DC", Country: "US",
+		},
 	}) {
 		t.Errorf("candidate = %#v", provider.candidate)
 	}
@@ -269,6 +285,27 @@ func TestStartDriverScreeningRequiresExplicitReconciliationForAmbiguousProviderE
 		strings.Contains(response.Body.String(), "private provider details") {
 		t.Fatalf("provider failure status/state/body = %d/%q/%s",
 			response.Code, repository.failureStatus, response.Body)
+	}
+}
+
+func TestReconcileDriverScreeningRequiresExplicitCheckrConfirmation(t *testing.T) {
+	repository := &screeningTestRepository{
+		screening: DriverScreening{
+			ID:     "00000000-0000-4000-8000-000000000001",
+			Status: "reconciliation_required", ReviewDecision: "pending",
+		},
+	}
+	handler := screeningTestHandler(repository, &screeningTestProvider{})
+	request := httptest.NewRequest(http.MethodPost,
+		"/admin/drivers/driver-42/screenings/00000000-0000-4000-8000-000000000001/reconcile",
+		strings.NewReader(`{"resolution":"no_active_check"}`))
+	addAdminHeaders(request)
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK || repository.reconciledID != repository.screening.ID {
+		t.Fatalf("reconcile status/id = %d/%q: %s", response.Code, repository.reconciledID, response.Body)
 	}
 }
 

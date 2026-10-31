@@ -8,6 +8,12 @@ CREATE TABLE driver_screenings (
             AND idempotency_key = btrim(idempotency_key)
         ),
     package_id text NOT NULL CHECK (length(btrim(package_id)) BETWEEN 1 AND 200),
+    work_location_city text NOT NULL
+        CHECK (length(btrim(work_location_city)) BETWEEN 1 AND 100),
+    work_location_region text NOT NULL
+        CHECK (length(btrim(work_location_region)) BETWEEN 2 AND 3),
+    work_location_country text NOT NULL
+        CHECK (work_location_country ~ '^[A-Z]{2}$'),
     candidate_id text UNIQUE,
     invitation_id text UNIQUE,
     report_id text UNIQUE,
@@ -25,9 +31,12 @@ CREATE TABLE driver_screenings (
         CHECK (length(btrim(requested_by)) BETWEEN 1 AND 200),
     reviewed_by text,
     reviewed_at timestamptz,
+    reconciled_by text,
+    reconciled_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
     CHECK ((reviewed_by IS NULL) = (reviewed_at IS NULL)),
+    CHECK ((reconciled_by IS NULL) = (reconciled_at IS NULL)),
     CHECK (
         (review_decision = 'pending' AND reviewed_by IS NULL)
         OR (review_decision <> 'pending' AND reviewed_by IS NOT NULL)
@@ -74,6 +83,14 @@ RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 BEGIN
+    IF NEW.driver_ref IS NOT NULL
+       AND (TG_OP = 'INSERT' OR NEW.driver_ref IS DISTINCT FROM OLD.driver_ref)
+    THEN
+        PERFORM 1
+        FROM driver_profiles
+        WHERE driver_ref = NEW.driver_ref
+        FOR UPDATE;
+    END IF;
     IF NEW.driver_ref IS NOT NULL
        AND (TG_OP = 'INSERT' OR NEW.driver_ref IS DISTINCT FROM OLD.driver_ref)
        AND NOT EXISTS (
@@ -137,6 +154,7 @@ BEGIN
        OR p_driver_ref IS NULL
        OR length(btrim(p_driver_ref)) NOT BETWEEN 1 AND 200
        OR p_driver_ref <> btrim(p_driver_ref)
+       OR p_decision IS NULL
        OR p_decision NOT IN ('approved', 'denied')
        OR p_actor IS NULL
        OR length(btrim(p_actor)) NOT BETWEEN 1 AND 200
@@ -144,6 +162,12 @@ BEGIN
         RAISE EXCEPTION 'invalid driver screening review';
     END IF;
 
+    PERFORM 1 FROM driver_profiles
+    WHERE driver_ref = p_driver_ref
+    FOR UPDATE;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'driver screening not found' USING ERRCODE = 'P0002';
+    END IF;
     SELECT * INTO v_screening
     FROM driver_screenings
     WHERE id = p_screening_id
@@ -154,9 +178,6 @@ BEGIN
     IF v_screening.driver_ref <> p_driver_ref THEN
         RAISE EXCEPTION 'driver screening not found' USING ERRCODE = 'P0002';
     END IF;
-    PERFORM 1 FROM driver_profiles
-    WHERE driver_ref = v_screening.driver_ref
-    FOR UPDATE;
     IF v_screening.status <> 'complete'
        OR v_screening.id <> (
            SELECT latest.id FROM driver_screenings latest
@@ -196,5 +217,86 @@ BEGIN
     SELECT v_screening.id, v_screening.driver_ref, v_screening.status,
            v_screening.provider_result, v_screening.review_decision,
            v_screening.reviewed_by, v_screening.reviewed_at;
+END;
+$$;
+
+CREATE FUNCTION resolve_driver_screening_reconciliation(
+    p_screening_id uuid,
+    p_driver_ref text,
+    p_actor text,
+    p_confirmation text
+) RETURNS TABLE (
+    screening_id uuid,
+    status text,
+    reconciled_by text,
+    reconciled_at timestamptz
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_screening driver_screenings%ROWTYPE;
+BEGIN
+    IF p_screening_id IS NULL
+       OR p_driver_ref IS NULL
+       OR length(btrim(p_driver_ref)) NOT BETWEEN 1 AND 200
+       OR p_driver_ref <> btrim(p_driver_ref)
+       OR p_actor IS NULL
+       OR length(btrim(p_actor)) NOT BETWEEN 1 AND 200
+       OR p_actor <> btrim(p_actor)
+       OR p_confirmation IS DISTINCT FROM 'no_active_check' THEN
+        RAISE EXCEPTION 'invalid driver screening reconciliation';
+    END IF;
+
+    PERFORM 1 FROM driver_profiles
+    WHERE driver_ref = p_driver_ref
+    FOR UPDATE;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'driver screening not found' USING ERRCODE = 'P0002';
+    END IF;
+    SELECT * INTO v_screening
+    FROM driver_screenings
+    WHERE id = p_screening_id
+    FOR UPDATE;
+    IF NOT FOUND OR v_screening.driver_ref <> p_driver_ref THEN
+        RAISE EXCEPTION 'driver screening not found' USING ERRCODE = 'P0002';
+    END IF;
+    IF v_screening.status NOT IN (
+           'requested', 'candidate_created', 'invitation_submitting',
+           'reconciliation_required'
+       )
+       OR v_screening.id <> (
+           SELECT latest.id FROM driver_screenings latest
+           WHERE latest.driver_ref = v_screening.driver_ref
+           ORDER BY latest.created_at DESC, latest.id DESC LIMIT 1
+       )
+       OR (v_screening.status IN (
+               'requested', 'invitation_submitting', 'reconciliation_required'
+           )
+           AND v_screening.updated_at > now() - interval '2 minutes') THEN
+        RAISE EXCEPTION 'only the latest unresolved screening can be reconciled';
+    END IF;
+
+    UPDATE driver_screenings
+    SET status = 'failed',
+        reconciled_by = p_actor,
+        reconciled_at = now(),
+        updated_at = now()
+    WHERE id = p_screening_id
+    RETURNING * INTO v_screening;
+
+    INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload)
+    SELECT 'driver_profile', profile.id, 'driver.screening.reconciled',
+           jsonb_build_object(
+               'driverRef', v_screening.driver_ref,
+               'screeningId', v_screening.id,
+               'resolution', p_confirmation,
+               'actor', p_actor
+           )
+    FROM driver_profiles profile
+    WHERE profile.driver_ref = v_screening.driver_ref;
+
+    RETURN QUERY
+    SELECT v_screening.id, v_screening.status,
+           v_screening.reconciled_by, v_screening.reconciled_at;
 END;
 $$;
