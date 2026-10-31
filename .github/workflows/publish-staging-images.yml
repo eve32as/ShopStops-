@@ -1,0 +1,114 @@
+name: Publish staging images
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: shopstops-staging-images
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Build and publish immutable staging images
+    runs-on: ubuntu-latest
+    environment: staging-images
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+      API_REPOSITORY: ${{ vars.ECR_API_REPOSITORY }}
+      GATEWAY_REPOSITORY: ${{ vars.ECR_GATEWAY_REPOSITORY }}
+      MIGRATION_REPOSITORY: ${{ vars.ECR_MIGRATION_REPOSITORY }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Validate protected staging configuration
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [[ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]]; then
+            echo "Staging images may only be published from the repository default branch."
+            exit 1
+          fi
+          for name in AWS_REGION AWS_ROLE_ARN API_REPOSITORY GATEWAY_REPOSITORY MIGRATION_REPOSITORY; do
+            if [[ -z "${!name}" ]]; then
+              echo "Missing required staging-images environment variable: $name"
+              exit 1
+            fi
+          done
+          for repository in "$API_REPOSITORY" "$GATEWAY_REPOSITORY" "$MIGRATION_REPOSITORY"; do
+            if [[ ! "$repository" =~ ^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com/[a-z0-9._/-]+$ ]]; then
+              echo "ECR repository variables must be full private repository URIs."
+              exit 1
+            fi
+            if [[ "$repository" != *".dkr.ecr.$AWS_REGION.amazonaws.com/"* ]]; then
+              echo "All ECR repositories must be in AWS_REGION."
+              exit 1
+            fi
+          done
+          registry="${API_REPOSITORY%%/*}"
+          if [[ "${GATEWAY_REPOSITORY%%/*}" != "$registry" || "${MIGRATION_REPOSITORY%%/*}" != "$registry" ]]; then
+            echo "All staging repositories must use the same ECR registry."
+            exit 1
+          fi
+
+      - name: Configure AWS credentials with GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@b47578312673ae6fa5b5096b330d9fbac3d116df # v4.2.1
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Authenticate to private ECR
+        run: |
+          registry="${API_REPOSITORY%%/*}"
+          aws ecr get-login-password --region "$AWS_REGION" \
+            | docker login --username AWS --password-stdin "$registry"
+
+      - name: Build and publish API, gateway, and migration images
+        id: images
+        run: |
+          tag="$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          docker build --file Dockerfile --build-arg APP=shopstops-api \
+            --tag "$API_REPOSITORY:$tag" .
+          docker build --file Dockerfile --build-arg APP=shopstops-gateway \
+            --tag "$GATEWAY_REPOSITORY:$tag" .
+          docker build --file Dockerfile.db-migrate \
+            --tag "$MIGRATION_REPOSITORY:$tag" .
+
+          docker push "$API_REPOSITORY:$tag"
+          docker push "$GATEWAY_REPOSITORY:$tag"
+          docker push "$MIGRATION_REPOSITORY:$tag"
+
+          api_digest="$(aws ecr describe-images --region "$AWS_REGION" \
+            --repository-name "${API_REPOSITORY#*/}" --image-ids imageTag="$tag" \
+            --query 'imageDetails[0].imageDigest' --output text)"
+          gateway_digest="$(aws ecr describe-images --region "$AWS_REGION" \
+            --repository-name "${GATEWAY_REPOSITORY#*/}" --image-ids imageTag="$tag" \
+            --query 'imageDetails[0].imageDigest' --output text)"
+          migration_digest="$(aws ecr describe-images --region "$AWS_REGION" \
+            --repository-name "${MIGRATION_REPOSITORY#*/}" --image-ids imageTag="$tag" \
+            --query 'imageDetails[0].imageDigest' --output text)"
+
+          for digest in "$api_digest" "$gateway_digest" "$migration_digest"; do
+            if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "ECR did not return a valid image digest."
+              exit 1
+            fi
+          done
+
+          {
+            echo "### Immutable staging images"
+            echo
+            echo 'Copy these digest references into the `staging-plan` environment variables before creating a Terraform plan:'
+            echo
+            echo '```text'
+            echo "TF_VAR_api_image=$API_REPOSITORY@$api_digest"
+            echo "TF_VAR_gateway_image=$GATEWAY_REPOSITORY@$gateway_digest"
+            echo "TF_VAR_migration_image=$MIGRATION_REPOSITORY@$migration_digest"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -52,6 +52,20 @@ An operator must provide:
   this runner inside private subnets with the RDS master secret available only
   to its separate execution role.
 
+The manually dispatched `.github/workflows/publish-staging-images.yml` workflow
+builds the API, gateway, and migration runner from the repository default branch
+and publishes uniquely tagged images to pre-created staging ECR repositories
+using GitHub OIDC. Configure the `staging-images` GitHub environment with `AWS_REGION`,
+`AWS_ROLE_ARN`, `ECR_API_REPOSITORY`, `ECR_GATEWAY_REPOSITORY`, and
+`ECR_MIGRATION_REPOSITORY` variables. Repository values must be full ECR URIs
+in the selected region. The OIDC role should trust only the repository's
+`staging-images` environment and have ECR push permissions scoped to those three
+repositories. Enable ECR tag immutability. The workflow summary prints the
+resulting digest references; copy them to the `staging-plan` environment's
+`TF_VAR_api_image`, `TF_VAR_gateway_image`, and `TF_VAR_migration_image`
+variables before planning. It does not create ECR repositories, provision AWS,
+or deploy services.
+
 Terraform uses the S3 backend declared in `versions.tf`. Create a private local
 `backend.hcl` (ignored by Git) with the actual state bucket, key, region, KMS
 key ARN, encryption, and `use_lockfile = true`, for example:
