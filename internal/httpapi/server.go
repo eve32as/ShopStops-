@@ -33,6 +33,7 @@ type Server struct {
 	token           string
 	log             *slog.Logger
 	payments        PaymentGateway
+	screening       DriverScreeningProvider
 	webhookSecret   string
 	merchantPriceID string
 	router          OSRMRouter
@@ -342,6 +343,22 @@ func NewWithPaymentsAndRouting(
 	return s.handler()
 }
 
+func NewWithIntegrations(
+	repo Repository, token string, logger *slog.Logger,
+	payments PaymentGateway, webhookSecret string, router OSRMRouter,
+	merchantPriceID string, screening DriverScreeningProvider,
+) http.Handler {
+	s := &Server{
+		repo: repo, token: token, log: logger, payments: payments,
+		webhookSecret: webhookSecret, router: router, screening: screening,
+	}
+	if router != nil {
+		s.rerouter = dispatch.NewReRouter(router)
+	}
+	s.merchantPriceID = merchantPriceID
+	return s.handler()
+}
+
 func (s *Server) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
@@ -357,6 +374,9 @@ func (s *Server) handler() http.Handler {
 	mux.Handle("POST /dispatch/routes/{routeId}/assign", s.authorized(http.HandlerFunc(s.assignDriverToRoute)))
 	mux.Handle("GET /admin/drivers", s.authorized(http.HandlerFunc(s.listDriverProfiles)))
 	mux.Handle("PUT /admin/drivers/{driverRef}", s.authorized(http.HandlerFunc(s.setDriverProfile)))
+	mux.Handle("POST /admin/drivers/{driverRef}/screenings", s.authorized(http.HandlerFunc(s.startDriverScreening)))
+	mux.Handle("POST /admin/drivers/{driverRef}/screenings/refresh", s.authorized(http.HandlerFunc(s.refreshDriverScreening)))
+	mux.Handle("PUT /admin/drivers/{driverRef}/screenings/review", s.authorized(http.HandlerFunc(s.reviewDriverScreening)))
 	mux.Handle("GET /driver/routes/{routeId}", s.authorized(http.HandlerFunc(s.getDriverRoute)))
 	mux.Handle("GET /driver/routes/active", s.authorized(http.HandlerFunc(s.getActiveDriverRoute)))
 	mux.Handle("POST /driver/routes/{routeId}/location", s.authorized(http.HandlerFunc(s.recordDriverLocation)))

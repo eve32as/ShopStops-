@@ -471,6 +471,32 @@ SELECT create_unified_route(:'checkout_id', 'route-test-key', 'osrm')
 UPDATE unified_delivery_routes
 SET status = 'routed'
 WHERE id = :'route_id';
+SELECT set_driver_profile('driver-test', 'Test Driver', 'pending', 'admin-test');
+DO $$
+DECLARE
+    v_message text;
+BEGIN
+    BEGIN
+        PERFORM set_driver_profile('driver-test', 'Test Driver', 'active', 'admin-test');
+        RAISE EXCEPTION 'driver activated without an approved screening';
+    EXCEPTION WHEN OTHERS THEN
+        GET STACKED DIAGNOSTICS v_message = MESSAGE_TEXT;
+        IF v_message NOT LIKE '%latest completed driver screening must be approved%' THEN
+            RAISE;
+        END IF;
+    END;
+END;
+$$;
+INSERT INTO driver_screenings (
+    driver_ref, idempotency_key, package_id, status, provider_status,
+    provider_result, requested_by
+) VALUES (
+    'driver-test', 'driver-test-screening', 'test-package', 'complete',
+    'complete', 'clear', 'admin-test'
+) RETURNING id AS screening_id \gset
+SELECT * FROM record_driver_screening_review(
+    :'screening_id', 'driver-test', 'approved', 'admin-test'
+);
 SELECT set_driver_profile('driver-test', 'Test Driver', 'active', 'admin-test');
 SELECT set_driver_profile('driver-test', 'Test Driver', 'active', 'admin-test');
 SELECT set_driver_profile('driver-pending', 'Pending Driver', 'pending', 'admin-test');
@@ -487,7 +513,7 @@ BEGIN
         RAISE EXCEPTION 'pending driver profile was assigned';
     EXCEPTION WHEN OTHERS THEN
         GET STACKED DIAGNOSTICS v_message = MESSAGE_TEXT;
-        IF v_message NOT LIKE '%driver is not active and verified%' THEN
+        IF v_message NOT LIKE '%driver is not active with an approved current screening%' THEN
             RAISE;
         END IF;
     END;

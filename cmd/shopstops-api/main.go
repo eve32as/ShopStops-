@@ -14,6 +14,7 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
+	"github.com/eve32as/ShopStops-/internal/checkr"
 	"github.com/eve32as/ShopStops-/internal/httpapi"
 	"github.com/eve32as/ShopStops-/internal/routing"
 )
@@ -39,6 +40,12 @@ func main() {
 	stripeSecretKey := os.Getenv("STRIPE_SECRET_KEY")
 	stripeWebhookSecret := os.Getenv("STRIPE_WEBHOOK_SECRET")
 	stripeMerchantPriceID := os.Getenv("STRIPE_MERCHANT_MONTHLY_PRICE_ID")
+	checkrAPIKey := os.Getenv("CHECKR_API_KEY")
+	checkrPackageID := os.Getenv("CHECKR_PACKAGE_ID")
+	if (checkrAPIKey == "") != (checkrPackageID == "") {
+		logger.Error("CHECKR_API_KEY and CHECKR_PACKAGE_ID must both be configured")
+		os.Exit(1)
+	}
 	if (stripeSecretKey == "") != (stripeWebhookSecret == "") {
 		logger.Error("STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET must both be configured")
 		os.Exit(1)
@@ -75,28 +82,24 @@ func main() {
 			os.Exit(1)
 		}
 	}
-	var handler http.Handler
-	if stripeSecretKey == "" {
-		if router == nil {
-			handler = httpapi.New(repository, apiToken, logger)
-		} else {
-			handler = httpapi.NewWithRouting(repository, apiToken, logger, router)
-		}
-	} else {
-		if router == nil {
-			handler = httpapi.NewWithPayments(
-				repository, apiToken, logger,
-				httpapi.NewStripeGateway(stripeSecretKey), stripeWebhookSecret,
-				stripeMerchantPriceID,
-			)
-		} else {
-			handler = httpapi.NewWithPaymentsAndRouting(
-				repository, apiToken, logger,
-				httpapi.NewStripeGateway(stripeSecretKey), stripeWebhookSecret,
-				router, stripeMerchantPriceID,
-			)
+	var payments httpapi.PaymentGateway
+	if stripeSecretKey != "" {
+		payments = httpapi.NewStripeGateway(stripeSecretKey)
+	}
+	var screening httpapi.DriverScreeningProvider
+	if checkrAPIKey != "" {
+		screening, err = checkr.NewClient(
+			checkrAPIKey, checkrPackageID, envOr("CHECKR_BASE_URL", ""),
+		)
+		if err != nil {
+			logger.Error("invalid Checkr configuration", "error", err)
+			os.Exit(1)
 		}
 	}
+	handler := httpapi.NewWithIntegrations(
+		repository, apiToken, logger, payments, stripeWebhookSecret,
+		router, stripeMerchantPriceID, screening,
+	)
 
 	server := &http.Server{
 		Addr:              envOr("HTTP_ADDR", ":8080"),

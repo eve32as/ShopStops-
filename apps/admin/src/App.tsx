@@ -28,6 +28,19 @@ type DriverProfile = {
   createdAt: string
   updatedAt: string
   verifiedAt?: string
+  screening?: DriverScreening
+}
+
+type DriverScreening = {
+  id: string
+  packageId: string
+  status: string
+  providerStatus?: string
+  providerResult?: string
+  reviewDecision: 'pending' | 'approved' | 'denied'
+  requestedAt: string
+  reviewedBy?: string
+  reviewedAt?: string
 }
 
 type NotificationAttempt = {
@@ -96,6 +109,150 @@ async function fraudRequest<T>(
     )
   }
   return result as T
+}
+
+function DriverScreeningControls({
+  driverRef,
+  screening,
+  gatewayUrl,
+  sessionToken,
+  onUpdated,
+}: {
+  driverRef: string
+  screening?: DriverScreening
+  gatewayUrl: string
+  sessionToken: string
+  onUpdated: () => void
+}) {
+  const [firstName, setFirstName] = useState('')
+  const [lastName, setLastName] = useState('')
+  const [email, setEmail] = useState('')
+  const [city, setCity] = useState('')
+  const [region, setRegion] = useState('')
+  const [country, setCountry] = useState('US')
+  const [requestKey, setRequestKey] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState('')
+  const [error, setError] = useState('')
+
+  async function startScreening(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setBusy(true)
+    setError('')
+    setMessage('')
+    const key = requestKey || newIdempotencyKey()
+    setRequestKey(key)
+    try {
+      await fraudRequest<DriverScreening>(
+        gatewayUrl,
+        sessionToken,
+        `admin/drivers/${encodeURIComponent(driverRef)}/screenings`,
+        {
+          method: 'POST',
+          headers: { 'Idempotency-Key': key },
+          body: JSON.stringify({
+            firstName,
+            lastName,
+            email,
+            workLocation: { city, region, country },
+          }),
+        },
+      )
+      setMessage('Checkr invitation requested. The driver must complete Checkr’s hosted consent and screening flow.')
+      setRequestKey('')
+      onUpdated()
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Could not start Checkr screening.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function refreshScreening() {
+    setBusy(true)
+    setError('')
+    setMessage('')
+    try {
+      await fraudRequest<DriverScreening>(
+        gatewayUrl,
+        sessionToken,
+        `admin/drivers/${encodeURIComponent(driverRef)}/screenings/refresh`,
+        { method: 'POST' },
+      )
+      setMessage('Checkr status refreshed.')
+      onUpdated()
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Could not refresh Checkr screening.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function reviewScreening(decision: 'approved' | 'denied') {
+    if (!screening) return
+    setBusy(true)
+    setError('')
+    setMessage('')
+    try {
+      await fraudRequest<DriverScreening>(
+        gatewayUrl,
+        sessionToken,
+        `admin/drivers/${encodeURIComponent(driverRef)}/screenings/review`,
+        {
+          method: 'PUT',
+          body: JSON.stringify({ screeningId: screening.id, decision }),
+        },
+      )
+      setMessage(`Screening reviewed as ${decision}. Driver activation remains a separate admin action.`)
+      onUpdated()
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Could not record screening review.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="driver-screening">
+      <p className="resolved-note">
+        {screening
+          ? `Checkr ${screening.status}${screening.providerResult ? ` · result: ${screening.providerResult}` : ''} · review ${screening.reviewDecision}`
+          : 'No Checkr screening recorded.'}
+      </p>
+      {screening && screening.status !== 'failed' && screening.status !== 'reconciliation_required' ? (
+        <button className="review-button" disabled={busy} onClick={() => void refreshScreening()} type="button">
+          {busy ? 'Working…' : 'Refresh Checkr status'}
+        </button>
+      ) : null}
+      {screening?.status === 'complete' && screening.reviewDecision === 'pending' ? (
+        <div className="fraud-actions">
+          <button className="review-button" disabled={busy} onClick={() => void reviewScreening('approved')} type="button">
+            Approve screening
+          </button>
+          <button className="dismiss-button" disabled={busy} onClick={() => void reviewScreening('denied')} type="button">
+            Deny screening
+          </button>
+        </div>
+      ) : null}
+      <details>
+        <summary>Start a new Checkr screening</summary>
+        <form onSubmit={(event) => void startScreening(event)}>
+          <label>First name<input autoComplete="given-name" maxLength={100} onChange={(event) => setFirstName(event.target.value)} required value={firstName} /></label>
+          <label>Last name<input autoComplete="family-name" maxLength={100} onChange={(event) => setLastName(event.target.value)} required value={lastName} /></label>
+          <label>Email<input autoComplete="email" onChange={(event) => setEmail(event.target.value)} required type="email" value={email} /></label>
+          <label>Work city<input autoComplete="address-level2" maxLength={100} onChange={(event) => setCity(event.target.value)} required value={city} /></label>
+          <label>State / region code<input autoComplete="address-level1" maxLength={3} onChange={(event) => setRegion(event.target.value)} required value={region} /></label>
+          <label>Country code<input autoComplete="country" maxLength={2} onChange={(event) => setCountry(event.target.value.toUpperCase())} required value={country} /></label>
+          <button className="submit-button" disabled={busy} type="submit">
+            {busy ? 'Requesting…' : 'Send Checkr invitation'}
+          </button>
+          <small>Candidate contact data is sent to Checkr and not stored by ShopStops. Confirm required disclosures and authorization before ordering.</small>
+        </form>
+      </details>
+      {message ? <div className="alert alert-success" role="status">{message}</div> : null}
+      {error ? <div className="alert alert-error" role="alert">{error}</div> : null}
+    </div>
+  )
 }
 
 function App() {
@@ -747,6 +904,13 @@ function App() {
                       <p className="resolved-note">
                         {driver.verifiedAt ? `Verified ${new Date(driver.verifiedAt).toLocaleString()}` : 'Not verified for dispatch'}
                       </p>
+                      <DriverScreeningControls
+                        driverRef={driver.driverRef}
+                        gatewayUrl={gatewayUrl}
+                        onUpdated={() => void loadDriverProfiles()}
+                        screening={driver.screening}
+                        sessionToken={sessionToken}
+                      />
                     </article>
                   ))}
                 </div>

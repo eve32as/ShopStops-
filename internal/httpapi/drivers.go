@@ -15,12 +15,13 @@ import (
 )
 
 type DriverProfile struct {
-	DriverRef   string     `json:"driverRef"`
-	DisplayName string     `json:"displayName"`
-	Status      string     `json:"status"`
-	CreatedAt   time.Time  `json:"createdAt"`
-	UpdatedAt   time.Time  `json:"updatedAt"`
-	VerifiedAt  *time.Time `json:"verifiedAt,omitempty"`
+	DriverRef   string           `json:"driverRef"`
+	DisplayName string           `json:"displayName"`
+	Status      string           `json:"status"`
+	CreatedAt   time.Time        `json:"createdAt"`
+	UpdatedAt   time.Time        `json:"updatedAt"`
+	VerifiedAt  *time.Time       `json:"verifiedAt,omitempty"`
+	Screening   *DriverScreening `json:"screening,omitempty"`
 }
 
 func (s *Server) listDriverProfiles(w http.ResponseWriter, r *http.Request) {
@@ -114,11 +115,24 @@ func (p *PostgresRepository) ListDriverProfiles(
 	ctx context.Context, status string, limit int,
 ) ([]DriverProfile, error) {
 	rows, err := p.db.QueryContext(ctx, `
-		SELECT driver_ref, display_name, status, created_at, updated_at, verified_at
-		FROM driver_profiles
-		WHERE $1 = '' OR status = $1
-		ORDER BY CASE status WHEN 'pending' THEN 0 WHEN 'active' THEN 1 ELSE 2 END,
-		         updated_at DESC, driver_ref
+		SELECT profile.driver_ref, profile.display_name, profile.status,
+		       profile.created_at, profile.updated_at, profile.verified_at,
+		       screening.id::text, screening.package_id, screening.status,
+		       screening.provider_status, screening.provider_result,
+		       screening.review_decision, screening.requested_by,
+		       screening.reviewed_by, screening.created_at, screening.reviewed_at
+		FROM driver_profiles profile
+		LEFT JOIN LATERAL (
+		    SELECT id, package_id, status, provider_status, provider_result,
+		           review_decision, requested_by, reviewed_by, created_at, reviewed_at
+		    FROM driver_screenings
+		    WHERE driver_ref = profile.driver_ref
+		    ORDER BY created_at DESC, id DESC
+		    LIMIT 1
+		) screening ON true
+		WHERE $1 = '' OR profile.status = $1
+		ORDER BY CASE profile.status WHEN 'pending' THEN 0 WHEN 'active' THEN 1 ELSE 2 END,
+		         profile.updated_at DESC, profile.driver_ref
 		LIMIT $2`, status, limit)
 	if err != nil {
 		return nil, err
@@ -127,11 +141,38 @@ func (p *PostgresRepository) ListDriverProfiles(
 	profiles := make([]DriverProfile, 0)
 	for rows.Next() {
 		var profile DriverProfile
+		var screeningID, packageID, screeningStatus sql.NullString
+		var providerStatus, providerResult, reviewDecision sql.NullString
+		var requestedBy, reviewedBy sql.NullString
+		var screeningCreatedAt, screeningReviewedAt sql.NullTime
 		if err := rows.Scan(
 			&profile.DriverRef, &profile.DisplayName, &profile.Status,
 			&profile.CreatedAt, &profile.UpdatedAt, &profile.VerifiedAt,
+			&screeningID, &packageID, &screeningStatus, &providerStatus,
+			&providerResult, &reviewDecision, &requestedBy, &reviewedBy,
+			&screeningCreatedAt, &screeningReviewedAt,
 		); err != nil {
 			return nil, err
+		}
+		if screeningID.Valid {
+			screening := &DriverScreening{
+				ID: screeningID.String, PackageID: packageID.String,
+				Status: screeningStatus.String, ReviewDecision: reviewDecision.String,
+				RequestedAt: screeningCreatedAt.Time,
+			}
+			if providerStatus.Valid {
+				screening.ProviderStatus = providerStatus.String
+			}
+			if providerResult.Valid {
+				screening.ProviderResult = providerResult.String
+			}
+			if reviewedBy.Valid {
+				screening.ReviewedBy = reviewedBy.String
+			}
+			if screeningReviewedAt.Valid {
+				screening.ReviewedAt = &screeningReviewedAt.Time
+			}
+			profile.Screening = screening
 		}
 		profiles = append(profiles, profile)
 	}
