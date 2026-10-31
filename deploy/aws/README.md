@@ -154,6 +154,56 @@ a real AWS account. The production owner must validate the role policies and
 trust conditions, run a staging rehearsal, and confirm protected environment
 reviewers and branch restrictions before use.
 
+## Automate staging image publishing setup
+
+The staging image publisher role and its three immutable, scan-on-push ECR
+repositories are managed separately in `deploy/aws/staging-images/`. The
+`scripts/configure-staging-images.sh` script applies that Terraform root and
+configures the repository's `staging-images` GitHub Actions environment. It
+limits that environment to the repository's default branch and sets the region,
+role ARN, and ECR repository variables consumed by
+`.github/workflows/publish-staging-images.yml`.
+Existing non-default deployment branch policies are removed so the restriction
+cannot silently widen.
+
+Before running the script, an AWS administrator must ensure the account has the
+GitHub Actions OIDC provider for `https://token.actions.githubusercontent.com`.
+The script deliberately does not create a duplicate account-level identity
+provider. The operator also needs AWS permissions to create/update the ECR
+repositories, publisher role, and scoped role policy; GitHub CLI (`gh`) access
+with repository administration permission to create/update environments,
+environment variables, and deployment branch policies; plus `aws`, `jq`, and
+Terraform 1.10 or newer. Use the authorized AWS account and GitHub repository,
+not a personal fork.
+
+Create a separate encrypted S3 state key for these resources. Then export the
+following values in the operator shell; use the exact case-sensitive
+`owner/repository` name and provider ARN from the target account:
+
+```sh
+export AWS_REGION='us-east-1'
+export EXPECTED_AWS_ACCOUNT_ID='123456789012'
+export GITHUB_REPOSITORY='eve32as/ShopStops-'
+export GITHUB_OIDC_PROVIDER_ARN='arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com'
+export TF_STATE_BUCKET='organization-terraform-state'
+export TF_STATE_KEY='shopstops/staging-images/terraform.tfstate'
+export TF_STATE_KMS_KEY_ARN='arn:aws:kms:us-east-1:123456789012:key/replace-me'
+scripts/configure-staging-images.sh
+```
+
+The script verifies the active AWS account before Terraform runs, then pauses
+for Terraform's normal apply confirmation. Only after a successful apply does it
+configure the GitHub environment and set its non-secret variables. It is
+idempotent for the managed AWS resources, environment, branch policy, and
+variables. Review the Terraform plan and confirm the target account before
+approving. AWS credentials and GitHub authentication remain operator-provided;
+the script neither stores nor prints access tokens.
+
+After setup, dispatch **Publish staging images** from the default branch. Copy
+the resulting digest-pinned image references from the workflow summary into the
+`staging-plan` environment variables before creating a Terraform staging plan.
+This bootstrap does not deploy the application or populate application secrets.
+
 Set deployment inputs through an ignored `*.tfvars` file or the approved
 deployment system. Do not store credentials or secret values in that file.
 Set `gateway_hostname`, `route53_zone_id`, and `certificate_arn`. Before planning,

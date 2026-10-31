@@ -21,6 +21,13 @@ resource "aws_ecr_repository" "staging" {
   encryption_configuration {
     encryption_type = "AES256"
   }
+
+  lifecycle {
+    precondition {
+      condition     = data.aws_caller_identity.current.account_id == var.expected_aws_account_id
+      error_message = "The active AWS credentials do not belong to expected_aws_account_id."
+    }
+  }
 }
 
 resource "aws_iam_role" "image_publisher" {

@@ -68,13 +68,12 @@ gateway_repository="$(terraform -chdir="$terraform_dir" output -raw gateway_repo
 migration_repository="$(terraform -chdir="$terraform_dir" output -raw migration_repository_url)"
 
 environment_payload="$(jq -n \
-  --arg name "$default_branch" \
   '{deployment_branch_policy: {protected_branches: false, custom_branch_policies: true}}')"
 gh api --method PUT \
   "repos/$GITHUB_REPOSITORY/environments/$github_environment" \
   --input - <<<"$environment_payload"
 
-branch_policies="$(gh api \
+branch_policies="$(gh api --paginate \
   "repos/$GITHUB_REPOSITORY/environments/$github_environment/deployment-branch-policies")"
 branch_policy_exists="$(jq --arg name "$default_branch" \
   '[.branch_policies[]? | select(.name == $name and .type == "branch")] | length' \
@@ -85,6 +84,13 @@ if [[ "$branch_policy_exists" == "0" ]]; then
     -f "name=$default_branch" \
     -f type=branch
 fi
+while IFS= read -r policy_id; do
+  [[ -n "$policy_id" ]] || continue
+  gh api --method DELETE \
+    "repos/$GITHUB_REPOSITORY/environments/$github_environment/deployment-branch-policies/$policy_id"
+done < <(jq -r --arg name "$default_branch" \
+  '.branch_policies[]? | select(.name != $name or .type != "branch") | .id' \
+  <<<"$branch_policies")
 
 gh variable set AWS_REGION --env "$github_environment" \
   --body "$AWS_REGION" --repo "$GITHUB_REPOSITORY"

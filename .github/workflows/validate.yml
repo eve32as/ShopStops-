@@ -66,6 +66,8 @@ jobs:
       - run: terraform -chdir=deploy/aws fmt -check -recursive
       - run: terraform -chdir=deploy/aws init -backend=false -input=false
       - run: terraform -chdir=deploy/aws validate
+      - run: terraform -chdir=deploy/aws/staging-images init -backend=false -input=false
+      - run: terraform -chdir=deploy/aws/staging-images validate
 
   migration-image:
     name: Database migration image
