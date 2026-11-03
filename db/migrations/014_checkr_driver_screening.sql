@@ -163,7 +163,7 @@ BEGIN
     END IF;
 
     PERFORM 1 FROM driver_profiles
-    WHERE driver_ref = p_driver_ref
+    WHERE driver_profiles.driver_ref = p_driver_ref
     FOR UPDATE;
     IF NOT FOUND THEN
         RAISE EXCEPTION 'driver screening not found' USING ERRCODE = 'P0002';

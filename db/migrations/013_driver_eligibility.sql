@@ -99,10 +99,10 @@ BEGIN
             updated_at = now(),
             verified_by = CASE
                 WHEN p_status = 'active' AND v_profile.status <> 'active'
-                    THEN p_actor ELSE verified_by END,
+                    THEN p_actor ELSE v_profile.verified_by END,
             verified_at = CASE
                 WHEN p_status = 'active' AND v_profile.status <> 'active'
-                    THEN now() ELSE verified_at END
+                    THEN now() ELSE v_profile.verified_at END
         WHERE driver_profiles.driver_ref = p_driver_ref
         RETURNING * INTO v_profile;
     ELSE

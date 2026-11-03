@@ -29,7 +29,9 @@ boundaries, workflows, and operational guidance. The initial HTTP interface is
 specified in [`api/openapi.yaml`](api/openapi.yaml).
 
 Database integration fixtures are in `db/tests/`; apply all migrations before
-running the matching SQL test files.
+running the matching SQL test files. The `PostGIS integration` GitHub Actions
+workflow runs them against a disposable PostGIS 16 service on pushes and pull
+requests. It does not connect to or modify any production database.
 
 ## Run the API
 
