@@ -14,6 +14,9 @@ CREATE TABLE route_optimization_jobs (
         )),
     route_snapshot_ids uuid[] NOT NULL
         CHECK (cardinality(route_snapshot_ids) = 3),
+    route_snapshot_legs jsonb NOT NULL
+        CHECK (jsonb_typeof(route_snapshot_legs) = 'array'
+            AND jsonb_array_length(route_snapshot_legs) = 2),
     proposed_stop_ids uuid[],
     baseline_distance_meters integer NOT NULL CHECK (baseline_distance_meters >= 0),
     baseline_duration_seconds integer NOT NULL CHECK (baseline_duration_seconds >= 0),
@@ -78,6 +81,7 @@ DECLARE
     v_job_id uuid;
     v_route unified_delivery_routes%ROWTYPE;
     v_stop_ids uuid[];
+    v_route_legs jsonb;
     v_baseline_distance integer;
     v_baseline_duration integer;
 BEGIN
@@ -131,19 +135,31 @@ BEGIN
         RAISE EXCEPTION 'route does not have an eligible unstarted pickup sequence';
     END IF;
 
-    SELECT sum(distance_meters)::integer, sum(duration_seconds)::integer
-    INTO v_baseline_distance, v_baseline_duration
-    FROM unified_route_legs
-    WHERE route_id = p_route_id;
+    SELECT sum(leg.distance_meters)::integer,
+           sum(leg.duration_seconds)::integer,
+           jsonb_agg(
+               jsonb_build_object(
+                   'fromSequence', leg.from_sequence,
+                   'toSequence', leg.to_sequence,
+                   'distanceMeters', leg.distance_meters,
+                   'durationSeconds', leg.duration_seconds,
+                   'provider', leg.provider,
+                   'geometry', leg.geometry
+               ) ORDER BY leg.from_sequence
+           )
+    INTO v_baseline_distance, v_baseline_duration, v_route_legs
+    FROM unified_route_legs leg
+    WHERE leg.route_id = p_route_id;
     IF v_baseline_distance IS NULL OR v_baseline_duration IS NULL THEN
         RAISE EXCEPTION 'route has no complete routing estimate';
     END IF;
 
     INSERT INTO route_optimization_jobs (
         route_id, idempotency_key, requested_by, route_snapshot_ids,
+        route_snapshot_legs,
         baseline_distance_meters, baseline_duration_seconds
     ) VALUES (
-        p_route_id, p_idempotency_key, p_actor, v_stop_ids,
+        p_route_id, p_idempotency_key, p_actor, v_stop_ids, v_route_legs,
         v_baseline_distance, v_baseline_duration
     )
     RETURNING id INTO v_job_id;
@@ -181,7 +197,8 @@ BEGIN
     WHERE id = p_job_id
     FOR UPDATE;
     IF NOT FOUND OR v_job.status <> 'processing'
-       OR v_job.lease_token IS DISTINCT FROM p_lease_token THEN
+       OR v_job.lease_token IS DISTINCT FROM p_lease_token
+       OR v_job.locked_until IS NULL OR v_job.locked_until <= now() THEN
         RAISE EXCEPTION 'route optimization job is not being processed';
     END IF;
     IF cardinality(p_proposed_stop_ids) <> 3
@@ -254,6 +271,7 @@ DECLARE
     v_job route_optimization_jobs%ROWTYPE;
     v_route unified_delivery_routes%ROWTYPE;
     v_current_stop_ids uuid[];
+    v_current_legs jsonb;
     v_changed integer;
 BEGIN
     IF p_actor IS NULL
@@ -297,6 +315,25 @@ BEGIN
     IF v_current_stop_ids IS DISTINCT FROM v_job.route_snapshot_ids
        OR (SELECT count(*) FROM unified_route_stops
            WHERE route_id = v_job.route_id) <> 3 THEN
+        UPDATE route_optimization_jobs
+        SET status = 'stale', updated_at = now()
+        WHERE id = p_job_id;
+        RETURN 'stale';
+    END IF;
+    SELECT jsonb_agg(
+               jsonb_build_object(
+                   'fromSequence', leg.from_sequence,
+                   'toSequence', leg.to_sequence,
+                   'distanceMeters', leg.distance_meters,
+                   'durationSeconds', leg.duration_seconds,
+                   'provider', leg.provider,
+                   'geometry', leg.geometry
+               ) ORDER BY leg.from_sequence
+           )
+    INTO v_current_legs
+    FROM unified_route_legs leg
+    WHERE leg.route_id = v_job.route_id;
+    IF v_current_legs IS DISTINCT FROM v_job.route_snapshot_legs THEN
         UPDATE route_optimization_jobs
         SET status = 'stale', updated_at = now()
         WHERE id = p_job_id;

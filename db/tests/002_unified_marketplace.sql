@@ -560,6 +560,52 @@ BEGIN
     END IF;
 END;
 $$;
+SELECT id AS stale_snapshot_stop_1 FROM unified_route_stops
+WHERE route_id = :'route_id' AND sequence = 1 \gset
+SELECT id AS stale_snapshot_stop_2 FROM unified_route_stops
+WHERE route_id = :'route_id' AND sequence = 2 \gset
+SELECT id AS stale_snapshot_stop_3 FROM unified_route_stops
+WHERE route_id = :'route_id' AND sequence = 3 \gset
+SELECT request_route_optimization(
+    :'route_id', 'route-optimization-stale-test', 'dispatcher-test'
+) AS stale_optimization_id \gset
+UPDATE route_optimization_jobs
+SET status = 'processing', attempts = 1, lease_token = gen_random_uuid(),
+    locked_until = now() + interval '1 minute'
+WHERE id = :'stale_optimization_id'
+RETURNING lease_token AS stale_optimization_lease_token \gset
+SELECT complete_route_optimization(
+    :'stale_optimization_id', :'stale_optimization_lease_token',
+    500, 80, ARRAY[
+        :'stale_snapshot_stop_2'::uuid,
+        :'stale_snapshot_stop_1'::uuid,
+        :'stale_snapshot_stop_3'::uuid
+    ], 400, 60, 200,
+    '[
+      {"from_sequence":1,"to_sequence":2,"distance_meters":200,"duration_seconds":30,"geometry":[[0,0],[1,1]]},
+      {"from_sequence":2,"to_sequence":3,"distance_meters":200,"duration_seconds":30,"geometry":[[1,1],[2,2]]}
+    ]'::jsonb
+);
+UPDATE unified_route_legs
+SET distance_meters = distance_meters + 1
+WHERE route_id = :'route_id' AND from_sequence = 1;
+SELECT apply_route_optimization(
+    :'route_id', :'stale_optimization_id', 'dispatcher-test'
+);
+UPDATE unified_route_legs
+SET distance_meters = 250
+WHERE route_id = :'route_id' AND from_sequence = 1;
+SELECT set_config(
+    'shopstops.test_stale_optimization_id', :'stale_optimization_id', true
+);
+DO $$
+BEGIN
+    IF (SELECT status FROM route_optimization_jobs
+        WHERE id = current_setting('shopstops.test_stale_optimization_id')::uuid) <> 'stale' THEN
+        RAISE EXCEPTION 'route mutation should invalidate pending optimization preview';
+    END IF;
+END;
+$$;
 SELECT set_driver_profile('driver-pending', 'Pending Driver', 'pending', 'admin-test');
 SELECT set_config('shopstops.test_route_id', :'route_id', true);
 DO $$
