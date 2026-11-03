@@ -471,6 +471,12 @@ SELECT create_unified_route(:'checkout_id', 'route-test-key', 'osrm')
 UPDATE unified_delivery_routes
 SET status = 'routed'
 WHERE id = :'route_id';
+INSERT INTO unified_route_legs (
+    route_id, from_sequence, to_sequence, distance_meters,
+    duration_seconds, provider, geometry
+) VALUES
+    (:'route_id', 1, 2, 500, 60, 'osrm', '[[0,0],[1,1]]'),
+    (:'route_id', 2, 3, 500, 60, 'osrm', '[[1,1],[2,2]]');
 SELECT set_driver_profile('driver-test', 'Test Driver', 'pending', 'admin-test');
 DO $$
 DECLARE
@@ -500,6 +506,60 @@ SELECT * FROM record_driver_screening_review(
 );
 SELECT set_driver_profile('driver-test', 'Test Driver', 'active', 'admin-test');
 SELECT set_driver_profile('driver-test', 'Test Driver', 'active', 'admin-test');
+SELECT id AS optimization_stop_1 FROM unified_route_stops
+WHERE route_id = :'route_id' AND sequence = 1 \gset
+SELECT id AS optimization_stop_2 FROM unified_route_stops
+WHERE route_id = :'route_id' AND sequence = 2 \gset
+SELECT id AS optimization_stop_3 FROM unified_route_stops
+WHERE route_id = :'route_id' AND sequence = 3 \gset
+SELECT request_route_optimization(
+    :'route_id', 'route-optimization-test', 'dispatcher-test'
+) AS optimization_id \gset
+UPDATE route_optimization_jobs
+SET status = 'processing', attempts = 1, lease_token = gen_random_uuid(),
+    locked_until = now() + interval '1 minute'
+WHERE id = :'optimization_id'
+RETURNING lease_token AS optimization_lease_token \gset
+SELECT complete_route_optimization(
+    :'optimization_id', :'optimization_lease_token',
+    1000, 100, ARRAY[
+        :'optimization_stop_2'::uuid,
+        :'optimization_stop_1'::uuid,
+        :'optimization_stop_3'::uuid
+    ], 200, 80, 200,
+    '[
+      {"from_sequence":1,"to_sequence":2,"distance_meters":250,"duration_seconds":40,"geometry":[[0,0],[1,1]]},
+      {"from_sequence":2,"to_sequence":3,"distance_meters":250,"duration_seconds":40,"geometry":[[1,1],[2,2]]}
+    ]'::jsonb
+);
+SELECT apply_route_optimization(
+    :'route_id', :'optimization_id', 'dispatcher-test'
+);
+SELECT set_config('shopstops.test_optimization_id', :'optimization_id', true);
+SELECT set_config('shopstops.test_route_id', :'route_id', true);
+SELECT set_config('shopstops.test_optimization_stop_1', :'optimization_stop_1', true);
+SELECT set_config('shopstops.test_optimization_stop_2', :'optimization_stop_2', true);
+DO $$
+BEGIN
+    IF (SELECT status FROM route_optimization_jobs
+        WHERE id = current_setting('shopstops.test_optimization_id')::uuid) <> 'applied' THEN
+        RAISE EXCEPTION 'approved route optimization was not applied';
+    END IF;
+    IF (SELECT id FROM unified_route_stops
+        WHERE route_id = current_setting('shopstops.test_route_id')::uuid
+          AND sequence = 1)
+       <> current_setting('shopstops.test_optimization_stop_2')::uuid
+       OR (SELECT id FROM unified_route_stops
+           WHERE route_id = current_setting('shopstops.test_route_id')::uuid
+             AND sequence = 2)
+          <> current_setting('shopstops.test_optimization_stop_1')::uuid
+       OR (SELECT count(*) FROM unified_route_legs
+           WHERE route_id = current_setting('shopstops.test_route_id')::uuid
+             AND distance_meters = 250) <> 2 THEN
+        RAISE EXCEPTION 'approved route optimization should reorder stops and replace legs';
+    END IF;
+END;
+$$;
 SELECT set_driver_profile('driver-pending', 'Pending Driver', 'pending', 'admin-test');
 SELECT set_config('shopstops.test_route_id', :'route_id', true);
 DO $$
@@ -572,12 +632,6 @@ SELECT id AS route_stop_2 FROM unified_route_stops
 WHERE route_id = :'route_id' AND sequence = 2 \gset
 SELECT id AS route_stop_3 FROM unified_route_stops
 WHERE route_id = :'route_id' AND sequence = 3 \gset
-INSERT INTO unified_route_legs (
-    route_id, from_sequence, to_sequence, distance_meters, duration_seconds, provider
-)
-VALUES
-    (:'route_id', 1, 2, 250, 60, 'osrm'),
-    (:'route_id', 2, 3, 250, 60, 'osrm');
 SELECT create_merchant_catalog_item(
     :'partner_merchant_id', :'partner_store_id',
     'Merchant-created item', 'Created through merchant workflow', 375, 0.75,
@@ -680,11 +734,11 @@ BEGIN
           <> 'pickup,pickup,dropoff'
        OR (SELECT store_location_id FROM unified_route_stops
            WHERE route_id = v_route_id AND sequence = 1)
-          <> current_setting('shopstops.test_anchor_store_id')::uuid
+          <> current_setting('shopstops.test_partner_store_id')::uuid
        OR (SELECT store_location_id FROM unified_route_stops
            WHERE route_id = v_route_id AND sequence = 2)
-          <> current_setting('shopstops.test_partner_store_id')::uuid THEN
-        RAISE EXCEPTION 'unified route should lock anchor pickup, market pickup, dropoff';
+          <> current_setting('shopstops.test_anchor_store_id')::uuid THEN
+       RAISE EXCEPTION 'approved optimization should swap pickups but keep dropoff last';
     END IF;
     IF (SELECT count(*) FROM driver_location_samples
         WHERE route_id = v_route_id) <> 3 THEN
@@ -820,6 +874,14 @@ BEGIN
           <> 'completed'
        OR (SELECT count(*) FROM unified_route_stop_events WHERE route_id = v_route_id) <> 6 THEN
         RAISE EXCEPTION 'complete stop sequence should finish route and checkout exactly once';
+    END IF;
+END;
+$$;
+DO $$
+BEGIN
+    IF (SELECT count(*) FROM route_optimization_actual_metrics
+        WHERE route_id = current_setting('shopstops.test_route_id')::uuid) <> 1 THEN
+        RAISE EXCEPTION 'completed optimized route should expose GPS and stop-event outcomes';
     END IF;
 END;
 $$;

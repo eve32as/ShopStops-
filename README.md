@@ -18,7 +18,8 @@ Apply `db/migrations/001_delivery_foundation.sql`,
 `db/migrations/011_weekly_payout_notifications.sql`,
 `db/migrations/012_driver_route_assignment.sql`,
 `db/migrations/013_driver_eligibility.sql`, and
-`db/migrations/014_checkr_driver_screening.sql` on PostgreSQL 14+ with PostGIS 3.x
+`db/migrations/014_checkr_driver_screening.sql`, and
+`db/migrations/015_route_optimization.sql` on PostgreSQL 14+ with PostGIS 3.x
 installed. The migrations create dispatch, unified-basket, catalog, and order
 models; spatial queries; transaction-safe order/merchant limits; immutable
 multi-stop routes; payment/tax ledger records; outbox events; and weekly courier
@@ -71,6 +72,15 @@ outbox. Admins must provision and verify driver identities in the directory;
 driver screening must be completed and reviewed before explicit admin activation.
 Only active profiles with a current approved Checkr screening are eligible, and
 profile/screening status changes are audited.
+Dispatchers and admins can queue route optimization previews for unassigned,
+unstarted deliveries. A separate route optimizer worker compares the current
+pickup order with the alternative pickup order using OSRM; it stores only stop
+IDs and coordinates needed for routing, not customer or recipient details.
+Previews include projected distance/time and estimated mileage-cost savings.
+Applying a preview requires explicit dispatcher/admin approval and a database
+check that the route and all stops remain unchanged and unassigned. Configure
+`SHOPSTOPS_ROUTE_COST_CENTS_PER_MILE` on the worker to estimate direct mileage
+cost savings; this is an estimate, not guaranteed profit.
 The mobile shopper can geocode a typed delivery address on-device or use current
 location; only coordinates are sent to the API.
 Merchant catalog endpoints let authenticated merchants manage item names,
@@ -107,6 +117,25 @@ Configure a driver's statement recipient in the admin dashboard before the
 worker runs. Statement creation is unique per driver and UTC week; separate
 worker replicas safely claim messages using database row locks and expiring
 leases.
+
+## Route optimization worker
+
+Run the separate optimization worker with the same database migrations applied.
+It polls durable, leased jobs, calls OSRM using stop coordinates only, retries
+transient failures, and emits result events to the outbox. Configure its cost
+rate from an approved operating-cost estimate; approval remains a separate
+dispatcher action in the admin dashboard.
+
+```sh
+export DATABASE_URL='postgres://<user>:<password>@localhost:5432/shopstops?sslmode=disable'
+export SHOPSTOPS_OSRM_BASE_URL='https://routing.example.com'
+export SHOPSTOPS_ROUTE_COST_CENTS_PER_MILE=45
+go run ./cmd/shopstops-route-optimizer
+```
+
+Dispatch optimization API endpoints create and inspect previews, explicitly
+approve/apply them, and report completed-route projected-versus-actual mileage
+and duration. Completed actuals require GPS samples and stop-event timestamps.
 ## OIDC identity gateway
 
 Run the provider-neutral gateway as the only public path to the API. It validates

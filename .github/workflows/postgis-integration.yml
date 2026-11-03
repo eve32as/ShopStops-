@@ -27,6 +27,11 @@ jobs:
           --health-retries 5
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Run Go unit tests
+        run: go test ./...
       - name: Install PostgreSQL client
         run: |
           sudo apt-get update

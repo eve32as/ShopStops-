@@ -1113,6 +1113,114 @@ paths:
           description: Route not found
         '409':
           description: Route is not ready or driver already has an active route
+  /dispatch/routes/{routeId}/optimizations:
+    post:
+      operationId: requestRouteOptimization
+      summary: Queue an asynchronous route optimization preview
+      description: Requires dispatch or admin role. Only a routed, unassigned, unstarted route with two pickup stops and one final dropoff is eligible. The request is idempotent and emits a transactional outbox event.
+      parameters:
+        - in: path
+          name: routeId
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+      responses:
+        '202':
+          description: Optimization queued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RouteOptimization'
+        '400':
+          description: Invalid route ID or idempotency key
+        '403':
+          description: Dispatch/admin role required
+        '404':
+          description: Route not found
+        '409':
+          description: Route is not eligible or another optimization is active
+  /dispatch/routes/{routeId}/optimizations/{optimizationId}:
+    get:
+      operationId: getRouteOptimization
+      summary: Inspect an asynchronous route optimization preview
+      description: Requires dispatch or admin role. Preview results do not change the route.
+      parameters:
+        - in: path
+          name: routeId
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - in: path
+          name: optimizationId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Current job state and projected route measurements
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RouteOptimization'
+        '403':
+          description: Dispatch/admin role required
+        '404':
+          description: Route optimization not found
+  /dispatch/routes/{routeId}/optimizations/{optimizationId}/approve:
+    post:
+      operationId: approveRouteOptimization
+      summary: Explicitly approve and apply an improved route preview
+      description: Requires dispatch or admin role. The database atomically verifies the original route snapshot is unchanged, routed, unassigned, and unstarted before applying.
+      parameters:
+        - in: path
+          name: routeId
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - in: path
+          name: optimizationId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Preview approved and route updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RouteOptimization'
+        '403':
+          description: Dispatch/admin role required
+        '404':
+          description: Route optimization not found
+        '409':
+          description: Preview is stale or no longer eligible for approval
+  /dispatch/route-optimization-metrics:
+    get:
+      operationId: getRouteOptimizationMetrics
+      summary: Compare projected and actual metrics for completed optimized routes
+      description: Requires dispatch or admin role. Actual mileage uses timestamped driver GPS samples; actual duration uses stop-event timestamps.
+      responses:
+        '200':
+          description: Aggregate completed-route outcome metrics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RouteOptimizationMetrics'
+        '403':
+          description: Dispatch/admin role required
   /driver/bundles/{bundleId}:
     get:
       operationId: getDriverBundle
@@ -1205,6 +1313,81 @@ components:
         type: string
         format: uuid
   schemas:
+    RouteOptimization:
+      type: object
+      required: [id, routeId, status, requestedBy, requestedAt, baselineDistanceMeters, baselineDurationSeconds]
+      properties:
+        id:
+          type: string
+          format: uuid
+        routeId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [queued, processing, preview_ready, not_improved, failed, stale, applied]
+        requestedBy:
+          type: string
+        requestedAt:
+          type: string
+          format: date-time
+        errorCode:
+          type: string
+          enum: [route_unavailable, provider_unavailable, invalid_provider_result]
+        baselineDistanceMeters:
+          type: integer
+          minimum: 0
+        proposedDistanceMeters:
+          type: integer
+          minimum: 0
+        baselineDurationSeconds:
+          type: integer
+          minimum: 0
+        proposedDurationSeconds:
+          type: integer
+          minimum: 0
+        estimatedSavingsCents:
+          type: integer
+          minimum: 0
+        proposedStopIds:
+          type: array
+          minItems: 3
+          maxItems: 3
+          items:
+            type: string
+            format: uuid
+        approvedBy:
+          type: string
+        approvedAt:
+          type: string
+          format: date-time
+        appliedBy:
+          type: string
+        appliedAt:
+          type: string
+          format: date-time
+    RouteOptimizationMetrics:
+      type: object
+      required: [completedOptimizations, projectedDistanceMeters, actualDistanceMeters, projectedDurationSeconds, actualDurationSeconds, estimatedSavingsCents]
+      properties:
+        completedOptimizations:
+          type: integer
+          minimum: 0
+        projectedDistanceMeters:
+          type: integer
+          minimum: 0
+        actualDistanceMeters:
+          type: integer
+          minimum: 0
+        projectedDurationSeconds:
+          type: integer
+          minimum: 0
+        actualDurationSeconds:
+          type: integer
+          minimum: 0
+        estimatedSavingsCents:
+          type: integer
+          minimum: 0
     DeliveryMessageLog:
       type: object
       required: [id, recipientRef, notificationType, channel, status, attempts, createdAt, attemptHistory]

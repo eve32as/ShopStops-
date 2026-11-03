@@ -67,6 +67,31 @@ type NotificationLog = {
   attemptHistory: NotificationAttempt[]
 }
 
+type RouteOptimization = {
+  id: string
+  routeId: string
+  status: 'queued' | 'processing' | 'preview_ready' | 'not_improved' | 'failed' | 'stale' | 'applied'
+  requestedAt: string
+  baselineDistanceMeters: number
+  proposedDistanceMeters?: number
+  baselineDurationSeconds: number
+  proposedDurationSeconds?: number
+  estimatedSavingsCents?: number
+  proposedStopIds?: string[]
+  errorCode?: string
+  approvedBy?: string
+  appliedBy?: string
+}
+
+type RouteOptimizationMetrics = {
+  completedOptimizations: number
+  projectedDistanceMeters: number
+  actualDistanceMeters: number
+  projectedDurationSeconds: number
+  actualDurationSeconds: number
+  estimatedSavingsCents: number
+}
+
 function newIdempotencyKey() {
   return globalThis.crypto?.randomUUID?.() ?? `admin-${Date.now()}-${Math.random().toString(36).slice(2)}`
 }
@@ -315,6 +340,13 @@ function App() {
   const [assignmentMessage, setAssignmentMessage] = useState('')
   const [assignmentError, setAssignmentError] = useState('')
   const [assignmentLoading, setAssignmentLoading] = useState(false)
+  const [optimizationRouteId, setOptimizationRouteId] = useState('')
+  const [optimizationRequestKey, setOptimizationRequestKey] = useState('')
+  const [optimizationJob, setOptimizationJob] = useState<RouteOptimization | null>(null)
+  const [optimizationError, setOptimizationError] = useState('')
+  const [optimizationMessage, setOptimizationMessage] = useState('')
+  const [optimizationLoading, setOptimizationLoading] = useState(false)
+  const [optimizationMetrics, setOptimizationMetrics] = useState<RouteOptimizationMetrics | null>(null)
   const [driverProfiles, setDriverProfiles] = useState<DriverProfile[]>([])
   const [driverDirectoryLoading, setDriverDirectoryLoading] = useState(false)
   const [driverProfileRef, setDriverProfileRef] = useState('')
@@ -452,6 +484,95 @@ function App() {
         : 'Could not assign this route.')
     } finally {
       setAssignmentLoading(false)
+    }
+  }
+
+  async function requestRouteOptimization(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setOptimizationError('')
+    setOptimizationMessage('')
+    const routeId = optimizationRouteId.trim()
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(routeId)) {
+      setOptimizationError('Enter a valid route UUID.')
+      return
+    }
+    const key = optimizationRequestKey || newIdempotencyKey()
+    setOptimizationRequestKey(key)
+    setOptimizationLoading(true)
+    try {
+      const job = await fraudRequest<RouteOptimization>(
+        gatewayUrl,
+        sessionToken,
+        `dispatch/routes/${encodeURIComponent(routeId)}/optimizations`,
+        { method: 'POST', headers: { 'Idempotency-Key': key } },
+      )
+      setOptimizationJob(job)
+      setOptimizationRequestKey('')
+      setOptimizationMessage('Optimization queued. Refresh the preview after the worker finishes.')
+    } catch (requestError) {
+      setOptimizationError(requestError instanceof Error
+        ? requestError.message
+        : 'Could not queue route optimization.')
+    } finally {
+      setOptimizationLoading(false)
+    }
+  }
+
+  async function refreshRouteOptimization() {
+    if (!optimizationJob) return
+    setOptimizationError('')
+    setOptimizationLoading(true)
+    try {
+      const job = await fraudRequest<RouteOptimization>(
+        gatewayUrl, sessionToken,
+        `dispatch/routes/${encodeURIComponent(optimizationJob.routeId)}/optimizations/${encodeURIComponent(optimizationJob.id)}`,
+      )
+      setOptimizationJob(job)
+    } catch (requestError) {
+      setOptimizationError(requestError instanceof Error
+        ? requestError.message
+        : 'Could not refresh route optimization.')
+    } finally {
+      setOptimizationLoading(false)
+    }
+  }
+
+  async function approveRouteOptimization() {
+    if (!optimizationJob) return
+    setOptimizationError('')
+    setOptimizationMessage('')
+    setOptimizationLoading(true)
+    try {
+      const job = await fraudRequest<RouteOptimization>(
+        gatewayUrl, sessionToken,
+        `dispatch/routes/${encodeURIComponent(optimizationJob.routeId)}/optimizations/${encodeURIComponent(optimizationJob.id)}/approve`,
+        { method: 'POST' },
+      )
+      setOptimizationJob(job)
+      setOptimizationMessage('Approved preview applied to the unassigned route.')
+    } catch (requestError) {
+      setOptimizationError(requestError instanceof Error
+        ? requestError.message
+        : 'Could not approve this route preview.')
+    } finally {
+      setOptimizationLoading(false)
+    }
+  }
+
+  async function loadRouteOptimizationMetrics() {
+    setOptimizationError('')
+    setOptimizationLoading(true)
+    try {
+      const metrics = await fraudRequest<RouteOptimizationMetrics>(
+        gatewayUrl, sessionToken, 'dispatch/route-optimization-metrics',
+      )
+      setOptimizationMetrics(metrics)
+    } catch (requestError) {
+      setOptimizationError(requestError instanceof Error
+        ? requestError.message
+        : 'Could not load route outcome metrics.')
+    } finally {
+      setOptimizationLoading(false)
     }
   }
 
@@ -977,10 +1098,89 @@ function App() {
               </form>
               {assignmentError ? <div className="alert alert-error" role="alert">{assignmentError}</div> : null}
               {assignmentMessage ? <div className="alert alert-success" role="status">{assignmentMessage}</div> : null}
+              <div className="panel-header" style={{ marginTop: '2rem' }}>
+                <div>
+                  <div className="eyebrow">ASYNC ROUTE OPTIMIZATION</div>
+                  <h2>Preview a pickup-order change</h2>
+                </div>
+                <span className="lock-mark" aria-label="Dispatch or admin only">⌑</span>
+              </div>
+              <div className="notice">
+                <span className="notice-icon">i</span>
+                <p>Optimization runs in a background worker. It compares the two pickup orders and estimates mileage-cost savings. Nothing changes until you explicitly approve an improved preview; assigned or started routes cannot be changed.</p>
+              </div>
+              <form onSubmit={(event) => void requestRouteOptimization(event)}>
+                <label>
+                  Unassigned route ID
+                  <input autoComplete="off" value={optimizationRouteId}
+                    onChange={(event) => setOptimizationRouteId(event.target.value)}
+                    placeholder="Routed delivery UUID" required />
+                </label>
+                <button className="submit-button" disabled={optimizationLoading} type="submit">
+                  {optimizationLoading ? 'Working…' : 'Request preview'}
+                </button>
+              </form>
+              {optimizationJob ? (
+                <article className="fraud-alert">
+                  <div className="fraud-alert-heading">
+                    <div><h3>Optimization {optimizationJob.id}</h3><span>{optimizationJob.routeId}</span></div>
+                    <span className={`alert-state state-${optimizationJob.status === 'preview_ready' ? 'reviewed' : optimizationJob.status}`}>
+                      {optimizationJob.status.replaceAll('_', ' ')}
+                    </span>
+                  </div>
+                  <p>
+                    Current estimate: {(optimizationJob.baselineDistanceMeters / 1000).toFixed(2)} km ·
+                    {' '}{Math.round(optimizationJob.baselineDurationSeconds / 60)} min
+                  </p>
+                  {optimizationJob.proposedDistanceMeters !== undefined &&
+                    optimizationJob.proposedDurationSeconds !== undefined ? (
+                      <p>
+                        Proposed estimate: {(optimizationJob.proposedDistanceMeters / 1000).toFixed(2)} km ·
+                        {' '}{Math.round(optimizationJob.proposedDurationSeconds / 60)} min ·
+                        {' '}estimated savings {(optimizationJob.estimatedSavingsCents ?? 0) / 100} currency units
+                      </p>
+                    ) : null}
+                  {optimizationJob.errorCode ? <p>Worker result: {optimizationJob.errorCode}</p> : null}
+                  {optimizationJob.approvedBy ? <p>Approved and applied by {optimizationJob.approvedBy}.</p> : null}
+                  <div className="alert-toolbar">
+                    <button className="submit-button alert-load" disabled={optimizationLoading}
+                      onClick={() => void refreshRouteOptimization()} type="button">
+                      Refresh preview
+                    </button>
+                    {optimizationJob.status === 'preview_ready' ? (
+                      <button className="submit-button" disabled={optimizationLoading}
+                        onClick={() => void approveRouteOptimization()} type="button">
+                        Approve and apply
+                      </button>
+                    ) : null}
+                  </div>
+                </article>
+              ) : null}
+              <div className="alert-toolbar">
+                <span>Completed-route outcomes require GPS samples and stop timestamps.</span>
+                <button className="submit-button alert-load" disabled={optimizationLoading}
+                  onClick={() => void loadRouteOptimizationMetrics()} type="button">
+                  {optimizationLoading ? 'Loading…' : 'Load actual outcomes'}
+                </button>
+              </div>
+              {optimizationMetrics ? (
+                <div className="notice">
+                  <p>
+                    Completed routes: {optimizationMetrics.completedOptimizations} ·
+                    {' '}projected/actual distance: {(optimizationMetrics.projectedDistanceMeters / 1000).toFixed(1)} /
+                    {' '}{(optimizationMetrics.actualDistanceMeters / 1000).toFixed(1)} km ·
+                    {' '}projected/actual duration: {Math.round(optimizationMetrics.projectedDurationSeconds / 60)} /
+                    {' '}{Math.round(optimizationMetrics.actualDurationSeconds / 60)} min ·
+                    {' '}estimated savings: {(optimizationMetrics.estimatedSavingsCents / 100).toFixed(2)} currency units
+                  </p>
+                </div>
+              ) : null}
+              {optimizationError ? <div className="alert alert-error" role="alert">{optimizationError}</div> : null}
+              {optimizationMessage ? <div className="alert alert-success" role="status">{optimizationMessage}</div> : null}
             </section>
             <footer className="page-footer">
               <span>SHOPSTOPS ADMIN · ROUTE DISPATCH</span>
-              <span>Assignment is recorded in the delivery outbox</span>
+              <span>Route requests and approvals are audited</span>
             </footer>
           </> : <>
             <div className="page-heading">

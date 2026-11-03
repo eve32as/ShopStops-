@@ -85,6 +85,15 @@ type DriverAssignmentRepository interface {
 	AssignUnifiedDriver(context.Context, string, string, string) (string, error)
 }
 
+type RouteOptimizationRepository interface {
+	RequestRouteOptimization(
+		context.Context, string, string, string,
+	) (RouteOptimization, error)
+	GetRouteOptimization(context.Context, string, string) (RouteOptimization, error)
+	ApproveRouteOptimization(context.Context, string, string, string) (RouteOptimization, error)
+	RouteOptimizationMetrics(context.Context) (RouteOptimizationMetrics, error)
+}
+
 type DriverDirectoryRepository interface {
 	ListDriverProfiles(context.Context, string, int) ([]DriverProfile, error)
 	SetDriverProfile(context.Context, string, string, string, string) (DriverProfile, error)
@@ -372,6 +381,10 @@ func (s *Server) handler() http.Handler {
 	mux.Handle("PATCH /merchant/catalog/{itemId}", s.authorized(http.HandlerFunc(s.updateMerchantCatalogItem)))
 	mux.Handle("POST /dispatch/bundles", s.authorized(http.HandlerFunc(s.createBundle)))
 	mux.Handle("POST /dispatch/routes/{routeId}/assign", s.authorized(http.HandlerFunc(s.assignDriverToRoute)))
+	mux.Handle("POST /dispatch/routes/{routeId}/optimizations", s.authorized(http.HandlerFunc(s.requestRouteOptimization)))
+	mux.Handle("GET /dispatch/routes/{routeId}/optimizations/{optimizationId}", s.authorized(http.HandlerFunc(s.getRouteOptimization)))
+	mux.Handle("POST /dispatch/routes/{routeId}/optimizations/{optimizationId}/approve", s.authorized(http.HandlerFunc(s.approveRouteOptimization)))
+	mux.Handle("GET /dispatch/route-optimization-metrics", s.authorized(http.HandlerFunc(s.getRouteOptimizationMetrics)))
 	mux.Handle("GET /admin/drivers", s.authorized(http.HandlerFunc(s.listDriverProfiles)))
 	mux.Handle("PUT /admin/drivers/{driverRef}", s.authorized(http.HandlerFunc(s.setDriverProfile)))
 	mux.Handle("POST /admin/drivers/{driverRef}/screenings", s.authorized(http.HandlerFunc(s.startDriverScreening)))

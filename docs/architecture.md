@@ -314,6 +314,20 @@ results are never used to automatically approve a driver or take adverse action.
 Operators must configure Checkr credentials, package, production endpoint, work
 locations, and the legally required consent, dispute, and adverse-action process.
 
+Migration `015_route_optimization.sql` adds idempotent optimization jobs and
+transactional outbox events. The worker supports the current three-stop route
+shape only: it compares the existing pickup order with the two-pickup swap, using
+OSRM and stop coordinates without customer contact details. Its preview reports
+projected distance/duration and an estimated mileage-cost delta based on the
+operator-configured cents-per-mile rate. Dispatchers/admins must explicitly
+approve a preview; the database rechecks that the route remains routed,
+unassigned, and unchanged before atomically resequencing stops and replacing leg
+estimates. Expiring leases and idempotent job keys make retries safe. A stale
+preview cannot affect a route after assignment/start. Completed-route outcome
+metrics compare the applied projection to GPS-derived distance and stop-event
+duration, and are available only when both data sources are present; cost savings
+are estimates, not guaranteed profit.
+
 The OpenAPI contract describes subscription, refund, and webhook flows. The
 `apps/mobile` Expo client targets iOS and Android and includes shopper delivery
 tracking and assigned-driver stop maps using a provider-neutral native map
