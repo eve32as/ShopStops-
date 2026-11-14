@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	routing "github.com/eve32as/ShopStops-/internal/routing"
 )
 
 type fakeRepository struct {
@@ -399,6 +402,46 @@ func TestDriverCanReadAssignedRoute(t *testing.T) {
 	if recorder.Code != http.StatusOK || repo.driverRef != "driver-123" ||
 		!strings.Contains(recorder.Body.String(), `"type":"dropoff"`) {
 		t.Fatalf("status=%d driver=%s body=%s", recorder.Code, repo.driverRef, recorder.Body.String())
+	}
+}
+
+func TestDriverRouteHydratesLegsFromOSRM(t *testing.T) {
+	osrmServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"code":"Ok","routes":[{"distance":1234.5,"duration":456.7}]}`)
+	}))
+	defer osrmServer.Close()
+
+	repo := &fakeRepository{route: routeResponse{
+		ID:     "00000000-0000-0000-0000-000000000010",
+		Status: "in_progress",
+		Stops: []routeStop{
+			{Sequence: 1, Type: "pickup", Latitude: 38.91, Longitude: -76.99},
+			{Sequence: 2, Type: "dropoff", Latitude: 38.92, Longitude: -77.00},
+		},
+	}}
+	request := httptest.NewRequest(http.MethodGet,
+		"/driver/routes/00000000-0000-0000-0000-000000000010", nil)
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
+	request.Header.Set("X-ShopStops-Actor", "driver-123")
+	recorder := httptest.NewRecorder()
+	server := &Server{
+		repo: repo,
+		token: strings.Repeat("t", 32),
+		log:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		osrm: routing.NewOSRMClient(osrmServer.URL),
+	}
+	server.handler().ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response routeResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(response.Legs) != 1 || response.Legs[0].Provider != "osrm" ||
+		response.Legs[0].DistanceMeters != 1234 || response.Legs[0].DurationSeconds != 457 {
+		t.Fatalf("hydrated legs = %#v", response.Legs)
 	}
 }
 

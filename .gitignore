@@ -1,0 +1,28 @@
+# Local dependencies and build output
+node_modules/
+dist/
+/shopstops-api
+
+# Generated routing datasets (rebuild with scripts/prepare-osrm-data.sh)
+/data/osrm/
+
+# Local credentials and environment settings
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Terraform working directories, state, and private variable inputs
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+!*.tfvars.json.example
+crash.log
+crash.*.log
+
+# macOS metadata
+.DS_Store

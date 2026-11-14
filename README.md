@@ -34,6 +34,8 @@ export DATABASE_URL='postgres://<user>:<password>@localhost:5432/shopstops?sslmo
 export SHOPSTOPS_INTERNAL_API_TOKEN="$(openssl rand -hex 32)"
 export SHOPSTOPS_DELIVERY_FEE_CENTS=500
 export SHOPSTOPS_SERVICE_FEE_CENTS=100
+# Point the backend at the local OSRM routing service used for route lookups.
+export OSRM_URL='http://localhost:5001'
 # Set both through a server-side secret manager to enable Stripe payments.
 export STRIPE_SECRET_KEY
 export STRIPE_WEBHOOK_SECRET

@@ -12,10 +12,12 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/eve32as/ShopStops-/internal/routing"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -33,6 +35,7 @@ type Server struct {
 	payments        PaymentGateway
 	webhookSecret   string
 	merchantPriceID string
+	osrm            *routing.OSRMClient
 }
 
 type Repository interface {
@@ -223,7 +226,7 @@ type checkoutResponse struct {
 }
 
 func New(repo Repository, token string, logger *slog.Logger) http.Handler {
-	s := &Server{repo: repo, token: token, log: logger}
+	s := &Server{repo: repo, token: token, log: logger, osrm: routing.NewOSRMClient(os.Getenv("OSRM_URL"))}
 	return s.handler()
 }
 
@@ -234,6 +237,7 @@ func NewWithPayments(
 	s := &Server{
 		repo: repo, token: token, log: logger,
 		payments: payments, webhookSecret: webhookSecret,
+		osrm: routing.NewOSRMClient(os.Getenv("OSRM_URL")),
 	}
 	if len(merchantPriceIDs) > 0 {
 		s.merchantPriceID = merchantPriceIDs[0]
@@ -659,6 +663,34 @@ func (s *Server) createCheckout(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
+func (s *Server) hydrateRouteLegs(ctx context.Context, route *routeResponse) {
+	if route == nil || len(route.Stops) < 2 || len(route.Legs) > 0 || s.osrm == nil {
+		return
+	}
+	points := make([]routing.Coordinate, 0, len(route.Stops))
+	for _, stop := range route.Stops {
+		points = append(points, routing.Coordinate{Latitude: stop.Latitude, Longitude: stop.Longitude})
+	}
+	legs, err := s.osrm.RouteLegs(ctx, points)
+	if err != nil {
+		if s.log != nil {
+			s.log.Warn("osrm route lookup failed", "route_id", route.ID, "error", err)
+		}
+		return
+	}
+	route.Provider = "osrm"
+	route.Legs = make([]routeLeg, 0, len(legs))
+	for i, leg := range legs {
+		route.Legs = append(route.Legs, routeLeg{
+			FromSequence:    i + 1,
+			ToSequence:      i + 2,
+			DistanceMeters:  leg.DistanceMeters,
+			DurationSeconds: leg.DurationSeconds,
+			Provider:        leg.Provider,
+		})
+	}
+}
+
 func (s *Server) getDriverRoute(w http.ResponseWriter, r *http.Request) {
 	routeID := r.PathValue("routeId")
 	driverRef := strings.TrimSpace(r.Header.Get("X-ShopStops-Actor"))
@@ -681,6 +713,7 @@ func (s *Server) getDriverRoute(w http.ResponseWriter, r *http.Request) {
 		s.databaseError(w, err)
 		return
 	}
+	s.hydrateRouteLegs(ctx, &route)
 	writeJSON(w, http.StatusOK, route)
 }
 
