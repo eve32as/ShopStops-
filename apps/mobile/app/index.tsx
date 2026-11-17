@@ -1,8 +1,9 @@
 import * as Location from "expo-location";
 import { useStripe } from "@stripe/stripe-react-native";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Image,
+  AppState,
   ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
@@ -10,12 +11,17 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from "react-native";
-import { ApiError, apiRequest, idempotencyKey, type ApiSettings } from "../src/api";
+import { ApiError, apiRequest, idempotencyKey, RequestScope, type ApiSettings } from "../src/api";
+import { ConnectionPanel } from "../src/ConnectionPanel";
+import { mobileConfiguration } from "../src/config";
+import { LocationSharing } from "../src/locationSharing";
+import { isTestPublishableKey, priorityPricing, type PriorityPricing } from "../src/priority";
+import { ActionButton, Field, StateCard } from '../src/WorkspaceUI';
+import { cartSummary, customerStages, deliveryCoordinates, money, readableDate, requiredUUID, type CustomerStage } from '../src/workflow';
 
-type Role = "Shopper" | "Driver" | "Merchant";
+type Role = "Customer" | "Driver" | "Merchant";
 type NearbyMerchant = {
   merchantId: string;
   name: string;
@@ -52,6 +58,7 @@ type CreateOrderBody = {
   items: { catalogItemId: string; quantity: number }[];
 };
 type Checkout = {
+  priority?: { selected: boolean; testOnly: boolean };
   id: string;
   status: string;
   currency: string;
@@ -86,23 +93,53 @@ type Subscription = {
 };
 
 const stripeKeyConfigured = Boolean(process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY);
+const configuration = mobileConfiguration(process.env.EXPO_PUBLIC_API_URL, __DEV__, process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY);
+type Connection = { gatewayUrl: string; sessionToken: string; role: Role; revision: number; scope: RequestScope };
 
 export default function HomeScreen() {
-  const [role, setRole] = useState<Role>("Shopper");
-  const [connectionOpen, setConnectionOpen] = useState(true);
-  const [gatewayUrl, setGatewayUrl] = useState("");
-  const [sessionToken, setSessionToken] = useState("");
+  const [connection, setConnection] = useState<Connection>(() => ({ gatewayUrl: configuration.baseUrl, sessionToken: '', role: 'Customer', revision: 0, scope: new RequestScope() }));
+  const [editing, setEditing] = useState(false);
+  function change(update: Partial<Pick<Connection, 'gatewayUrl' | 'sessionToken' | 'role'>>) {
+    connection.scope.close(); // synchronous: no old request may win this transition
+    setConnection(current => ({ ...current, ...update, revision: current.revision + 1, scope: new RequestScope() }));
+  }
+  if (configuration.error) return <View style={{ padding: 32, paddingTop: 72 }}><Text accessibilityRole="alert">{configuration.error}</Text></View>;
+  return <>
+    <HomeWorkspace key={connection.revision} connection={connection} onRole={role => change({ role })} onEdit={() => setEditing(true)} onClear={() => change({ sessionToken: '' })} />
+    <ConnectionPanel visible={editing} gatewayUrl={connection.gatewayUrl} sessionToken={connection.sessionToken} onGateway={gatewayUrl => change({ gatewayUrl })} onToken={sessionToken => change({ sessionToken })} onClose={() => setEditing(false)} onClear={() => change({ sessionToken: '' })} />
+  </>;
+}
+
+function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Connection; onRole: (role: Role) => void; onEdit: () => void; onClear: () => void }) {
+  const { role, gatewayUrl, sessionToken } = connection;
+  const [connectionOpen, setConnectionOpen] = useState(false);
+  const [stage, setStage] = useState<CustomerStage>('Browse');
+  const [advancedOrders, setAdvancedOrders] = useState(false);
+  const [catalogLoaded, setCatalogLoaded] = useState(false);
+  const [nearbyLoaded, setNearbyLoaded] = useState(false);
+  const [merchantCatalogLoaded, setMerchantCatalogLoaded] = useState(false);
+  const [locationsLoaded, setLocationsLoaded] = useState(false);
+  useLayoutEffect(() => {
+    if (connection.scope.signal.aborted) connection.scope = new RequestScope();
+    return () => connection.scope.close();
+  }, [connection]);
   const settings = useMemo<ApiSettings>(
-    () => ({ baseUrl: gatewayUrl, sessionToken }),
-    [gatewayUrl, sessionToken],
+    () => ({ baseUrl: gatewayUrl, sessionToken, get signal() { return connection.scope.signal; }, allowLocal: __DEV__ }),
+    [gatewayUrl, sessionToken, connection],
   );
-  const [busy, setBusy] = useState(false);
+  const [requestBusy, setBusy] = useState(false);
+  const [paymentActive, setPaymentActive] = useState(false);
+  const [trackingStarting, setTrackingStarting] = useState(false);
+  const busy = requestBusy || paymentActive;
   const [message, setMessage] = useState("");
   const [nearby, setNearby] = useState<NearbyMerchant[]>([]);
   const [catalog, setCatalog] = useState<CatalogItem[]>([]);
   const [catalogStoreID, setCatalogStoreID] = useState("");
   const [quantities, setQuantities] = useState<Record<string, number>>({});
   const [checkout, setCheckout] = useState<Checkout | null>(null);
+  const [priorityPrice, setPriorityPrice] = useState<PriorityPricing | null>(null);
+  const [prioritySelected, setPrioritySelected] = useState(false);
+  const [pricingRefresh, setPricingRefresh] = useState(0);
   const [route, setRoute] = useState<Route | null>(null);
   const [subscription, setSubscription] = useState<Subscription | null>(null);
   const [merchantStoreLocations, setMerchantStoreLocations] = useState<MerchantStoreLocation[]>([]);
@@ -119,6 +156,12 @@ export default function HomeScreen() {
   const [longitude, setLongitude] = useState("");
   const [routeId, setRouteId] = useState("");
   const [tracking, setTracking] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState('Not verified · send a request to check access');
+  const inFlight = useRef(false);
+  const paymentBusy = useRef(false);
+  const locationSharing = useRef(new LocationSharing<Location.LocationObject>());
+  const stopAttempt = useRef<{ fingerprint: string; body: string } | null>(null);
+  const setupAttempt = useRef<string | null>(null);
   const [deliveryWindow] = useState(() => {
     const start = new Date(Date.now() + 15 * 60 * 1000);
     return {
@@ -141,6 +184,7 @@ export default function HomeScreen() {
   const checkoutAttempt = useRef<{
     key: string;
     body: {
+      priorityService: boolean;
       anchorStoreLocationId: string;
       orderIds: string[];
       dropoff: { latitude: number; longitude: number };
@@ -148,69 +192,75 @@ export default function HomeScreen() {
       deliveryWindowEnd: string;
     };
   } | null>(null);
-  const routeLocation = useRef<Location.LocationObject | null>(null);
-  const routeSubscription = useRef<Location.LocationSubscription | null>(null);
-  const lastReportedAt = useRef(0);
-  const previousConnection = useRef({ gatewayUrl, sessionToken });
   const { initPaymentSheet, presentPaymentSheet } = useStripe();
 
+  useEffect(() => {
+    let active = true;
+    setPriorityPrice(null);
+    setPrioritySelected(false);
+    if (role !== 'Customer' || !gatewayUrl || !sessionToken) return;
+    // Keep an unresolved checkout attempt intact: its idempotency key and
+    // original choice must not be silently changed during a pricing refresh.
+    void apiRequest<unknown>(settings, "checkout-pricing/priority")
+      .then((value) => { if (active) setPriorityPrice(priorityPricing(value)); })
+      .catch(() => { if (active) setPriorityPrice(null); });
+    return () => { active = false; };
+  }, [settings, pricingRefresh, role, gatewayUrl, sessionToken]);
+
   const run = useCallback(async <T,>(action: () => Promise<T>) => {
+    if (inFlight.current) return undefined;
+    inFlight.current = true;
+    const scope = connection.scope;
     setBusy(true);
     setMessage("");
     try {
-      return await action();
+      scope.assertCurrent();
+      const result = await action();
+      scope.assertCurrent();
+      setConnectionStatus('Gateway responded · permissions checked per action');
+      return result;
     } catch (error) {
-      setMessage(error instanceof ApiError ? error.message : "The request could not be completed.");
+      if (!scope.signal.aborted) {
+        setMessage(error instanceof ApiError ? error.message : "The request could not be completed.");
+        setConnectionStatus(error instanceof ApiError && error.status ? `Gateway rejected request (${error.status})` : 'Gateway unavailable or request invalid');
+      }
       return undefined;
     } finally {
-      setBusy(false);
+      if (!scope.signal.aborted) { inFlight.current = false; setBusy(false); }
     }
-  }, []);
+  }, [connection]);
 
   useEffect(() => {
+    const sharing = locationSharing.current;
+    const signal = connection.scope.signal;
+    const stop = () => sharing.stop();
+    signal.addEventListener('abort', stop, { once: true });
     return () => {
-      routeSubscription.current?.remove();
-      routeSubscription.current = null;
+      signal.removeEventListener('abort', stop);
+      sharing.stop();
     };
+  }, [connection]);
+
+  useEffect(() => {
+    const listener = AppState.addEventListener('change', state => {
+      if (state !== 'active') endTracking();
+    });
+    return () => listener.remove();
   }, []);
 
   useEffect(() => {
-    if (
-      previousConnection.current.gatewayUrl !== gatewayUrl ||
-      previousConnection.current.sessionToken !== sessionToken
-    ) {
-      previousConnection.current = { gatewayUrl, sessionToken };
-      endTracking();
-      checkoutAttempt.current = null;
-      orderAttempt.current = null;
-      setNearby([]);
-      setCatalog([]);
-      setCatalogStoreID("");
-      setQuantities({});
-      setOrderIds("");
-      setCheckout(null);
-      setRoute(null);
-      setSubscription(null);
-      setMerchantCatalog([]);
-      setMerchantCatalogDrafts({});
-      setMerchantStoreLocations([]);
-      setMerchantStoreLocation("");
-    }
-  }, [gatewayUrl, sessionToken]);
-
-  useEffect(() => {
-    if (!tracking) return;
+    if (!tracking || role !== 'Driver') return;
+    let active = true;
+    const sharing = locationSharing.current;
     const timer = setInterval(() => {
-      const current = routeLocation.current;
-      if (!current || !routeId || current.timestamp <= lastReportedAt.current) return;
-      lastReportedAt.current = current.timestamp;
-      void apiRequest(
-        settings,
+      if (!routeId) return;
+      void sharing.report((current, signal) => apiRequest(
+        { ...settings, signal },
         `driver/routes/${encodeURIComponent(routeId)}/location`,
         {
           method: "POST",
           body: JSON.stringify({
-            eventId: `gps-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+            eventId: `gps-${current.timestamp}`,
             observedAt: new Date(current.timestamp).toISOString(),
             location: {
               latitude: current.coords.latitude,
@@ -218,21 +268,22 @@ export default function HomeScreen() {
             },
           }),
         },
-      ).catch((error: unknown) => {
-        setMessage(error instanceof Error ? error.message : "GPS update failed.");
+      )).catch((error: unknown) => {
+        if (active && !settings.signal?.aborted) setMessage(error instanceof ApiError ? error.message : "GPS update failed.");
       });
     }, 5000);
-    return () => clearInterval(timer);
-  }, [routeId, settings, tracking]);
+    return () => { active = false; clearInterval(timer); };
+  }, [routeId, settings, tracking, role]);
 
   async function findNearby() {
+    try { requiredUUID(anchorStore, 'anchor store'); } catch (error) { setMessage((error as Error).message); return; }
     const results = await run(() =>
       apiRequest<NearbyMerchant[]>(
         settings,
         `stores/${encodeURIComponent(anchorStore)}/nearby-merchants?radiusMeters=500`,
       ),
     );
-    if (results) setNearby(results);
+    if (results) { setNearbyLoaded(true); setNearby(results); }
   }
 
   async function loadCatalog(storeID = catalogStoreID) {
@@ -241,6 +292,7 @@ export default function HomeScreen() {
       setMessage("Enter a store location ID to browse its catalog.");
       return;
     }
+    try { requiredUUID(normalizedID, 'store location'); } catch (error) { setMessage((error as Error).message); return; }
     const results = await run(() =>
       apiRequest<CatalogItem[]>(
         settings,
@@ -249,8 +301,10 @@ export default function HomeScreen() {
     );
     if (results) {
       setCatalogStoreID(normalizedID);
+      setCatalogLoaded(true);
       setCatalog(results);
       setQuantities({});
+      setStage('Cart');
     }
   }
 
@@ -259,13 +313,14 @@ export default function HomeScreen() {
       setMessage("Start a new basket before creating another order.");
       return;
     }
+    try { requiredUUID(catalogStoreID, 'store location'); deliveryCoordinates(latitude, longitude); } catch (error) { setMessage((error as Error).message); return; }
     const lat = Number(latitude);
     const lon = Number(longitude);
     const items = catalog
       .filter((item) => (quantities[item.id] ?? 0) > 0)
       .map((item) => ({ catalogItemId: item.id, quantity: quantities[item.id] }));
     if (
-      !catalogStoreID.trim() || !Number.isFinite(lat) || lat < -90 || lat > 90 ||
+      !latitude.trim() || !longitude.trim() || !catalogStoreID.trim() || !Number.isFinite(lat) || lat < -90 || lat > 90 ||
       !Number.isFinite(lon) || lon < -180 || lon > 180 || items.length === 0
     ) {
       setMessage("Choose catalog items and enter valid delivery coordinates.");
@@ -302,7 +357,8 @@ export default function HomeScreen() {
         setOrderIds([...currentIDs, result.id].join(", "));
       }
       setQuantities({});
-      setMessage(`Order created · $${(result.itemSubtotalCents / 100).toFixed(2)} items.`);
+      setStage('Checkout');
+      setMessage(`Order created · ${money(result.itemSubtotalCents)} items. Delivery and fees are calculated in checkout.`);
     }
   }
 
@@ -311,9 +367,15 @@ export default function HomeScreen() {
       .split(/[\s,]+/)
       .map((id) => id.trim())
       .filter(Boolean);
+    try {
+      requiredUUID(anchorStore, 'anchor store');
+      if (!ids.length) throw new Error('Create an order from your cart first.');
+      ids.forEach(id => requiredUUID(id, 'order'));
+      deliveryCoordinates(latitude, longitude);
+    } catch (error) { setMessage((error as Error).message); return; }
     const lat = Number(latitude);
     const lon = Number(longitude);
-    if (!anchorStore.trim() || ids.length === 0 || !Number.isFinite(lat) || !Number.isFinite(lon)) {
+    if (!latitude.trim() || !longitude.trim() || !anchorStore.trim() || ids.length === 0 || !Number.isFinite(lat) || lat < -90 || lat > 90 || !Number.isFinite(lon) || lon < -180 || lon > 180) {
       setMessage("Enter the anchor store, order IDs, and delivery coordinates.");
       return;
     }
@@ -321,6 +383,7 @@ export default function HomeScreen() {
       checkoutAttempt.current = {
         key: idempotencyKey(),
         body: {
+          priorityService: prioritySelected && priorityPrice !== null,
           anchorStoreLocationId: anchorStore.trim(),
           orderIds: ids,
           dropoff: { latitude: lat, longitude: lon },
@@ -344,7 +407,15 @@ export default function HomeScreen() {
   }
 
   async function payCheckout() {
+    if (paymentBusy.current || inFlight.current) return;
+    paymentBusy.current = true;
+    setPaymentActive(true);
+    try {
     if (!checkout || !stripeKeyConfigured) return;
+    if (checkout.priority?.testOnly && !isTestPublishableKey(process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY)) {
+      setMessage("This test-only priority basket requires a Stripe test publishable key.");
+      return;
+    }
     const intent = await run(() =>
       apiRequest<{ clientSecret: string; amountCents: number; currency: string }>(
         settings,
@@ -353,20 +424,29 @@ export default function HomeScreen() {
       ),
     );
     if (!intent) return;
+    if (intent.amountCents !== checkout.totalCents || intent.currency !== checkout.currency) {
+      setMessage("Payment total does not match the basket. Reconciliation is required.");
+      return;
+    }
     const initialized = await initPaymentSheet({
       merchantDisplayName: "ShopStops",
       paymentIntentClientSecret: intent.clientSecret,
     });
+    if (connection.scope.signal.aborted) return;
     if (initialized.error) {
-      setMessage(initialized.error.message);
+      setMessage('Payment could not be initialized. Check the basket before retrying.');
       return;
     }
     const presented = await presentPaymentSheet();
-    if (presented.error) setMessage(presented.error.message);
+    if (connection.scope.signal.aborted) return;
+    if (presented.error) setMessage('Payment was cancelled or unsuccessful. Check payment status before retrying.');
     else setMessage("Payment submitted. Your order updates when Stripe confirms it.");
+    } catch { if (!connection.scope.signal.aborted) setMessage('Payment could not be completed. Check payment status before retrying.'); }
+    finally { paymentBusy.current = false; if (!connection.scope.signal.aborted) setPaymentActive(false); }
   }
 
   async function loadRoute() {
+    try { requiredUUID(routeId, 'assigned route'); } catch (error) { setMessage((error as Error).message); return; }
     if (!routeId.trim()) {
       setMessage("Enter your assigned route ID.");
       return;
@@ -379,21 +459,23 @@ export default function HomeScreen() {
 
   async function updateRouteStop(stopId: string, type: "arrive" | "complete") {
     const routeKey = routeId.trim();
+    const fingerprint = JSON.stringify([routeKey, stopId, type]);
+    if (stopAttempt.current?.fingerprint !== fingerprint) stopAttempt.current = {
+      fingerprint, body: JSON.stringify({ eventId: idempotencyKey(), type, observedAt: new Date().toISOString() }),
+    };
+    const attempt = stopAttempt.current;
     const result = await run(() =>
       apiRequest<StopEvent>(
         settings,
         `driver/routes/${encodeURIComponent(routeKey)}/stops/${encodeURIComponent(stopId)}/events`,
         {
           method: "POST",
-          body: JSON.stringify({
-            eventId: idempotencyKey(),
-            type,
-            observedAt: new Date().toISOString(),
-          }),
+          body: attempt.body,
         },
       ),
     );
     if (result) {
+      stopAttempt.current = null;
       setRoute((current) =>
         current
           ? {
@@ -409,41 +491,45 @@ export default function HomeScreen() {
   }
 
   async function beginTracking() {
-    if (!routeId.trim()) {
+    if (trackingStarting || locationSharing.current.active) return;
+    if (!route || role !== 'Driver' || !routeId.trim()) {
       setMessage("Load your assigned route before starting location sharing.");
       return;
     }
-    const permission = await Location.requestForegroundPermissionsAsync();
-    if (permission.status !== "granted") {
-      setMessage("Allow location access while using the app to share your active route.");
-      return;
-    }
+    setTrackingStarting(true);
     try {
-      routeLocation.current = await Location.getCurrentPositionAsync({
+    const started = await locationSharing.current.start(async (current, receive) => {
+      const permission = await Location.requestForegroundPermissionsAsync();
+      if (!current() || connection.scope.signal.aborted || AppState.currentState !== 'active') return null;
+      if (permission.status !== "granted") {
+        setMessage("Allow location access while using the app to share your active route.");
+        return null;
+      }
+      const position = await Location.getCurrentPositionAsync({
         accuracy: Location.Accuracy.Balanced,
       });
-      routeSubscription.current = await Location.watchPositionAsync(
+      if (!current() || connection.scope.signal.aborted || AppState.currentState !== 'active') return null;
+      receive(position);
+      return Location.watchPositionAsync(
         {
           accuracy: Location.Accuracy.Balanced,
           timeInterval: 5000,
           distanceInterval: 0,
         },
-        (position) => {
-          routeLocation.current = position;
-        },
+        receive,
       );
-      setTracking(true);
-      setMessage("Location sharing is active while this screen remains open.");
+    });
+      if (connection.scope.signal.aborted) return;
+      setTracking(started);
+      if (started) setMessage("Location sharing is active while this screen remains open.");
     } catch {
-      setMessage("Could not start location updates. Check device location services.");
-    }
+      if (!connection.scope.signal.aborted) setMessage("Could not start location updates. Check device location services.");
+    } finally { if (!connection.scope.signal.aborted) setTrackingStarting(false); }
   }
 
   function endTracking() {
-    routeSubscription.current?.remove();
-    routeSubscription.current = null;
-    routeLocation.current = null;
-    lastReportedAt.current = 0;
+    locationSharing.current.stop();
+    setTrackingStarting(false);
     setTracking(false);
     setMessage("Location sharing stopped.");
   }
@@ -458,10 +544,15 @@ export default function HomeScreen() {
   }
 
   async function setupMerchantPaymentMethod() {
+    if (paymentBusy.current || inFlight.current) return;
+    paymentBusy.current = true;
+    setPaymentActive(true);
+    try {
+    setupAttempt.current ??= idempotencyKey();
     const intent = await run(() =>
       apiRequest<{ clientSecret: string }>(settings, "merchant/subscription/setup-intent", {
         method: "POST",
-        headers: { "Idempotency-Key": idempotencyKey() },
+        headers: { "Idempotency-Key": setupAttempt.current! },
       }),
     );
     if (!intent) return;
@@ -469,17 +560,22 @@ export default function HomeScreen() {
       merchantDisplayName: "ShopStops Merchant",
       setupIntentClientSecret: intent.clientSecret,
     });
+    if (connection.scope.signal.aborted) return;
+    setupAttempt.current = null;
     if (initialized.error) {
-      setMessage(initialized.error.message);
+      setMessage('Billing setup could not be initialized. Refresh billing status before retrying.');
       return;
     }
     const presented = await presentPaymentSheet();
+    if (connection.scope.signal.aborted) return;
     if (presented.error) {
-      setMessage(presented.error.message);
+      setMessage('Billing setup was cancelled or unsuccessful. Refresh billing status before retrying.');
       return;
     }
     setMessage("Billing method saved. Refresh status before starting your subscription.");
     await refreshSubscription();
+    } catch { if (!connection.scope.signal.aborted) setMessage('Billing setup failed. Refresh billing status before retrying.'); }
+    finally { paymentBusy.current = false; if (!connection.scope.signal.aborted) setPaymentActive(false); }
   }
 
   async function startSubscription() {
@@ -497,6 +593,7 @@ export default function HomeScreen() {
       apiRequest<MerchantCatalogItem[]>(settings, "merchant/catalog"),
     );
     if (items) {
+      setMerchantCatalogLoaded(true);
       setMerchantCatalog(items);
       setMerchantCatalogDrafts(Object.fromEntries(items.map((item) => [
         item.id,
@@ -515,6 +612,7 @@ export default function HomeScreen() {
       apiRequest<MerchantStoreLocation[]>(settings, "merchant/store-locations"),
     );
     if (locations) {
+      setLocationsLoaded(true);
       setMerchantStoreLocations(locations);
       if (!merchantStoreLocation && locations.length > 0) {
         setMerchantStoreLocation(locations[0].id);
@@ -526,7 +624,7 @@ export default function HomeScreen() {
     const price = Number(newItemPrice);
     const volume = Number(newItemVolume);
     if (!merchantStoreLocation.trim() || !newItemName.trim() ||
-        !Number.isInteger(price) || price < 1 || !Number.isFinite(volume) || volume <= 0) {
+        !Number.isSafeInteger(price) || price < 1 || !Number.isFinite(volume) || volume <= 0) {
       setMessage("Enter your store location ID, item name, price in cents, and positive volume.");
       return;
     }
@@ -565,7 +663,7 @@ export default function HomeScreen() {
     if (!draft) return;
     const price = Number(draft.unitPriceCents);
     const volume = Number(draft.volumeLiters);
-    if (!draft.name.trim() || !Number.isInteger(price) || price < 1 ||
+    if (!draft.name.trim() || !Number.isSafeInteger(price) || price < 1 ||
         !Number.isFinite(volume) || volume <= 0) {
       setMessage("Enter a valid item name, price in cents, and positive volume.");
       return;
@@ -604,9 +702,10 @@ export default function HomeScreen() {
         {
           method: "PATCH",
           body: JSON.stringify({
-            ...draft,
-            unitPriceCents: Number(draft.unitPriceCents),
-            volumeLiters: Number(draft.volumeLiters),
+            name: item.name,
+            description: item.description,
+            unitPriceCents: item.unitPriceCents,
+            volumeLiters: Number(item.volumeLiters),
             available: !item.available,
           }),
         },
@@ -627,34 +726,18 @@ export default function HomeScreen() {
         Use the public HTTPS gateway and a user session from your identity provider. Never enter
         the backend service token here.
       </Text>
-      <TextInput
-        accessibilityLabel="Gateway URL"
-        autoCapitalize="none"
-        autoCorrect={false}
-        keyboardType="url"
-        onChangeText={setGatewayUrl}
-        placeholder="https://api.example.com/v1"
-        placeholderTextColor="#94a3b8"
-        style={styles.input}
-        value={gatewayUrl}
-      />
-      <TextInput
-        accessibilityLabel="Session token"
-        autoCapitalize="none"
-        autoCorrect={false}
-        onChangeText={setSessionToken}
-        placeholder="User session token (held in memory only)"
-        placeholderTextColor="#94a3b8"
-        secureTextEntry
-        style={styles.input}
-        value={sessionToken}
-      />
+      <Text style={styles.helpText}>{connectionStatus}</Text>
+      <Text style={styles.tinyNote}>Credentials stay in memory. Role selection does not grant permissions. No integrated SSO yet.</Text>
+      <ActionButton label="Edit gateway and session" onPress={onEdit} secondary />
+      <ActionButton label="Clear session and private records" onPress={onClear} secondary />
     </View>
   );
   const activeStop = route?.stops
     .slice()
     .sort((a, b) => a.sequence - b.sequence)
     .find((stop) => stop.status !== "completed");
+  const cart = cartSummary(catalog, quantities);
+  const orderCount = orderIds.split(/[\s,]+/).filter(Boolean).length;
 
   return (
     <KeyboardAvoidingView
@@ -677,27 +760,21 @@ export default function HomeScreen() {
         </View>
 
         <View style={styles.hero}>
-          <Text style={styles.heroEyebrow}>ONE CHECKOUT. MORE LOCAL.</Text>
-          <Text style={styles.heroTitle}>Your neighborhood, on the way.</Text>
+          <Text style={styles.heroEyebrow}>{role.toUpperCase()} WORKSPACE</Text>
+          <Text style={styles.heroTitle}>{role === 'Customer' ? 'Your neighborhood, on the way.' : role === 'Driver' ? 'A clear next stop.' : 'Your store, ready for discovery.'}</Text>
           <Text style={styles.heroCopy}>
-            One local delivery for the restaurant and the shop next door.
+            {role === 'Customer' ? 'Browse a local store, build your order, then review the real checkout total.' : role === 'Driver' ? 'Open the route provided by dispatch. Confirm arrival and handoff in server-assigned order.' : 'Choose your location, publish a catalog, and check billing before opening your storefront.'}
           </Text>
-          <View style={styles.heroStats}>
-            <View><Text style={styles.statValue}>500m</Text><Text style={styles.statLabel}>local picks</Text></View>
-            <View><Text style={styles.statValue}>2</Text><Text style={styles.statLabel}>stores per basket</Text></View>
-            <View><Text style={styles.statValue}>1</Text><Text style={styles.statLabel}>shared route</Text></View>
-          </View>
         </View>
 
         <View style={styles.rolePicker}>
-          {(["Shopper", "Driver", "Merchant"] as const).map((item) => (
+          {(["Customer", "Driver", "Merchant"] as const).map((item) => (
             <Pressable
               accessibilityRole="tab"
               accessibilityState={{ selected: role === item }}
               key={item}
               onPress={() => {
-                setRole(item);
-                setMessage("");
+                if (item !== role) onRole(item);
               }}
               style={[styles.roleButton, role === item && styles.roleButtonActive]}
             >
@@ -706,12 +783,14 @@ export default function HomeScreen() {
           ))}
         </View>
 
+        <Text style={styles.tinyNote}>Worker shopping: managed by partner store; not available in this app. Supervised records are reviewed by authorized admins. Changing roles clears this workspace; roles do not grant access.</Text>
+
         <View style={styles.connectionCard}>
           <View style={styles.connectionHeader}>
             <View style={styles.connectionCopy}>
-              <Text style={styles.sectionEyebrow}>SECURE CONNECTION</Text>
+              <Text style={styles.sectionEyebrow}>OPERATOR / BETA SETUP</Text>
               <Text style={styles.connectionStatus}>
-                {gatewayUrl && sessionToken ? "Gateway details entered" : "Connect to your gateway"}
+                {gatewayUrl && sessionToken ? connectionStatus : "Not connected · configure gateway and session"}
               </Text>
             </View>
             <Pressable
@@ -720,21 +799,30 @@ export default function HomeScreen() {
               onPress={() => setConnectionOpen((open) => !open)}
               style={styles.connectionToggle}
             >
-              <Text style={styles.connectionToggleText}>{connectionOpen ? "Hide" : "Edit"}</Text>
+              <Text style={styles.connectionToggleText}>{connectionOpen ? "Hide" : "Setup"}</Text>
             </Pressable>
           </View>
           {connectionOpen ? sharedForm : null}
         </View>
 
         {message ? (
-          <View style={styles.messageBox} accessibilityLiveRegion="polite">
+          <View style={styles.messageBox} accessibilityLiveRegion="polite" accessibilityRole="alert">
             <Text style={styles.messageText}>{message}</Text>
           </View>
         ) : null}
-        {busy ? <ActivityIndicator color="#e5653d" style={styles.loader} /> : null}
+        {busy ? <ActivityIndicator accessibilityLabel={paymentActive ? 'Secure payment in progress' : 'Contacting gateway'} color="#e5653d" style={styles.loader} /> : null}
 
-        {role === "Shopper" ? (
+        {role === "Customer" ? (
           <>
+            <View style={styles.card}>
+              <Text style={styles.sectionEyebrow}>YOUR ORDER · THIS SESSION</Text>
+              <Text style={styles.sectionTitle}>{checkout ? `Basket ${checkout.status.replaceAll('_', ' ')}` : orderCount ? `${orderCount} order(s) ready for checkout` : cart.count ? `${cart.count} item(s) · ${money(cart.cents)}` : 'Start with a local store'}</Text>
+              <Text style={styles.helpText}>{checkout ? 'Last server response, not live tracking. Payment confirmation requires a webhook.' : 'Cart prices are merchandise only. Review fees and delivery in the server-created basket.'}</Text>
+              <View style={styles.rolePicker}>
+                {customerStages.map(item => <Pressable key={item} accessibilityRole="tab" accessibilityLabel={`${item} order step`} accessibilityState={{ selected: stage === item }} onPress={() => setStage(item)} style={[styles.roleButton, stage === item && styles.roleButtonActive]}><Text style={[styles.roleText, stage === item && styles.roleTextActive]}>{item}</Text></Pressable>)}
+              </View>
+            </View>
+            {stage === 'Browse' ? <>
             <View style={styles.card}>
               <Text style={styles.sectionEyebrow}>01 / DISCOVER</Text>
               <Text style={styles.sectionTitle}>Good things, close by.</Text>
@@ -743,24 +831,30 @@ export default function HomeScreen() {
                 restaurant.
               </Text>
               <Field
-                editable={!checkout && !orderIds.trim()}
+                editable={!busy && !checkout && !orderIds.trim()}
                 label="Anchor restaurant store ID"
                 onChangeText={(value) => {
                   checkoutAttempt.current = null;
                   setAnchorStore(value);
                   setCatalogStoreID(value);
+                  setCatalog([]);
+                  setCatalogLoaded(false);
+                  setQuantities({});
+                  setNearby([]);
+                  setNearbyLoaded(false);
                 }}
                 value={anchorStore}
               />
               <View style={styles.actionRow}>
-                <ActionButton disabled={busy} label="Find nearby shops" onPress={() => void findNearby()} />
+                <ActionButton disabled={busy || Boolean(checkout)} label="Find nearby shops" onPress={() => void findNearby()} />
                 <ActionButton
-                  disabled={busy}
+                  disabled={busy || Boolean(checkout)}
                   label="Browse anchor catalog"
                   onPress={() => void loadCatalog(anchorStore)}
                   secondary
                 />
               </View>
+              {!nearby.length ? <StateCard title={nearbyLoaded ? 'No nearby partners returned' : 'Find a store to begin'}>{nearbyLoaded ? 'No eligible shops were returned within 500 meters. You can still browse the anchor store catalog.' : 'Enter the restaurant location UUID supplied for this beta. Address search is not available yet. No location has been selected for you.'}</StateCard> : null}
               {nearby.map((merchant) => (
                 <View key={merchant.merchantId}>
                   <View style={styles.resultRow}>
@@ -771,7 +865,7 @@ export default function HomeScreen() {
                     </View>
                   </View>
                   <ActionButton
-                    disabled={busy}
+                    disabled={busy || Boolean(checkout)}
                     label={`Browse ${merchant.name}`}
                     onPress={() => void loadCatalog(merchant.storeLocationId)}
                     secondary
@@ -779,21 +873,24 @@ export default function HomeScreen() {
                 </View>
               ))}
             </View>
-
+            </> : null}
+            {stage === 'Cart' ? <>
             <View style={styles.card}>
               <Text style={styles.sectionEyebrow}>02 / BUILD YOUR ORDER</Text>
               <Text style={styles.sectionTitle}>Choose items from the block.</Text>
               <Field
-                editable={!checkout}
+                editable={!busy && !checkout}
                 label="Store location ID"
                 onChangeText={(value) => {
                   setCatalogStoreID(value);
+                  setCatalogLoaded(false);
                   setCatalog([]);
                   setQuantities({});
                 }}
                 value={catalogStoreID}
               />
               <ActionButton disabled={busy || Boolean(checkout)} label="Load store catalog" onPress={() => void loadCatalog()} />
+              {!catalog.length ? <StateCard title={catalogLoaded ? 'No available items' : 'Your cart starts here'}>{catalogLoaded ? 'This store returned an empty catalog. Choose another store from Browse.' : 'Choose a store in Browse, or enter its location UUID here and load the catalog.'}</StateCard> : null}
               {catalog.map((item) => {
                 const quantity = quantities[item.id] ?? 0;
                 return (
@@ -802,14 +899,14 @@ export default function HomeScreen() {
                       <Text style={styles.resultTitle}>{item.name}</Text>
                       {item.description ? <Text style={styles.resultSub}>{item.description}</Text> : null}
                       <Text style={styles.resultSub}>
-                        ${(item.unitPriceCents / 100).toFixed(2)}
+                        {money(item.unitPriceCents)}
                       </Text>
                     </View>
                     <View style={styles.quantityControl}>
                       <Pressable
                         accessibilityLabel={`Decrease ${item.name} quantity`}
                         accessibilityRole="button"
-                        disabled={quantity === 0}
+                        disabled={busy || quantity === 0 || Boolean(checkout)}
                         onPress={() => setQuantities((current) => ({
                           ...current,
                           [item.id]: Math.max(0, (current[item.id] ?? 0) - 1),
@@ -820,7 +917,7 @@ export default function HomeScreen() {
                       <Pressable
                         accessibilityLabel={`Increase ${item.name} quantity`}
                         accessibilityRole="button"
-                        disabled={quantity >= 99}
+                        disabled={busy || quantity >= 99 || Boolean(checkout)}
                         onPress={() => setQuantities((current) => ({
                           ...current,
                           [item.id]: (current[item.id] ?? 0) + 1,
@@ -831,58 +928,83 @@ export default function HomeScreen() {
                   </View>
                 );
               })}
+              <StateCard title={`${cart.count} item(s) · ${money(cart.cents)}`}>Merchandise subtotal for this unsent cart only. Created orders are separate and will be included in checkout.</StateCard>
+              <Text style={styles.helpText}>Delivery coordinates use decimal degrees (longitude may be negative). Delivery window: {readableDate(deliveryWindow.start)} – {readableDate(deliveryWindow.end)}. This is a requested window, not a guaranteed arrival.</Text>
               <View style={styles.fieldGrid}>
-                <Field editable={!checkout && !orderIds.trim()} label="Drop-off latitude" keyboardType="decimal-pad" onChangeText={setLatitude} value={latitude} />
-                <Field editable={!checkout && !orderIds.trim()} label="Drop-off longitude" keyboardType="decimal-pad" onChangeText={setLongitude} value={longitude} />
+                <Field editable={!busy && !checkout && !orderIds.trim()} label="Drop-off latitude (-90 to 90)" onChangeText={setLatitude} value={latitude} />
+                <Field editable={!busy && !checkout && !orderIds.trim()} label="Drop-off longitude (-180 to 180)" onChangeText={setLongitude} value={longitude} />
               </View>
               <ActionButton
-                disabled={busy || Boolean(checkout) || catalog.length === 0}
-                label="Create order from selected items"
+                disabled={busy || Boolean(checkout) || cart.count === 0}
+                label="Save order and continue to checkout"
                 onPress={() => void createCustomerOrder()}
               />
             </View>
-
+            </> : null}
+            {stage === 'Checkout' ? <>
             <View style={styles.card}>
               <Text style={styles.sectionEyebrow}>03 / CHECKOUT</Text>
               <Text style={styles.sectionTitle}>Bring the whole block together.</Text>
               <Text style={styles.helpText}>
                 Create one order from each store catalog you want to include, then create one unified checkout.
               </Text>
-              <Field
-                editable={!checkout}
+              <Text style={styles.helpText}>{orderCount ? `${orderCount} order(s) included. Use Browse to add another store before creating the basket.` : 'No orders yet. Build a cart and save an order first.'}</Text>
+              <ActionButton disabled={busy || Boolean(checkout)} label="Add items from another store" onPress={() => setStage('Browse')} secondary />
+              <ActionButton disabled={busy} label={advancedOrders ? 'Hide advanced order IDs' : 'Show advanced order IDs'} onPress={() => setAdvancedOrders(value => !value)} secondary />
+              {advancedOrders ? <Field
+                editable={!busy && !checkout}
                 label="Order IDs (comma separated)"
                 onChangeText={(value) => {
                   checkoutAttempt.current = null;
                   setOrderIds(value);
                 }}
                 value={orderIds}
-              />
+              /> : null}
               <ActionButton
-                disabled={busy || Boolean(checkout)}
+                disabled={busy || Boolean(checkout) || !orderCount}
                 label={checkout ? "Basket created" : "Create basket"}
                 onPress={() => void createCheckout()}
               />
+              {!checkout ? (
+                <View>
+                  <ActionButton
+                    disabled={busy || Boolean(checkoutAttempt.current)}
+                    label="Refresh priority test pricing"
+                    onPress={() => setPricingRefresh((value) => value + 1)}
+                  />
+                  {priorityPrice ? (
+                    <>
+                      <Text style={styles.helpText}>
+                        TEST ONLY · Priority shopping {money(priorityPrice.shoppingCents)} + priority delivery {money(priorityPrice.deliveryCents)} = {money(priorityPrice.totalCents)} extra.
+                      </Text>
+                      <ActionButton
+                        disabled={busy || Boolean(checkoutAttempt.current)}
+                        label={prioritySelected ? "Priority service selected — use standard" : "Choose priority service (test only)"}
+                        onPress={() => setPrioritySelected((selected) => !selected)}
+                      />
+                      {!priorityPrice.publicCheckoutAvailable ? <Text style={styles.tinyNote}>Public basket creation and payment remain blocked by the gateway. Pricing review only.</Text> : null}
+                    </>
+                  ) : <Text style={styles.tinyNote}>Priority service unavailable. No surcharge selected.</Text>}
+                  <Text style={styles.tinyNote}>Priority service is not a faster-driving or arrival-time guarantee.</Text>
+                  {checkoutAttempt.current ? <Text style={styles.tinyNote}>Retry keeps the original basket and priority choice; displayed pricing is not a reserved quote.</Text> : null}
+                </View>
+              ) : null}
               {checkout ? (
                 <View style={styles.checkoutBox}>
                   <Text style={styles.checkoutLabel}>BASKET {checkout.id}</Text>
+                  {checkout.priority?.testOnly ? <Text style={styles.helpText}>TEST ONLY · Priority service. No arrival-time guarantee.</Text> : null}
                   {checkout.invoiceLines.map((line, index) => (
                     <View key={`${line.type}-${index}`} style={styles.invoiceRow}>
                       <Text style={styles.invoiceLabel}>{line.type.replaceAll("_", " ")}</Text>
                       <Text style={styles.invoiceAmount}>
-                        {(line.amountCents / 100).toLocaleString("en-US", {
-                          style: "currency",
-                          currency: checkout.currency.toUpperCase(),
-                        })}
+                        {money(line.amountCents, checkout.currency)}
                       </Text>
                     </View>
                   ))}
                   <View style={[styles.invoiceRow, styles.totalRow]}>
                     <Text style={styles.totalLabel}>Total</Text>
                     <Text style={styles.totalValue}>
-                      {(checkout.totalCents / 100).toLocaleString("en-US", {
-                        style: "currency",
-                        currency: checkout.currency.toUpperCase(),
-                      })}
+                      {money(checkout.totalCents, checkout.currency)}
                     </Text>
                   </View>
                   <ActionButton
@@ -891,9 +1013,18 @@ export default function HomeScreen() {
                     onPress={() => void payCheckout()}
                   />
                   <Text style={styles.tinyNote}>Checkout ID · {checkout.id}</Text>
+                  <ActionButton label="View basket status" onPress={() => setStage('Status')} secondary />
                 </View>
               ) : null}
             </View>
+            </> : null}
+            {stage === 'Status' ? <View style={styles.card}>
+              <Text style={styles.sectionEyebrow}>BASKET STATUS / LAST RESPONSE</Text>
+              <Text style={styles.sectionTitle}>{checkout ? checkout.status.replaceAll('_', ' ') : 'No basket created yet'}</Text>
+              <Text style={styles.helpText}>{checkout ? `${money(checkout.totalCents, checkout.currency)} · ${checkout.id}` : 'Saved orders appear in Checkout. Create a basket there to see its returned status.'}</Text>
+              <StateCard title="No live tracking or order history here">This app does not fetch customer delivery progress or past orders. Payment-sheet submission is not confirmation of payment or delivery. Keep your basket ID for support and reconcile uncertain payments before starting again.</StateCard>
+              <ActionButton label="Return to checkout" onPress={() => setStage('Checkout')} secondary />
+            </View> : null}
           </>
         ) : null}
 
@@ -905,11 +1036,14 @@ export default function HomeScreen() {
               Load your assigned route and share location every five seconds while this screen is
               open. Stop sequencing is controlled by the server.
             </Text>
-            <Field label="Assigned route ID" onChangeText={setRouteId} value={routeId} />
+            <Text style={styles.tinyNote}>Use the route UUID provided by dispatch. Route discovery is not available here; a 403 can mean dispatch is disabled. No simulated deliveries.</Text>
+            <Field editable={!tracking && !trackingStarting && !busy} label="Assigned route UUID from dispatch" onChangeText={value => { endTracking(); setRouteId(value); setRoute(null); stopAttempt.current = null; }} value={routeId} />
             <ActionButton disabled={busy} label="Load route" onPress={() => void loadRoute()} />
+            {!route ? <StateCard title="Waiting for your assigned route">Ask dispatch for a route UUID. Loading requires an authorized driver session and enabled dispatch. A blocked request does not mean you have no assignments. No map or route is simulated.</StateCard> : null}
             {route ? (
               <View style={styles.routeBox}>
                 <Text style={styles.checkoutLabel}>ROUTE · {route.status.toUpperCase()}</Text>
+                <Text style={styles.helpText}>{route.stops.filter(stop => stop.status === 'completed').length} of {route.stops.length} stops completed. {activeStop ? `Next: ${activeStop.type === 'dropoff' ? 'customer handoff' : 'store pickup'}, stop ${activeStop.sequence}.` : 'No remaining stops returned.'}</Text>
                 {route.stops
                   .slice()
                   .sort((a, b) => a.sequence - b.sequence)
@@ -926,6 +1060,7 @@ export default function HomeScreen() {
                   ))}
                 {activeStop ? (
                   <View style={styles.stopActions}>
+                    <Text style={styles.helpText}>Confirm arrival only at the location. Confirm pickup after receiving the items; confirm delivery only after the actual customer handoff.</Text>
                     {activeStop.status === "pending" ? (
                       <ActionButton
                         disabled={busy}
@@ -947,10 +1082,11 @@ export default function HomeScreen() {
               </View>
             ) : null}
             <ActionButton
-              disabled={tracking || !route}
-              label={tracking ? "Location sharing is active" : "Start 5-second location sharing"}
+              disabled={busy || tracking || trackingStarting || !route}
+              label={trackingStarting ? "Requesting location access…" : tracking ? "Location sharing is active" : "Start 5-second location sharing"}
               onPress={() => void beginTracking()}
             />
+            <Text style={styles.tinyNote}>Location permission is requested only when you start sharing. Updates stop when the app backgrounds, you change roles, or you clear the session. No background tracking.</Text>
             {tracking ? <ActionButton label="End location sharing" onPress={endTracking} secondary /> : null}
           </View>
         ) : null}
@@ -958,6 +1094,7 @@ export default function HomeScreen() {
         {role === "Merchant" ? (
           <>
             <View style={styles.card}>
+              <StateCard title="Store setup · location → catalog → billing">Load your own locations first, then add or update items. Check billing below: a catalog alone does not activate your storefront. If no locations are returned, contact your operator for store provisioning.</StateCard>
               <Text style={styles.sectionEyebrow}>MERCHANT / CATALOG</Text>
               <Text style={styles.sectionTitle}>Manage your store items.</Text>
               <Text style={styles.helpText}>
@@ -985,7 +1122,7 @@ export default function HomeScreen() {
                 </Pressable>
               ))}
               {merchantStoreLocations.length === 0 ? (
-                <Text style={styles.tinyNote}>Load store locations before creating catalog items.</Text>
+                <Text style={styles.tinyNote}>{locationsLoaded ? 'No store locations returned for this account. Contact your operator.' : 'Load store locations before creating catalog items.'}</Text>
               ) : null}
               <Field label="Item name" onChangeText={setNewItemName} value={newItemName} />
               <Field label="Description" onChangeText={setNewItemDescription} value={newItemDescription} />
@@ -994,7 +1131,7 @@ export default function HomeScreen() {
                 <Field label="Volume (liters)" keyboardType="decimal-pad" onChangeText={setNewItemVolume} value={newItemVolume} />
               </View>
               <ActionButton
-                disabled={busy}
+                disabled={busy || !merchantStoreLocation}
                 label="Add catalog item"
                 onPress={() => void createMerchantCatalogItem()}
               />
@@ -1005,7 +1142,7 @@ export default function HomeScreen() {
                 secondary
               />
               {merchantCatalog.length === 0 ? (
-                <Text style={styles.tinyNote}>No catalog items loaded. Refresh to view items for your merchant account.</Text>
+                <Text style={styles.tinyNote}>{merchantCatalogLoaded ? 'Your catalog is empty. Choose a store and add its first item above.' : 'Catalog not loaded. Refresh to request current items for your merchant account.'}</Text>
               ) : null}
               {merchantCatalog.map((item) => {
                 const draft = merchantCatalogDrafts[item.id];
@@ -1064,8 +1201,7 @@ export default function HomeScreen() {
               <Text style={styles.sectionEyebrow}>MERCHANT / SUBSCRIPTION</Text>
               <Text style={styles.sectionTitle}>Your storefront, in good standing.</Text>
               <Text style={styles.helpText}>
-                Manage the flat $199 monthly ShopStops subscription. A successful invoice activates
-                storefront visibility.
+                Refresh to review the server-reported subscription amount and visibility. Saving a payment method does not activate the storefront; a successful invoice is required.
               </Text>
               <View style={styles.actionRow}>
                 <ActionButton disabled={busy} label="Refresh billing status" onPress={() => void refreshSubscription()} />
@@ -1074,90 +1210,32 @@ export default function HomeScreen() {
               {subscription ? (
                 <View style={styles.statusCard}>
                   <Text style={styles.statusWord}>{subscription.status.replaceAll("_", " ")}</Text>
+                  <Text style={styles.resultTitle}>{money(subscription.monthlyAmountCents, subscription.currency)} / month</Text>
                   <Text style={styles.resultSub}>
                     {subscription.storefrontVisible ? "Storefront visible" : "Storefront hidden"}
                     {" · "}
                     {subscription.paymentMethodReady ? "Payment method saved" : "Payment method needed"}
                   </Text>
                   {subscription.currentPeriodEnd ? (
-                    <Text style={styles.resultSub}>Next billing period ends {new Date(subscription.currentPeriodEnd).toLocaleDateString()}</Text>
+                    <Text style={styles.resultSub}>Current period ends {readableDate(subscription.currentPeriodEnd)}</Text>
                   ) : null}
                 </View>
               ) : null}
               <ActionButton
-                disabled={busy || !subscription?.paymentMethodReady}
-                label="Start $199 monthly subscription"
+                disabled={busy || !subscription?.paymentMethodReady || subscription.status === 'active'}
+                label={subscription ? `Start subscription · ${money(subscription.monthlyAmountCents, subscription.currency)} / month` : 'Load billing status before subscribing'}
                 onPress={() => void startSubscription()}
               />
-              <Text style={styles.tinyNote}>USD · billed monthly through Stripe</Text>
+              <Text style={styles.tinyNote}>Billed monthly through Stripe. Server-reported billing status is authoritative; visibility is not assumed.</Text>
             </View>
           </>
         ) : null}
 
         <Text style={styles.footer}>
-          Securely connected through your identity gateway · ShopStops {new Date().getFullYear()}
+          Requests require your identity gateway · ShopStops {new Date().getFullYear()}
         </Text>
       </ScrollView>
     </KeyboardAvoidingView>
-  );
-}
-
-function Field({
-  label,
-  value,
-  onChangeText,
-  keyboardType = "default",
-  editable = true,
-}: {
-  label: string;
-  value: string;
-  onChangeText: (value: string) => void;
-  keyboardType?: "default" | "decimal-pad";
-  editable?: boolean;
-}) {
-  return (
-    <View style={styles.field}>
-      <Text style={styles.fieldLabel}>{label}</Text>
-      <TextInput
-        accessibilityLabel={label}
-        autoCapitalize="none"
-        autoCorrect={false}
-        editable={editable}
-        keyboardType={keyboardType}
-        onChangeText={onChangeText}
-        placeholder={label}
-        placeholderTextColor="#94a3b8"
-        style={styles.input}
-        value={value}
-      />
-    </View>
-  );
-}
-
-function ActionButton({
-  label,
-  onPress,
-  disabled = false,
-  secondary = false,
-}: {
-  label: string;
-  onPress: () => void;
-  disabled?: boolean;
-  secondary?: boolean;
-}) {
-  return (
-    <Pressable
-      accessibilityRole="button"
-      disabled={disabled}
-      onPress={onPress}
-      style={[
-        styles.actionButton,
-        secondary && styles.actionButtonSecondary,
-        disabled && styles.actionButtonDisabled,
-      ]}
-    >
-      <Text style={[styles.actionText, secondary && styles.actionTextSecondary]}>{label}</Text>
-    </Pressable>
   );
 }
 
@@ -1192,14 +1270,14 @@ const styles = StyleSheet.create({
   connectionToggleText: { color: "#24443b", fontSize: 12, fontWeight: "800" },
   configCard: { backgroundColor: "#fff", borderRadius: 18, padding: 0, marginTop: 13 },
   card: { backgroundColor: "#fff", borderRadius: 18, padding: 20, marginTop: 14, borderWidth: 1, borderColor: "#ecece7", shadowColor: "#19352f", shadowOpacity: 0.04, shadowRadius: 12, shadowOffset: { width: 0, height: 4 }, elevation: 1 },
-  sectionEyebrow: { color: "#e5653d", fontSize: 10, fontWeight: "800", letterSpacing: 1.4 },
+  sectionEyebrow: { color: "#a84020", fontSize: 10, fontWeight: "800", letterSpacing: 1.4 },
   sectionTitle: { color: "#19352f", fontSize: 20, fontWeight: "800", marginTop: 7 },
   helpText: { color: "#65756f", fontSize: 13, lineHeight: 19, marginTop: 6, marginBottom: 11 },
   field: { flex: 1, minWidth: 125, marginTop: 6 },
   fieldLabel: { color: "#52645e", fontSize: 11, fontWeight: "700", marginBottom: 6 },
   fieldGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
   input: { backgroundColor: "#f8f9f7", borderColor: "#e4e9e5", borderWidth: 1, borderRadius: 10, color: "#203b34", fontSize: 13, paddingHorizontal: 12, paddingVertical: 11, marginTop: 8 },
-  actionButton: { backgroundColor: "#e5653d", minHeight: 45, justifyContent: "center", alignItems: "center", borderRadius: 11, paddingHorizontal: 15, marginTop: 13 },
+  actionButton: { backgroundColor: "#ad4020", minHeight: 48, justifyContent: "center", alignItems: "center", borderRadius: 11, paddingHorizontal: 15, marginTop: 13 },
   actionButtonSecondary: { backgroundColor: "#e9f0ec" },
   actionButtonDisabled: { opacity: 0.48 },
   actionText: { color: "#fff", fontWeight: "800", fontSize: 12, textAlign: "center" },
@@ -1213,13 +1291,13 @@ const styles = StyleSheet.create({
   resultIconText: { color: "#397457", fontSize: 22, fontWeight: "500" },
   resultCopy: { flex: 1 },
   resultTitle: { color: "#213b34", fontWeight: "800", fontSize: 13 },
-  resultSub: { color: "#73817b", fontSize: 11, marginTop: 4 },
+  resultSub: { color: "#52645b", fontSize: 12, marginTop: 4 },
   catalogRow: { flexDirection: "row", alignItems: "center", paddingVertical: 12, borderTopWidth: 1, borderTopColor: "#edf0ed", marginTop: 10 },
   merchantItem: { backgroundColor: "#f8f9f7", borderRadius: 13, padding: 14, marginTop: 14 },
   locationChoice: { borderWidth: 1, borderColor: "#e4e9e5", borderRadius: 10, padding: 11, marginTop: 8 },
   locationChoiceActive: { borderColor: "#397457", backgroundColor: "#e7f1eb" },
   quantityControl: { flexDirection: "row", alignItems: "center", gap: 10, marginLeft: 10 },
-  quantityButton: { width: 30, height: 30, borderRadius: 15, backgroundColor: "#e9f0ec", alignItems: "center", justifyContent: "center" },
+  quantityButton: { width: 44, height: 44, borderRadius: 22, backgroundColor: "#e9f0ec", alignItems: "center", justifyContent: "center" },
   quantityButtonText: { color: "#24443b", fontSize: 17, fontWeight: "800" },
   quantityText: { minWidth: 16, color: "#213b34", textAlign: "center", fontWeight: "800" },
   checkoutBox: { backgroundColor: "#f8f9f7", borderRadius: 13, padding: 14, marginTop: 16 },
@@ -1232,12 +1310,12 @@ const styles = StyleSheet.create({
   totalRow: { borderTopWidth: 1, borderTopColor: "#dfe6e1", marginTop: 4, paddingTop: 11 },
   totalLabel: { color: "#203b34", fontWeight: "800", fontSize: 13 },
   totalValue: { color: "#203b34", fontWeight: "900", fontSize: 15 },
-  tinyNote: { color: "#829089", fontSize: 10, marginTop: 9, lineHeight: 15 },
+  tinyNote: { color: "#52645b", fontSize: 12, marginTop: 9, lineHeight: 18 },
   stopRow: { flexDirection: "row", alignItems: "center", paddingVertical: 9 },
   stopNumber: { width: 28, height: 28, borderRadius: 14, backgroundColor: "#e5653d", justifyContent: "center", alignItems: "center", marginRight: 11 },
   stopNumberLast: { backgroundColor: "#397457" },
   stopNumberText: { color: "#fff", fontWeight: "800", fontSize: 11 },
   statusCard: { backgroundColor: "#f8f9f7", padding: 15, borderRadius: 12, marginTop: 15 },
   statusWord: { color: "#24443b", fontWeight: "900", fontSize: 18, textTransform: "capitalize", marginBottom: 5 },
-  footer: { color: "#8b9892", textAlign: "center", fontSize: 10, marginTop: 25, lineHeight: 15 },
+  footer: { color: "#52645b", textAlign: "center", fontSize: 12, marginTop: 25, lineHeight: 18 },
 });

@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$FAKE_AWS_LOG"
+if [[ "$*" == --version ]]; then
+  printf 'aws-cli/%s fixture\n' "${FAKE_CLI_VERSION:-2.31.0}"
+  exit 0
+fi
+[[ "$1 $2 $3" == '--region us-east-1 --no-cli-pager' ]] || exit 1
+shift 3
+if [[ "$1 $2" == 'sts get-caller-identity' ]]; then
+  [[ "${FAKE_CASE:-}" != sts-error ]] || exit 1
+  printf '%s\n' "${FAKE_ACCOUNT:-123456789012}"
+  exit 0
+fi
+[[ "$1 $2" == 's3api get-object' ]] || exit 1
+shift 2
+bucket=''; owner=''; key=''; range=''; output=''
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --bucket) bucket="$2"; shift 2 ;;
+    --expected-bucket-owner) owner="$2"; shift 2 ;;
+    --key) key="$2"; shift 2 ;;
+    --range) range="$2"; shift 2 ;;
+    --query|--output) shift 2 ;;
+    --*) exit 1 ;;
+    *) [[ $# -eq 1 ]] || exit 1; output="$1"; shift ;;
+  esac
+done
+[[ "$bucket" == shopstops-staging-osrm-123456789012-us-east-1 && "$owner" == 123456789012 ]] || exit 1
+[[ "$key" == datasets/new-york/v1/* ]] || exit 1
+filename="${key#datasets/new-york/v1/}"
+[[ "$filename" != */* ]] || exit 1
+printf '%s\n' "${output%/*}" >> "$FAKE_TEMP_LOG"
+[[ -f "$FAKE_RELEASE/$filename" ]] || exit 1
+if [[ "$filename" == SHA256SUMS ]]; then
+  [[ "$range" == bytes=0-4096 ]] || exit 1
+  size="$(wc -c < "$FAKE_RELEASE/$filename")"
+  size=$((size))
+  head -c 4097 "$FAKE_RELEASE/$filename" > "$output"
+  downloaded="$(wc -c < "$output")"
+  printf 'bytes 0-%s/%s\n' "$((downloaded - 1))" "$size"
+else
+  [[ -z "$range" ]] || exit 1
+  [[ "${FAKE_CASE:-}" != get-error ]] || exit 1
+  if [[ "${FAKE_CASE:-}" == artifact-symlink ]]; then
+    ln -s "$FAKE_RELEASE/$filename" "$output"
+  else
+    cp "$FAKE_RELEASE/$filename" "$output"
+  fi
+  if [[ "${FAKE_CASE:-}" == exec-error ]]; then
+    chmod -x "${BASH_SOURCE[0]%/*}/osrm-routed"
+  fi
+fi

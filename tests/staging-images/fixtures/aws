@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$FAKE_AWS_LOG"
+args=" $* "
+scenario="${FAKE_AWS_CASE:-ok}"
+case "$args" in
+  *' sts get-caller-identity '*)
+    [[ "$scenario" != sts-error ]] || exit 1
+    if [[ "$scenario" == wrong-account ]]; then echo 999999999999; else echo "$EXPECTED_AWS_ACCOUNT_ID"; fi ;;
+  *' s3api head-bucket '*) [[ "$scenario" != wrong-owner ]] || exit 1 ;;
+  *' s3api get-bucket-location '*)
+    if [[ "$scenario" == wrong-region ]]; then echo eu-west-1; else echo None; fi ;;
+  *' s3api get-bucket-versioning '*)
+    if [[ "$scenario" == unversioned ]]; then echo Suspended; else echo Enabled; fi ;;
+  *' s3api get-public-access-block '*)
+    if [[ "$scenario" == unblocked ]]; then printf 'True\tTrue\tFalse\tTrue\n'; else printf 'True\tTrue\tTrue\tTrue\n'; fi ;;
+  *' s3api get-bucket-policy-status '*)
+    if [[ "$scenario" == public-policy ]]; then echo True; else echo False; fi ;;
+  *' s3api get-bucket-encryption '*)
+    if [[ "$scenario" == wrong-encryption ]]; then echo AES256; else printf 'aws:kms\t%s\n' "$TF_STATE_KMS_KEY_ARN"; fi ;;
+  *' kms describe-key '*)
+    state=Enabled
+    [[ "$scenario" != disabled-key ]] || state=Disabled
+    printf '%s\t%s\tENCRYPT_DECRYPT\tSYMMETRIC_DEFAULT\n' "$TF_STATE_KMS_KEY_ARN" "$state" ;;
+  *' iam get-open-id-connect-provider '*)
+    if [[ "$args" == *contains* ]]; then
+      if [[ "$scenario" == wrong-audience ]]; then echo False; else echo True; fi
+    else
+      if [[ "$scenario" == wrong-provider ]]; then echo evil.invalid; else echo token.actions.githubusercontent.com; fi
+    fi ;;
+  *' s3api list-objects-v2 '*)
+    [[ "$scenario" != list-denied ]] || { echo 'AccessDenied (403)' >&2; exit 1; }
+    if [[ "$scenario" == version-exists ]]; then echo 1; else echo 0; fi ;;
+  *' s3api put-object '*)
+    [[ "$scenario" != upload-failure ]] || exit 1
+    key='' body='' checksum=''
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --key) key="$2"; shift ;;
+        --body) body="$2"; shift ;;
+        --checksum-sha256) checksum="$2"; shift ;;
+      esac
+      shift
+    done
+    [[ "$args" == *" --if-none-match * "* && "$args" == *' --server-side-encryption AES256 '* ]] || exit 1
+    [[ "$checksum" == "$(openssl dgst -sha256 -binary "$body" | openssl base64 -A)" ]] || exit 1
+    if [[ "$key" == */SHA256SUMS ]]; then
+      [[ "${body%/*}" != "$FAKE_DATASET_DIR" ]] || exit 1
+      (cd "${body%/*}" && shasum -a 256 -c SHA256SUMS) >/dev/null
+    fi
+    printf '%s\n' "$key" >> "$FAKE_UPLOAD_LOG"
+    printf '%s\n' "${body%/*}" > "$FAKE_TEMP_LOG" ;;
+  *) echo 'Unexpected fake AWS request' >&2; exit 1 ;;
+esac

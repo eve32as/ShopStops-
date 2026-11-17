@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$@" >> "$CURL_LOG"
+[[ "$1" == --disable ]] || exit 99
+output=''; url=''
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --output) output="$2"; shift 2 ;;
+    --request) [[ "$2" == GET ]] || exit 99; shift 2 ;;
+    --header) case "$2" in 'Authorization: Bearer smoke-invalid-not-a-jwt'|'X-ShopStops-Actor: smoke-not-an-identity'|'X-ShopStops-Actor-Role: admin'|'X-Internal-API-Token: smoke-not-a-secret') ;; *) exit 99 ;; esac; shift 2 ;;
+    --location|--insecure|--user|--config|--data*|--verbose) exit 99 ;;
+    http://*|https://*) url="$1"; shift ;;
+    *) shift ;;
+  esac
+done
+[[ -n "$output" && -n "$url" ]] || exit 99
+case "$url" in
+  *'/v1/healthz'|*'/healthz'|https://live.shopstops.com/) code=200 ;;
+  *'/catalog') code=401 ;;
+  *'/not-an-operation') code=404 ;;
+  http://osrm.shopstops.internal:5001/route/v1/driving/*) code=200 ;;
+  *) exit 99 ;;
+esac
+[[ "${FAKE_CURL_CASE:-}" != transport ]] || exit 7
+[[ "${FAKE_CURL_CASE:-}" != redirect ]] || code=302
+[[ "${FAKE_CURL_CASE:-}" != unauthorized-success ]] || code=200
+if [[ "${FAKE_CURL_CASE:-}" == bad-json ]]; then
+  printf '{"code":"NoRoute"}' > "$output"
+else
+  printf '{"code":"Ok","routes":[{"distance":10,"legs":[{}]}]}' > "$output"
+fi
+printf '%s' "$code"

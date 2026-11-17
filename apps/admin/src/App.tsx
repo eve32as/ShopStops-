@@ -1,5 +1,14 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
+import { gatewayURL, requestJSON } from './transport.ts'
+import { useRequestSession } from './useRequestSession'
 import './App.css'
+import FinancePlanning from './FinancePlanning'
+import ShopperOrders from './ShopperOrders'
+import { adminConfiguration } from './config.ts'
+import { dollars } from './financeInputs'
+import { workspaceFromHash, workspaces } from './workspaces'
+
+const configuration = adminConfiguration(import.meta.env.VITE_API_URL, import.meta.env.DEV)
 
 type RefundResult = {
   refundId: string
@@ -13,7 +22,14 @@ function newIdempotencyKey() {
 }
 
 function App() {
-  const [gatewayUrl, setGatewayUrl] = useState('')
+  const [workspace, setWorkspace] = useState(() => workspaceFromHash(location.hash))
+  useEffect(() => {
+    function navigate() { setWorkspace(workspaceFromHash(location.hash)) }
+    window.addEventListener('hashchange', navigate)
+    return () => window.removeEventListener('hashchange', navigate)
+  }, [])
+  const currentWorkspace = workspaces.find(item => item.id === workspace)!
+  const [gatewayUrl, setGatewayUrl] = useState(configuration.baseUrl)
   const [sessionToken, setSessionToken] = useState('')
   const [checkoutId, setCheckoutId] = useState('')
   const [reason, setReason] = useState('requested_by_customer')
@@ -21,9 +37,18 @@ function App() {
   const [refund, setRefund] = useState<RefundResult | null>(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [revision, setRevision] = useState(0)
+  const { session } = useRequestSession(gatewayUrl, sessionToken)
+
+  function changeSession(url: string, token: string) {
+    session.close()
+    setGatewayUrl(url); setSessionToken(token); setRevision(value => value + 1)
+    setRefund(null); setError(''); setCheckoutId(''); setReason('requested_by_customer'); setIdempotencyKey(''); setLoading(false)
+  }
 
   async function submitRefund(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    if (loading) return
     setError('')
     setRefund(null)
 
@@ -41,7 +66,8 @@ function App() {
 
     let url: URL
     try {
-      url = new URL(`${baseUrl}/admin/checkouts/${encodeURIComponent(id)}/refund`)
+      url = gatewayURL(baseUrl, import.meta.env.DEV)
+      url.pathname = `${url.pathname.replace(/\/+$/, '')}/admin/checkouts/${encodeURIComponent(id)}/refund`
     } catch {
       setError('Enter a valid gateway URL, including https://.')
       return
@@ -57,9 +83,12 @@ function App() {
 
     const requestKey = idempotencyKey || newIdempotencyKey()
     setIdempotencyKey(requestKey)
+    const scope = session.begin()
+    if (!scope) return
     setLoading(true)
     try {
-      const response = await fetch(url, {
+      const result = await requestJSON<RefundResult>(url, token, {
+        signal: scope.signal,
         method: 'POST',
         redirect: 'error',
         headers: {
@@ -70,73 +99,75 @@ function App() {
         },
         body: JSON.stringify({ reason }),
       })
-      const result = await response.json().catch(() => null)
-      if (!response.ok) {
-        throw new Error(
-          result && typeof result.error === 'string'
-            ? result.error
-            : `Refund request failed (${response.status}).`,
-        )
-      }
-      setRefund(result as RefundResult)
+      scope.assertCurrent()
+      setRefund(result)
       setIdempotencyKey('')
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Refund request failed.')
+      if (!scope.signal.aborted) setError(requestError instanceof Error ? requestError.message : 'Refund request failed.')
     } finally {
-      setLoading(false)
+      session.finish(scope)
+      if (!scope.signal.aborted) setLoading(false)
     }
   }
+
+  if (configuration.error) return <main className="shell"><div className="alert alert-error" role="alert">{configuration.error}</div></main>
 
   return (
     <main className="shell">
       <aside className="rail">
-        <a className="brand" href="#" aria-label="ShopStops admin home">
+        <a className="brand" href="#overview" aria-label="ShopStops admin home">
           <img className="brand-mark" src="/shopstops-mark.svg" alt="" />
           <span>shopstops<span className="brand-sub">CONTROL ROOM</span></span>
         </a>
         <div className="rail-label">WORKSPACE</div>
-        <div className="nav-item nav-active"><span className="nav-icon">◎</span>Refund desk</div>
+        <nav aria-label="Admin workspaces">
+        {workspaces.map(item => <a key={item.id} className={`nav-item ${workspace === item.id ? 'nav-active' : ''}`} href={`#${item.id}`} aria-current={workspace === item.id ? 'page' : undefined}><span className="nav-icon" aria-hidden="true">{item.id === 'overview' ? '⌂' : '◎'}</span>{item.label}</a>)}
+        </nav>
         <div className="rail-bottom">
           <div className="connection-dot" />
-          <span>Trusted gateway only</span>
+          <span>Connection not independently verified</span>
         </div>
       </aside>
 
       <section className="main">
         <header className="topbar">
-          <div className="breadcrumbs">OPERATIONS <span>/</span> PAYMENT CONTROLS</div>
+          <div className="breadcrumbs">OPERATIONS <span>/</span> {currentWorkspace.label.toUpperCase()}</div>
           <div className="admin-chip"><span className="admin-avatar">A</span> Admin workspace</div>
         </header>
+        <nav className="compact-nav" aria-label="Compact admin workspaces">
+          {workspaces.map(item => <a key={item.id} href={`#${item.id}`} aria-current={workspace === item.id ? 'page' : undefined}>{item.label}</a>)}
+        </nav>
         <div className="page">
           <div className="page-heading">
             <div>
-              <div className="eyebrow">PAYMENT OPERATIONS</div>
-              <h1>Resolve a checkout</h1>
-              <p>Issue a customer refund and let the ledger reconcile merchant payouts.</p>
+              <div className="eyebrow">SHOPSTOPS / {currentWorkspace.label.toUpperCase()}</div>
+              <h1>{currentWorkspace.title}</h1>
+              <p>{currentWorkspace.description}</p>
             </div>
-            <div className="status-pill"><span /> STRIPE CONNECT</div>
+            <div className="status-pill">GATEWAY REQUIRED</div>
           </div>
 
-          <div className="overview-grid">
-            <article className="overview-card overview-dark">
-              <div className="overview-label">PLATFORM MODEL</div>
-              <div className="overview-value">One basket.<br />One shared route.</div>
-              <div className="overview-note">Merchant items settle individually through Connect.</div>
-            </article>
-            <article className="overview-card">
-              <div className="metric-top"><span>REFUND METHOD</span><span className="metric-icon">↗</span></div>
-              <div className="metric-value">Full remaining</div>
-              <div className="metric-note">Partial refunds are not enabled</div>
-            </article>
-            <article className="overview-card">
-              <div className="metric-top"><span>RECONCILIATION</span><span className="metric-icon green">✓</span></div>
-              <div className="metric-value">Webhook verified</div>
-              <div className="metric-note">Transfer reversals follow Stripe confirmation</div>
-            </article>
-          </div>
+          <section hidden={workspace !== 'overview'} aria-label="Workspace overview">
+            <div className="notice">No live operational KPIs are loaded. These are workflow entry points, not revenue, payment or assignment totals.</div>
+            <div className="overview-grid">
+              {workspaces.filter(item => item.id !== 'overview').map(item => <a key={item.id} className="overview-card workspace-link" href={`#${item.id}`}><div className="eyebrow">{item.id === 'refund-desk' ? '01 / RESOLVE' : item.id === 'finance-planning' ? '02 / PLAN' : '03 / VERIFY'}</div><h2>{item.label} →</h2><p>{item.description}</p></a>)}
+            </div>
+            <section className="panel role-guide"><h2>Who does what</h2><p><strong>Customer:</strong> buys orders in mobile. <strong>Driver:</strong> follows a dispatch-assigned route. <strong>Merchant:</strong> manages their own catalog and billing.</p><p><strong>Worker shopping:</strong> managed by partner store; not available in the mobile app. Authorized admins record supervised assignments and verified completions here; earnings stay pending review, never paid by this UI.</p></section>
+          </section>
 
+          <details className="panel operator-settings">
+            <summary>Operator connection · {sessionToken ? 'Session entered, access not verified' : 'Setup required'}</summary>
+            <p>Manual session entry is an operator workflow, not integrated SSO. Obtain a user access token from your approved identity provider. Never use a backend service token. Every action is authorized by the gateway.</p>
+            <div className="finance-inputs">
+              <label>Operator connection · public gateway URL<input aria-label="Operator connection · public gateway URL" autoCapitalize="none" autoComplete="url" placeholder="https://api.shopstops.example/v1" value={gatewayUrl} onChange={event => changeSession(event.target.value, sessionToken)} /><small>Use the public authenticated gateway, including its API prefix.</small></label>
+              <label>Admin session token<input aria-label="Admin session token" autoCapitalize="none" autoComplete="off" type="password" placeholder="Paste your user access token" value={sessionToken} onChange={event => changeSession(gatewayUrl, event.target.value)} /><small>Memory only. Changing credentials clears private records and cancels pending requests.</small></label>
+            </div>
+            <button type="button" onClick={() => changeSession(gatewayUrl, '')}>Clear session and private records</button>
+          </details>
+
+          <div hidden={workspace !== 'refund-desk'}>
           <div className="content-grid">
-            <section className="panel">
+            <section className="panel" id="refund-desk" aria-label="Refund desk">
               <div className="panel-header">
                 <div>
                   <div className="eyebrow">CHECKOUT ACTION</div>
@@ -149,38 +180,12 @@ function App() {
                 <p>Admin access is verified by your identity gateway. The app never receives the backend service token.</p>
               </div>
               <form onSubmit={submitRefund}>
-                <label>
-                  Public gateway URL
-                  <input
-                    autoCapitalize="none"
-                    autoComplete="url"
-                    onChange={(event) => {
-                      setGatewayUrl(event.target.value)
-                      setIdempotencyKey('')
-                    }}
-                    placeholder="https://api.shopstops.example/v1"
-                    value={gatewayUrl}
-                  />
-                  <small>Use the authenticated gateway, not the internal API service address.</small>
-                </label>
-                <label>
-                  Admin session token
-                  <input
-                    autoCapitalize="none"
-                    autoComplete="off"
-                    onChange={(event) => {
-                      setSessionToken(event.target.value)
-                      setIdempotencyKey('')
-                    }}
-                    placeholder="Paste your user access token"
-                    type="password"
-                    value={sessionToken}
-                  />
-                  <small>Held in memory only. It is cleared when this page reloads.</small>
-                </label>
+                <fieldset disabled={loading}>
+                <legend>Refund details</legend>
                 <label>
                   Checkout ID
                   <input
+                    required
                     autoCapitalize="none"
                     autoComplete="off"
                     onChange={(event) => {
@@ -210,10 +215,7 @@ function App() {
                 {error ? <div className="alert alert-error" role="alert">{error}</div> : null}
                 {refund ? (
                   <div className="alert alert-success" role="status">
-                    Refund {refund.status} · {(refund.amountCents / 100).toLocaleString('en-US', {
-                      style: 'currency',
-                      currency: refund.currency.toUpperCase(),
-                    })} · {refund.refundId}
+                    Refund {refund.status} · {refund.currency.toUpperCase()} {dollars(refund.amountCents)} · {refund.refundId}
                   </div>
                 ) : null}
                 <button className="submit-button" disabled={loading} type="submit">
@@ -221,6 +223,8 @@ function App() {
                   {!loading ? <span>→</span> : null}
                 </button>
                 <p className="form-footnote">Stripe confirms the refund asynchronously. Don’t resubmit with a new key if the first request is still processing.</p>
+                {idempotencyKey && <p role="status">Retry key retained in memory. Retry unchanged; reconcile an uncertain outcome before editing these details.</p>}
+                </fieldset>
               </form>
             </section>
 
@@ -253,6 +257,10 @@ function App() {
               </section>
             </aside>
           </div>
+          </div>
+
+          <div hidden={workspace !== 'finance-planning'}><FinancePlanning key={`finance-${revision}`} gatewayUrl={gatewayUrl} sessionToken={sessionToken} /></div>
+          <div hidden={workspace !== 'shopper-orders'}><ShopperOrders key={`shopper-${revision}`} gatewayUrl={gatewayUrl} sessionToken={sessionToken} /></div>
 
           <footer className="page-footer">
             <span>SHOPSTOPS ADMIN · INTERNAL WORKFLOW</span>

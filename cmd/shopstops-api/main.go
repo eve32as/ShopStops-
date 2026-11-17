@@ -46,6 +46,16 @@ func main() {
 		logger.Error("STRIPE_MERCHANT_MONTHLY_PRICE_ID requires Stripe credentials")
 		os.Exit(1)
 	}
+	priority, err := httpapi.PriorityConfigFromEnv(os.Getenv)
+	if err != nil {
+		logger.Error("invalid priority configuration", "error", err)
+		os.Exit(1)
+	}
+	extraPickup, err := httpapi.ExtraPickupConfigFromEnv(os.Getenv)
+	if err != nil {
+		logger.Error("invalid extra pickup configuration", "error", err)
+		os.Exit(1)
+	}
 
 	db, err := sql.Open("pgx", databaseURL)
 	if err != nil {
@@ -65,7 +75,7 @@ func main() {
 	}
 	startupCancel()
 
-	repository := httpapi.NewPostgresRepository(db, deliveryFeeCents, serviceFeeCents)
+	repository := httpapi.NewPostgresRepository(db, deliveryFeeCents, serviceFeeCents, priority).WithExtraPickupPricing(extraPickup)
 	var handler http.Handler
 	if stripeSecretKey == "" {
 		handler = httpapi.New(repository, apiToken, logger)

@@ -20,6 +20,8 @@
     "typescript": "~6.0.3"
   },
   "scripts": {
+    "test": "node --experimental-strip-types --test tests/*.test.mjs",
+    "check:release": "node --experimental-strip-types ../../scripts/check-frontend-release.mjs mobile",
     "start": "expo start",
     "android": "expo run:android",
     "ios": "expo run:ios",

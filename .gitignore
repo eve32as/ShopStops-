@@ -1,6 +1,8 @@
 # Local dependencies and build output
 node_modules/
 dist/
+apps/admin/test-results/
+apps/admin/playwright-report/
 /shopstops-api
 
 # Generated routing datasets (rebuild with scripts/prepare-osrm-data.sh)

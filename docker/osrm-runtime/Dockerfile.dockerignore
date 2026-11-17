@@ -1,0 +1,9 @@
+# Only the runtime wrapper and its shared validation helper are needed.
+**
+!scripts/
+!scripts/start-osrm-from-s3.sh
+!scripts/staging-images-common.sh
+!docker/
+!docker/osrm-runtime/
+!docker/osrm-runtime/Dockerfile
+!docker/osrm-runtime/Dockerfile.dockerignore

@@ -1,0 +1,9 @@
+**
+!go.mod
+!go.sum
+!cmd/
+!cmd/shopstops-gateway/
+!cmd/shopstops-gateway/*.go
+!internal/
+!internal/gateway/
+!internal/gateway/*.go

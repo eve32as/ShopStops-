@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+[[ $# -eq 5 && "$1 $2 $3 $4" == '--algorithm mld --port 5001' ]] || exit 1
+[[ "$5" == "$OSRM_DATA_PARENT/verified/new-york.osrm" ]] || exit 1
+[[ -d "$OSRM_DATA_PARENT/verified" && ! -e "$OSRM_DATA_PARENT/.download-lock" ]] || exit 1
+(cd "$OSRM_DATA_PARENT/verified" && shasum -a 256 -c SHA256SUMS) >/dev/null
+printf '%s\n' "$*" >> "$FAKE_OSRM_LOG"

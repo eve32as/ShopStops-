@@ -259,6 +259,13 @@ must be handled explicitly rather than silently returned to the ready pool.
 
 ## Applying and validating the migration
 
+For new production migration operations, use the reviewed
+[bounded one-shot migration process](production-migrations.md), not the manual
+commands below or the disposable SQL fixture runner. The tool defaults to a
+read-only plan and refuses populated databases without its ledger; existing
+deployments need independent adoption review. No automatic baseline is offered.
+The examples below describe historical direct SQL development validation only.
+
 Install PostgreSQL 14+ and PostGIS 3.x, then apply the migration with `psql`:
 
 ```sh

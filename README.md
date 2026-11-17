@@ -12,7 +12,11 @@ Apply `db/migrations/001_delivery_foundation.sql`,
 `db/migrations/004_billing_refunds_disputes.sql`, and
 `db/migrations/005_driver_stop_progress.sql`, and
 `db/migrations/006_catalog_orders.sql`, and
-`db/migrations/007_merchant_catalog_management.sql` on PostgreSQL 14+ with PostGIS 3.x
+[db/migrations/007_merchant_catalog_management.sql](db/migrations/007_merchant_catalog_management.sql), and
+[db/migrations/008_finance_costs.sql](db/migrations/008_finance_costs.sql),
+[db/migrations/009_priority_test_checkout.sql](db/migrations/009_priority_test_checkout.sql), and
+[db/migrations/010_shopper_completion.sql](db/migrations/010_shopper_completion.sql), and
+[db/migrations/011_extra_pickup_test_checkout.sql](db/migrations/011_extra_pickup_test_checkout.sql) on PostgreSQL 14+ with PostGIS 3.x
 installed. The migrations create dispatch, unified-basket, catalog, and order
 models; spatial queries; transaction-safe order/merchant limits; immutable
 multi-stop routes; payment/tax ledger records; and outbox events.
@@ -24,7 +28,31 @@ specified in [`api/openapi.yaml`](api/openapi.yaml).
 Database integration fixtures are in `db/tests/`; apply all migrations before
 running the matching SQL test files.
 
+The admin finance planner and append-only manual cost ledger are documented in
+[docs/profit-model.md](docs/profit-model.md). These are estimates and expense
+observations only, not approved checkout prices, earned wages or payouts.
+
+The [extra pickup platform rule](docs/extra-pickup-pricing.md) is fixed at 25 basis
+points (0.25%) of merchandise subtotal per distinct additional pickup per checkout,
+half-up once. The planner keeps this checkout scope separate from driver pickup
+estimates per bundle (50% of original pickup pay). Operational pricing is default
+disabled; exact `SHOPSTOPS_EXTRA_PICKUP_TEST_ONLY=true` requires a valid Stripe test
+key and webhook secret. It is independent of priority and enables no live payments,
+worker payouts or public gateway checkout routes. Migration 011 requires separate
+review/application; no migrations are run by adding this code.
+
+The separate admin-only [shopper completion workflow](docs/shopper-completion.md)
+records an immutable approved amount per verified completed shopping order. Login,
+signup, acceptance and assignment create no earnings. Completion earnings remain
+pending review: no external transfers, payroll approval, or automatic eligibility
+of minors. Customer payment status is reviewed separately from work compensation.
+
 ## Run the API
+
+The identity gateway implementation and its deliberately limited public route
+policy are documented in [docs/identity-gateway.md](docs/identity-gateway.md).
+It requires HTTPS OIDC discovery and runtime configuration; it does not expose
+every private backend operation and is not a deployment or production approval.
 
 After applying all migrations, set `DATABASE_URL` and a private internal API
 token (at least 32 characters), then run:

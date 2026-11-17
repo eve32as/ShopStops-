@@ -1,0 +1,220 @@
+name: Offline-safe validation and image builds
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+# Ordinary fork PRs run unprivileged tests. No pull_request_target, secrets,
+# id-token permission, registry login, publishing, Terraform plan/apply or deploy.
+# Action tag -> SHA mappings verified with official git ls-remote on 2026-11-14.
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: '1.26.11' # Same supported builder, >= go.mod 1.25.0
+          cache: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22.16.0'
+      - run: go test ./...
+      - run: go vet ./...
+      - name: Admin clean install, lint and production build
+        working-directory: apps/admin
+        run: |
+          npm ci --no-audit --no-fund
+          npm run lint
+          npm test
+          npm run build
+      - name: Mobile clean install, behavioral tests and typecheck (no native build)
+        working-directory: apps/mobile
+        run: |
+          npm ci --no-audit --no-fund
+          npm test
+          npm run typecheck
+      - name: Bash syntax and offline suites
+        run: |
+          # A normal command (not process substitution) preserves find failures.
+          syntax_list="$(mktemp)"
+          trap 'rm -f "$syntax_list"' EXIT
+          find scripts tests -type f \( -name '*.sh' -o -path '*/fixtures/aws' -o -path '*/fixtures/terraform' -o -path '*/fixtures/osrm-routed' -o -path '*/fixtures/psql' -o -path '*/fixtures/curl' \) -print0 > "$syntax_list"
+          while IFS= read -r -d '' file; do bash -n "$file"; done < "$syntax_list"
+          bash tests/staging-images/test-staging-images.sh
+          bash tests/osrm-runtime/test-osrm-runtime.sh
+          bash tests/production-readiness/test-production-readiness.sh
+          bash tests/sql-integration/test-sql-integration.sh
+          bash tests/live-services/test-live-services.sh
+
+  frontend-acceptance:
+    name: Simulated API frontend acceptance (not server security verification)
+    needs: [tests]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22.16.0'
+      - name: Install locked admin test dependencies without scripts
+        working-directory: apps/admin
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Install Chromium only on the disposable GitHub runner
+        working-directory: apps/admin
+        run: npx --no-install playwright install --with-deps chromium
+      - name: Run isolated simulated frontend journeys (no live services or secrets)
+        working-directory: apps/admin
+        run: npm run test:acceptance
+
+  terraform:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [infra/aws/staging-images, infra/aws/osrm-runtime, infra/aws/service-runtime]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: '1.10.5'
+          terraform_wrapper: false
+      - name: Isolated module formatting and provider validation (no backend)
+        working-directory: ${{ matrix.module }}
+        run: |
+          terraform fmt -check
+          terraform init -backend=false -input=false -lockfile=readonly
+          terraform validate
+          if [[ -d tests ]]; then terraform test; fi
+
+  sql:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgis:
+        image: postgis/postgis:16-3.5
+        env:
+          POSTGRES_USER: shopstops_ci
+          POSTGRES_PASSWORD: disposable-ci-only
+          POSTGRES_DB: shopstops_ci
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U shopstops_ci -d shopstops_ci"
+          --health-interval 10s --health-timeout 5s --health-retries 5
+    env:
+      PGHOST: 127.0.0.1
+      PGPORT: '5432'
+      PGUSER: shopstops_ci
+      PGPASSWORD: disposable-ci-only
+      PGDATABASE: shopstops_ci
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: PostgreSQL client
+        run: |
+          sudo -n apt-get update
+          sudo -n apt-get install -y --no-install-recommends postgresql-client
+      - run: bash scripts/test-sql-integration.sh
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: '1.26.11'
+          cache: false
+      - name: Finance, priority, shopper and extra pickup PostgreSQL integration (disposable database only)
+        env:
+          SHOPSTOPS_FINANCE_TEST_DSN: postgres://shopstops_ci:disposable-ci-only@127.0.0.1:5432/shopstops_ci?sslmode=disable
+          SHOPSTOPS_PRIORITY_TEST_DSN: postgres://shopstops_ci:disposable-ci-only@127.0.0.1:5432/shopstops_ci?sslmode=disable
+          SHOPSTOPS_SHOPPER_TEST_DSN: postgres://shopstops_ci:disposable-ci-only@127.0.0.1:5432/shopstops_ci?sslmode=disable
+          SHOPSTOPS_EXTRA_PICKUP_TEST_DSN: postgres://shopstops_ci:disposable-ci-only@127.0.0.1:5432/shopstops_ci?sslmode=disable
+        run: go test ./internal/httpapi -run '^Test(Finance|Priority|Shopper|ExtraPickup)PostgresIntegration$' -count=1
+
+  migrations:
+    # Separate fresh service: the sql job already has an untracked populated
+    # schema and MUST NOT be adopted or stamped by the production tool.
+    needs: [tests, sql]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    services:
+      postgis:
+        image: postgis/postgis:16-3.5
+        env:
+          POSTGRES_USER: shopstops_ci
+          POSTGRES_PASSWORD: disposable-ci-only
+          POSTGRES_DB: shopstops_ci
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U shopstops_ci -d shopstops_ci"
+          --health-interval 10s --health-timeout 5s --health-retries 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: '1.26.11'
+          cache: false
+      - name: Isolated migration ledger, rollback, drift and session lock integration
+        env:
+          SHOPSTOPS_MIGRATION_TEST_DSN: postgres://shopstops_ci:disposable-ci-only@127.0.0.1:5432/shopstops_ci?sslmode=disable
+        run: go test ./internal/migrations -run '^TestPostgresIntegration$' -count=1 -v
+
+  build-images:
+    needs: [tests, terraform, sql, migrations]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Build all four images locally; never push
+        run: |
+          docker build --pull --file docker/api/Dockerfile --tag shopstops-api:ci .
+          docker build --pull --file docker/gateway/Dockerfile --tag shopstops-gateway:ci .
+          docker build --pull --file docker/admin/Dockerfile --tag shopstops-admin:ci .
+          docker build --pull --file docker/osrm-runtime/Dockerfile --tag shopstops-osrm:ci .
+      - name: Check non-root identities and nginx configuration
+        run: |
+          test "$(docker image inspect --format '{{.Config.User}}' shopstops-api:ci)" = '10001:10001'
+          test "$(docker image inspect --format '{{.Config.User}}' shopstops-gateway:ci)" = '10001:10001'
+          test "$(docker image inspect --format '{{.Config.User}}' shopstops-admin:ci)" = '101:101'
+          test "$(docker image inspect --format '{{.Config.User}}' shopstops-osrm:ci)" = '10001:10001'
+          docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,size=16m shopstops-admin:ci -t
+      - name: Admin read-only runtime HTTP smoke test
+        run: |
+          container_id="$(docker run -d --read-only --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,size=16m -p 127.0.0.1:18080:8080 shopstops-admin:ci)"
+          trap 'docker logs "$container_id"; docker rm -f "$container_id" >/dev/null' EXIT
+          curl --fail --silent --show-error --retry 10 --retry-connrefused --retry-delay 1 --max-time 5 http://127.0.0.1:18080/healthz > /tmp/health.txt
+          grep -qx ok /tmp/health.txt
+          curl --fail --silent --show-error http://127.0.0.1:18080/ > /tmp/index.html
+          curl --fail --silent --show-error -D /tmp/headers.txt http://127.0.0.1:18080/admin/refunds > /tmp/spa.html
+          cmp /tmp/index.html /tmp/spa.html
+          test "$(curl --silent --show-error -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/assets/missing.js)" = 404
+          grep -qi '^X-Content-Type-Options: nosniff' /tmp/headers.txt
+          grep -qi '^X-Frame-Options: DENY' /tmp/headers.txt
+          grep -qi '^Content-Security-Policy:' /tmp/headers.txt
+          grep -qi '^Cache-Control: no-store' /tmp/headers.txt

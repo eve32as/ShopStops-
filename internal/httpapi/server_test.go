@@ -426,10 +426,10 @@ func TestDriverRouteHydratesLegsFromOSRM(t *testing.T) {
 	request.Header.Set("X-ShopStops-Actor", "driver-123")
 	recorder := httptest.NewRecorder()
 	server := &Server{
-		repo: repo,
+		repo:  repo,
 		token: strings.Repeat("t", 32),
-		log:  slog.New(slog.NewTextHandler(io.Discard, nil)),
-		osrm: routing.NewOSRMClient(osrmServer.URL),
+		log:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		osrm:  routing.NewOSRMClient(osrmServer.URL),
 	}
 	server.handler().ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
@@ -536,6 +536,7 @@ func TestCreateCheckoutUsesAuthenticatedCustomerAndIdempotency(t *testing.T) {
 		`{"anchorStoreLocationId":"00000000-0000-0000-0000-000000000001","orderIds":["00000000-0000-0000-0000-000000000002"],"dropoff":{"latitude":38.91,"longitude":-76.99},"deliveryWindowStart":"2026-10-19T09:00:00Z","deliveryWindowEnd":"2026-10-19T11:00:00Z"}`))
 	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
 	request.Header.Set("X-ShopStops-Actor", "customer-123")
+	request.Header.Set("X-ShopStops-Actor-Role", "customer")
 	request.Header.Set("Idempotency-Key", "checkout-request-1")
 	recorder := httptest.NewRecorder()
 	New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).
@@ -553,6 +554,7 @@ func TestCreateCheckoutRejectsDuplicateOrderIDs(t *testing.T) {
 		`{"anchorStoreLocationId":"00000000-0000-0000-0000-000000000001","orderIds":["00000000-0000-0000-0000-000000000002","00000000-0000-0000-0000-000000000002"],"dropoff":{"latitude":38.91,"longitude":-76.99},"deliveryWindowStart":"2026-10-19T09:00:00Z","deliveryWindowEnd":"2026-10-19T11:00:00Z"}`))
 	request.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 32))
 	request.Header.Set("X-ShopStops-Actor", "customer-123")
+	request.Header.Set("X-ShopStops-Actor-Role", "customer")
 	request.Header.Set("Idempotency-Key", "checkout-request-2")
 	recorder := httptest.NewRecorder()
 	New(repo, strings.Repeat("t", 32), slog.New(slog.NewTextHandler(io.Discard, nil))).

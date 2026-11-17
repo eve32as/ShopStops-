@@ -11,6 +11,93 @@ servers:
 security:
   - bearerAuth: []
 paths:
+  /admin/shopper/tasks:
+    post:
+      operationId: assignShopperTask
+      summary: Admin supervised assignment to one existing merchant order
+      description: Requires gateway-verified admin actor. 8 KiB JSON limit. Explicit positive approved USD completion amount is immutable; no planner defaults or priority allocations. One assignment per order; no reassignment. Eligibility stays pending_review. Assignment, signup, login and acceptance create no earnings. Customer/payment binding is checked server-side; missing or failed payment is a review fact, not automatic forfeiture of compensation.
+      parameters:
+        - $ref: '#/components/parameters/ShopperIdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ShopperAssignment'
+      responses:
+        '201':
+          description: Recorded assignment or identical retry (may already be completed)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ShopperTask'
+        '400': { description: Invalid strict JSON, UUID, references, amount or cancelled order }
+        '401': { description: Authentication required }
+        '403': { description: Verified admin role required }
+        '404': { description: Existing order not found }
+        '409': { description: Order already assigned, payer binding or actor/payload idempotency conflict }
+        '503': { description: Shopper repository or migration unavailable }
+    get:
+      operationId: listShopperTasks
+      summary: Admin bounded task and pending earnings records
+      description: Ordered by assignment timestamp and UUID, no raw customer identity or payment details. No payable or paid claims.
+      parameters:
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+        - in: query
+          name: offset
+          schema: { type: integer, minimum: 0, maximum: 100000, default: 0 }
+      responses:
+        '200':
+          description: Bounded task page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tasks, limit, offset]
+                properties:
+                  tasks:
+                    type: array
+                    maxItems: 100
+                    items:
+                      $ref: '#/components/schemas/ShopperTask'
+                  limit: { type: integer }
+                  offset: { type: integer }
+        '400': { description: Invalid pagination or actor }
+        '401': { description: Authentication required }
+        '403': { description: Verified admin role required }
+        '503': { description: Shopper repository or migration unavailable }
+  /admin/shopper/tasks/{taskId}/complete:
+    post:
+      operationId: completeShopperTask
+      summary: Admin verified shopping completion and pending-review earnings
+      description: Atomic one-time completion, audit and earned_per_order ledger entry at the assigned immutable completion amount. Requires explicit item-shopping and authorized substitutions (or none needed) confirmation, plus private opaque receipt and handoff proof references. Verifier comes only from trusted gateway admin headers. Payment status is observed, not a compensation forfeiture gate. No transfers, payroll approval, enrollment or legal clearance; all earnings remain pending_review. Legally required compensable time and other wage obligations require separate compliance/payroll handling.
+      parameters:
+        - $ref: '#/components/parameters/ShopperIdempotencyKey'
+        - in: path
+          name: taskId
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ShopperCompletion'
+      responses:
+        '200':
+          description: Verified completion and pending earnings, or identical retry; no money transferred
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ShopperTask'
+        '400': { description: Invalid JSON, UUID or incomplete evidence }
+        '401': { description: Authentication required }
+        '403': { description: Verified admin role required }
+        '404': { description: Task or order not found }
+        '409': { description: Already completed with another key, ownership change, or actor/payload/key conflict }
+        '503': { description: Shopper repository or migration unavailable }
   /healthz:
     get:
       operationId: healthCheck
@@ -222,11 +309,36 @@ paths:
           description: Merchant role required
         '404':
           description: Catalog item not found for merchant
+  /checkout-pricing/priority:
+    get:
+      operationId: getPriorityTestPricing
+      summary: Authenticated customer priority service test pricing
+      description: No dummy prices. Disabled by default; amounts only present when explicit server test configuration is valid. This read-only route does not enable public checkout/payment routes, which remain gateway-blocked. Never a faster driving or arrival-time guarantee.
+      responses:
+        '200':
+          description: Current configuration, not a reserved quote. Stored checkout prices remain stable on retries.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [available, testOnly, currency, publicCheckoutAvailable]
+                properties:
+                  available: { type: boolean }
+                  testOnly: { type: boolean, enum: [true] }
+                  currency: { type: string, enum: [usd] }
+                  publicCheckoutAvailable: { type: boolean, enum: [false] }
+                  shoppingCents: { type: integer, minimum: 1, maximum: 1000000 }
+                  deliveryCents: { type: integer, minimum: 1, maximum: 1000000 }
+                  totalCents: { type: integer, minimum: 2, maximum: 2000000 }
+        '401':
+          description: Authentication required
+        '403':
+          description: Customer role required
   /checkouts:
     post:
       operationId: createUnifiedCheckout
       summary: Create a unified basket with one anchor and at most one adjacent merchant
-      description: The trusted gateway injects X-ShopStops-Actor from the authenticated customer identity. Delivery and service fees are configured by the platform, not accepted from clients.
+      description: Currently blocked by the public gateway; trusted internal integration only. Backend requires customer role and derives customer_ref solely from the trusted actor header (no customerRef request field). All fees are server configured, never planner/client inputs. Priority choice is atomically persisted with separate test-only shopping/delivery surcharge and pending allocation snapshots. New opt-ins reject disabled configuration; identical retries retain stored prices even after rates change or disable.
       parameters:
         - in: header
           name: Idempotency-Key
@@ -257,11 +369,12 @@ paths:
         '400':
           description: Invalid basket or delivery location
         '409':
-          description: More than two merchants or an ineligible merchant
+          description: Disabled priority choice, conflicting idempotency request, more than two merchants or an ineligible merchant
   /checkouts/{checkoutId}/payment:
     post:
       operationId: createCheckoutPayment
       summary: Create a Stripe PaymentIntent for the itemized checkout
+      description: Currently gateway-blocked. Backend requires customer role and persisted checkout ownership. Selected priority or enabled extra-pickup test snapshots require a positively identified Stripe test-key gateway even after configuration changes, before creating or retrieving an intent. Exact stored invoice total includes the extra pickup platform fee once. No new worker payouts.
       parameters:
         - $ref: '#/components/parameters/CheckoutId'
       responses:
@@ -284,6 +397,8 @@ paths:
                   currency:
                     type: string
                     enum: [usd]
+                  testOnly:
+                    type: boolean
         '401':
           description: Internal API authentication required
         '404':
@@ -456,6 +571,94 @@ paths:
           description: Payment not refundable or prior Stripe operation requires reconciliation
         '503':
           description: Stripe billing is unavailable
+  /admin/finance/scenarios:
+    post:
+      operationId: calculateFinanceScenario
+      summary: Admin estimate-only monthly finance planner
+      description: Requires a verified admin actor. Pure calculator; no DB, checkout charges, earned wages or payouts. USD integer cents; 8 KiB maximum body. Bundle base plus distance/time is amortized per checkout drop. Only processing excess after merchant allocation is a platform input. Merchandise, tax and tips are excluded from the revenue denominator; subscriptions are assumed, not verified.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FinanceScenario'
+      responses:
+        '200':
+          description: Estimate; break-even is null when exact contribution is nonpositive, otherwise ceiling after fixed subscription offset. Net margin is null with zero platform revenue.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinanceScenarioResult'
+        '400':
+          description: Invalid bounded integer inputs, actor, JSON or oversized body
+        '401':
+          description: Authentication required
+        '403':
+          description: Admin role required
+  /admin/finance/costs:
+    get:
+      operationId: getManualFinanceCosts
+      summary: Admin manual cost report for a UTC accounting month
+      description: Append-only expense observations, not proof of earned compensation or payment. Total includes all records in the month; costs page ordered by server timestamp then UUID. No automatic scenario import.
+      parameters:
+        - in: query
+          name: period
+          required: true
+          schema:
+            $ref: '#/components/schemas/FinancePeriod'
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+        - in: query
+          name: offset
+          schema: { type: integer, minimum: 0, maximum: 100000, default: 0 }
+      responses:
+        '200':
+          description: Manual cost report, not a paid ledger
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinanceCostReport'
+        '400':
+          description: Invalid period, pagination or actor
+        '401':
+          description: Authentication required
+        '403':
+          description: Admin role required
+        '503':
+          description: Optional finance repository or migration unavailable
+    post:
+      operationId: recordManualFinanceCost
+      summary: Append a nonnegative manual expense observation (no payment)
+      description: Requires verified admin actor; 8 KiB body cap. UUID Idempotency-Key is the record ID. Identical payload and actor retries return the same record; any differing payload or actor conflicts. No wage approval, paid status, refund execution or payout side effects.
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FinanceCostRequest'
+      responses:
+        '201':
+          description: Manual cost created or unchanged idempotent retry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinanceCost'
+        '400':
+          description: Invalid UUID key, cost, actor or request body
+        '401':
+          description: Authentication required
+        '403':
+          description: Admin role required
+        '409':
+          description: Same UUID with differing actor or payload
+        '503':
+          description: Optional finance repository or migration unavailable
   /webhooks/stripe:
     post:
       operationId: receiveStripeWebhook
@@ -571,6 +774,11 @@ components:
       scheme: bearer
       bearerFormat: JWT
   parameters:
+    ShopperIdempotencyKey:
+      in: header
+      name: Idempotency-Key
+      required: true
+      schema: { type: string, format: uuid }
     CheckoutId:
       in: path
       name: checkoutId
@@ -593,6 +801,229 @@ components:
         type: string
         format: uuid
   schemas:
+    ShopperReference:
+      type: string
+      pattern: '^[A-Za-z0-9_-]{1,100}$'
+      maxLength: 100
+      description: Private opaque reference, never raw PII, receipt contents or URLs. Format does not verify identity or evidence.
+    ShopperAssignment:
+      type: object
+      additionalProperties: false
+      required: [orderId, shopperActor, completionAmountCents, jurisdictionRef]
+      properties:
+        orderId: { type: string, format: uuid }
+        shopperActor:
+          $ref: '#/components/schemas/ShopperReference'
+        completionAmountCents: { type: integer, minimum: 1, maximum: 100000000 }
+        jurisdictionRef:
+          $ref: '#/components/schemas/ShopperReference'
+    ShopperCompletion:
+      type: object
+      additionalProperties: false
+      required: [itemsConfirmed, substitutionsConfirmed, receiptRef, handoffRef]
+      properties:
+        itemsConfirmed: { type: boolean, const: true }
+        substitutionsConfirmed: { type: boolean, const: true }
+        receiptRef:
+          $ref: '#/components/schemas/ShopperReference'
+        handoffRef:
+          $ref: '#/components/schemas/ShopperReference'
+    ShopperTask:
+      type: object
+      required: [id, orderId, shopperActor, assignedBy, merchantId, completionAmountCents, currency, jurisdictionRef, eligibilityStatus, paymentStatusAtAssignment, createdAt, status, completion, earnings]
+      properties:
+        id: { type: string, format: uuid }
+        orderId: { type: string, format: uuid }
+        shopperActor: { type: string }
+        assignedBy: { type: string }
+        merchantId: { type: string, format: uuid }
+        completionAmountCents: { type: integer, minimum: 1, maximum: 100000000 }
+        currency: { type: string, const: usd }
+        jurisdictionRef: { type: string }
+        eligibilityStatus: { type: string, const: pending_review }
+        paymentStatusAtAssignment: { type: string }
+        createdAt: { type: string, format: date-time }
+        status: { type: string, enum: [assigned, verified_completed] }
+        completion:
+          type: [object, 'null']
+          required: [verifiedBy, itemsConfirmed, substitutionsConfirmed, receiptRef, handoffRef, paymentStatusAtCompletion, createdAt]
+          properties:
+            verifiedBy: { type: string }
+            itemsConfirmed: { type: boolean, const: true }
+            substitutionsConfirmed: { type: boolean, const: true }
+            receiptRef: { type: string }
+            handoffRef: { type: string }
+            paymentStatusAtCompletion: { type: string }
+            createdAt: { type: string, format: date-time }
+        earnings:
+          type: [object, 'null']
+          required: [kind, status, completionAmountCents, currency, createdAt]
+          properties:
+            kind: { type: string, const: earned_per_order }
+            status: { type: string, const: pending_review }
+            completionAmountCents: { type: integer, minimum: 1, maximum: 100000000 }
+            currency: { type: string, const: usd }
+            createdAt: { type: string, format: date-time }
+    FinanceCents:
+      type: integer
+      minimum: 0
+      maximum: 100000000
+      description: USD integer cents, nonnegative, maximum $1 million per input
+    FinanceQuantity:
+      type: integer
+      minimum: 0
+      maximum: 100000
+    FinancePeriod:
+      type: string
+      pattern: '^(20[0-9]{2}|2100)-(0[1-9]|1[0-2])$'
+      description: UTC accounting month YYYY-MM, 2000 through 2100 inclusive
+    FinanceScenario:
+      type: object
+      additionalProperties: false
+      required: [dropsPerBundle]
+      description: Planning only; no scenario applies to checkout or worker pay. Omitted inputs are zero; editable base fees are assumptions. The extra pickup platform rate is fixed at 25 basis points (0.25 percent) of merchandise subtotal per extra pickup per checkout, rounded half up once. Driver pickup count is independently per bundle, never charged to each checkout. Expected fast fees floor and worker premiums ceil per checkout. All calculations use integer cents. Operational test-only checkout configuration is separate; no live pricing, payouts or radius eligibility is enabled by this calculator.
+      properties:
+        checkouts: { $ref: '#/components/schemas/FinanceQuantity' }
+        merchandiseSubtotalCents:
+          allOf: [{ $ref: '#/components/schemas/FinanceCents' }]
+          description: Merchandise only per checkout; exclude tax, tips, delivery, service and priority fees. Planning assumption, not a checkout customer input.
+        additionalPickupsPerCheckout:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Platform pricing scope; max(distinct pickup locations minus 1, 0) per checkout. Same-store orders count once. Independent of driver additionalPickupsPerBundle and dropsPerBundle.
+        deliveryFeeCents: { $ref: '#/components/schemas/FinanceCents' }
+        serviceFeeCents:
+          allOf: [{ $ref: '#/components/schemas/FinanceCents' }]
+          description: Assumed fixed platform/service fee once per checkout; no amount approved and no additional maintenance customer fee
+        assumedPaidMerchants: { $ref: '#/components/schemas/FinanceQuantity' }
+        subscriptionCents: { $ref: '#/components/schemas/FinanceCents' }
+        driverBaseCents:
+          allOf: [{ $ref: '#/components/schemas/FinanceCents' }]
+          description: Guarantee per bundle, excluding separately entered original and additional pickup pay to avoid double counting
+        originalPickupCents:
+          allOf: [{ $ref: '#/components/schemas/FinanceCents' }]
+          description: Original pickup pay per bundle, additive to base, mileage and time. Each extra pickup adds 50 percent of this input, rounded half up to cents (501 becomes 251), not half the base guarantee.
+        additionalPickupsPerBundle:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Extra pickups per bundle; do not multiply customer fees, checkout drops or shopper costs by this count
+        pickupRadiusMilliMiles:
+          type: integer
+          minimum: 0
+          maximum: 500
+          description: Planning metadata only in thousandths of a mile, measured for every extra store from FIRST pickup, never a chain. Dense-city initial target 250; outer cap 500. Omitted is zero, UI starts at 500. Does not test distance or affect dispatch eligibility.
+        shopperCentsPerCheckout:
+          allOf: [{ $ref: '#/components/schemas/FinanceCents' }]
+          description: Ordinary cost for a separate shopper preparing orders for driver pickup, per checkout, not automatically per pickup. Exclude from other variable costs or staff payroll to avoid duplication.
+        fastServiceAdoptionBasisPoints:
+          type: integer
+          minimum: 0
+          maximum: 10000
+          description: Hypothetical customer uptake of optional fast shopping/delivery priority, not actual selection or guaranteed times. 100 basis points is 1 percent. Fees and premiums below are per opted-in checkout.
+        fastShoppingFeeCents: { $ref: '#/components/schemas/FinanceCents' }
+        fastDeliveryFeeCents: { $ref: '#/components/schemas/FinanceCents' }
+        fastShopperPremiumCents: { $ref: '#/components/schemas/FinanceCents' }
+        fastDriverPremiumCents:
+          allOf: [{ $ref: '#/components/schemas/FinanceCents' }]
+          description: Additional driver cost per opted-in checkout, not per bundle
+        bundleMilliMiles:
+          allOf: [{ $ref: '#/components/schemas/FinanceQuantity' }]
+          description: Thousandths of a mile per bundle, not meters
+        mileageCentsPerMile: { $ref: '#/components/schemas/FinanceCents' }
+        bundleSeconds:
+          allOf: [{ $ref: '#/components/schemas/FinanceQuantity' }]
+          description: Seconds per bundle, including assumed waiting and service time
+        timeCentsPerHour: { $ref: '#/components/schemas/FinanceCents' }
+        dropsPerBundle: { type: integer, minimum: 1, maximum: 100 }
+        processingExcessCents:
+          allOf: [{ $ref: '#/components/schemas/FinanceCents' }]
+          description: Platform-borne processing excess per checkout AFTER existing merchant allocation
+        refundLossCents:
+          allOf: [{ $ref: '#/components/schemas/FinanceCents' }]
+          description: Unrecovered platform loss per checkout, not gross customer refund
+        manualVariableCents: { $ref: '#/components/schemas/FinanceCents' }
+        hostingCents: { $ref: '#/components/schemas/FinanceCents' }
+        maintenanceCents:
+          allOf: [{ $ref: '#/components/schemas/FinanceCents' }]
+          description: Monthly recurring platform maintenance/support cost, included in fixed costs. Optional and omitted is zero (no approved budget, not zero actual cost). Exclude other overhead and support staffing already in payroll; not a customer fee.
+        overheadCents: { $ref: '#/components/schemas/FinanceCents' }
+        payrollCents:
+          allOf: [{ $ref: '#/components/schemas/FinanceCents' }]
+          description: Monthly staff overhead; do not duplicate modeled driver or per-checkout shopper costs
+    FinanceScenarioResult:
+      type: object
+      required: [kind, additionalPickupPlatformFeeBasisPoints, additionalPickupPlatformFeePerCheckoutCents, additionalPickupPlatformFeeMonthCents, customerFeesPerCheckoutCents, customerFeesMonthCents, platformServiceFeesMonthCents, deliveryFeesMonthCents, subscriptionForecastCents, driverBundleCents, driverPerCheckoutCents, driverMonthCents, additionalPickupCents, pickupAddonBundleCents, pickupBundleCents, pickupRadiusMilliMiles, shopperPerCheckoutCents, shopperMonthCents, fastFeesPerCheckoutCents, fastFeesMonthCents, fastShopperPremiumPerCheckoutCents, fastShopperPremiumMonthCents, fastDriverPremiumPerCheckoutCents, fastDriverPremiumMonthCents, contributionPerCheckoutCents, contributionNumeratorCents, contributionDenominator, contributionMonthCents, fixedMonthCents, maintenanceMonthCents, platformRevenueForecastCents, netOperatingCents, netMarginBasisPoints, breakEvenCheckouts]
+      properties:
+        kind: { type: string, const: estimate }
+        additionalPickupPlatformFeeBasisPoints: { type: integer, const: 25 }
+        additionalPickupPlatformFeePerCheckoutCents: { type: integer, description: Half up once on merchandiseSubtotalCents times 25 times additionalPickupsPerCheckout divided by 10000; already included in fees and contribution }
+        additionalPickupPlatformFeeMonthCents: { type: integer, description: Per-checkout surcharge times checkouts; included once in customer fees and platform revenue forecast }
+        customerFeesPerCheckoutCents: { type: integer, description: Regular delivery/service plus expected fast fees plus extra pickup platform fee }
+        customerFeesMonthCents: { type: integer, description: All forecast customer fees including extra pickup platform fee; breakdowns already included }
+        platformServiceFeesMonthCents: { type: integer, description: serviceFeeCents times checkouts; already included in customerFeesMonthCents and platformRevenueForecastCents; not an extra fee or automatic worker payout }
+        deliveryFeesMonthCents: { type: integer, description: deliveryFeeCents times checkouts; already included in customerFeesMonthCents and platformRevenueForecastCents; not driver compensation }
+        subscriptionForecastCents: { type: integer }
+        driverBundleCents: { type: integer, description: Base plus original/additional pickups plus rounded mileage/time; excludes per-checkout fast driver premium }
+        driverPerCheckoutCents: { type: integer, description: Rounded bundle amortization display plus expected per-checkout fast driver premium }
+        driverMonthCents: { type: integer, description: Ceil of regular bundle cost times checkouts over drops plus fastDriverPremiumMonthCents }
+        additionalPickupCents: { type: integer, description: Each extra pickup amount, 50 percent of original rounded half up }
+        pickupAddonBundleCents: { type: integer, description: Additional pickups only, included in driverBundleCents }
+        pickupBundleCents: { type: integer, description: Original plus all additional pickups, included in driverBundleCents }
+        pickupRadiusMilliMiles: { type: integer, minimum: 0, maximum: 500, description: Echoed planning metadata; not route eligibility }
+        shopperPerCheckoutCents: { type: integer, description: Ordinary shopper cost plus expected fast shopper premium }
+        shopperMonthCents: { type: integer, description: Separate shopper cost including fastShopperPremiumMonthCents }
+        fastFeesPerCheckoutCents: { type: integer, description: Floor of combined fast fees times uptake basis points divided by 10000 }
+        fastFeesMonthCents: { type: integer, description: Expected fast fees per checkout times checkouts; included in customer revenue }
+        fastShopperPremiumPerCheckoutCents: { type: integer, description: Ceil of opted-in shopper premium times uptake basis points divided by 10000 }
+        fastShopperPremiumMonthCents: { type: integer, description: Expected shopper premium per checkout times checkouts; included in shopper cost }
+        fastDriverPremiumPerCheckoutCents: { type: integer, description: Ceil of opted-in driver premium times uptake basis points divided by 10000 }
+        fastDriverPremiumMonthCents: { type: integer, description: Expected driver premium per checkout times checkouts; included in driver cost }
+        contributionPerCheckoutCents: { type: integer, description: Rounded display only }
+        contributionNumeratorCents: { type: integer, description: Exact contribution numerator after conservative per-checkout fast rounding and separate shopper costs }
+        contributionDenominator: { type: integer, description: Checkout drops per bundle }
+        contributionMonthCents: { type: integer }
+        fixedMonthCents: { type: integer, description: Monthly hosting plus maintenance plus other overhead plus payroll }
+        maintenanceMonthCents: { type: integer, description: maintenanceCents echoed for display; already included in fixedMonthCents; not a customer fee }
+        platformRevenueForecastCents: { type: integer, description: Customer fees plus assumed subscriptions before costs; forecast income not net actual revenue or profit; priority worker allocations are not profit }
+        netOperatingCents: { type: integer }
+        netMarginBasisPoints:
+          type: [integer, 'null']
+          description: Nearest basis point of net operating result / (customer fees + assumed subscriptions); excludes merchandise, tax, tips. Null when denominator is zero.
+        breakEvenCheckouts:
+          type: [integer, 'null']
+          description: Smallest checkout count with nonnegative calculated net under conservative rounding when contribution is positive, after subscriptions offset fixed costs; null if contribution <= 0 even when subscriptions cover fixed costs. Forecast count is not guaranteed demand or capacity.
+    FinanceCostRequest:
+      type: object
+      additionalProperties: false
+      required: [period, category, amountCents]
+      properties:
+        period: { $ref: '#/components/schemas/FinancePeriod' }
+        category: { type: string, enum: [driver, staff, hosting, processing_excess, refund_loss, other] }
+        amountCents: { $ref: '#/components/schemas/FinanceCents' }
+    FinanceCost:
+      type: object
+      required: [id, period, category, amountCents, actor, createdAt, kind]
+      properties:
+        period: { $ref: '#/components/schemas/FinancePeriod' }
+        category: { type: string, enum: [driver, staff, hosting, processing_excess, refund_loss, other] }
+        amountCents: { $ref: '#/components/schemas/FinanceCents' }
+        id: { type: string, format: uuid }
+        actor: { type: string, maxLength: 200 }
+        createdAt: { type: string, format: date-time }
+        kind: { type: string, const: manual_cost }
+    FinanceCostReport:
+      type: object
+      properties:
+        kind: { type: string, const: manual_cost_report }
+        period: { $ref: '#/components/schemas/FinancePeriod' }
+        totalCents: { type: string, pattern: '^[0-9]+$', description: Exact decimal integer string for the entire month, avoiding JavaScript integer overflow }
+        limit: { type: integer }
+        offset: { type: integer }
+        costs:
+          type: array
+          items: { $ref: '#/components/schemas/FinanceCost' }
     NearbyMerchant:
       type: object
       required: [merchantId, name, merchantType, storeLocationId, distanceMeters]
@@ -721,9 +1152,13 @@ components:
     CreateCheckoutRequest:
       type: object
       additionalProperties: false
-      description: Orders may come from the anchor plus at most one adjacent merchant.
+      description: Orders may come from the anchor plus at most one adjacent merchant. Extra pickup pricing is controlled only by server test configuration; count and merchandise basis come from actual accepted orders and merchant_items invoice lines. No customer-supplied count, subtotal or rate is accepted. First pickup is included; same-location orders count once. Existing geographic rules are unchanged; no 0.5-mile radius qualification is asserted.
       required: [anchorStoreLocationId, orderIds, dropoff, deliveryWindowStart, deliveryWindowEnd]
       properties:
+        priorityService:
+          type: boolean
+          default: false
+          description: Optional combined priority service choice; both surcharges go entirely to their respective pending shopper/driver allocation snapshots, not earned/paid worker costs. Null is rejected.
         anchorStoreLocationId:
           type: string
           format: uuid
@@ -745,14 +1180,35 @@ components:
           format: date-time
     Checkout:
       type: object
-      required: [id, status, currency, invoiceLines, totalCents]
+      required: [id, status, currency, invoiceLines, totalCents, priority]
       properties:
+        extraPickup:
+          type: object
+          description: Immutable server quote snapshot for new checkouts; omitted on pre-011 retries. Rate always 25 basis points; amount zero when disabled. Test-only state also applies to zero-extra invoices and requires a test payment gateway. Basis excludes all fees, tax and tips; snapshot retries never reprice.
+          required: [testOnly, merchandiseSubtotalCents, additionalPickups, rateBasisPoints, amountCents]
+          properties:
+            testOnly: { type: boolean }
+            merchandiseSubtotalCents: { type: integer, minimum: 1, maximum: 2147483647 }
+            additionalPickups: { type: integer, minimum: 0, maximum: 100 }
+            rateBasisPoints: { type: integer, const: 25 }
+            amountCents: { type: integer, minimum: 0, maximum: 2147483647 }
+        priority:
+          type: object
+          required: [selected, testOnly, shoppingCents, deliveryCents, shopperAllocationCents, driverAllocationCents, allocationStatus]
+          properties:
+            selected: { type: boolean }
+            testOnly: { type: boolean }
+            shoppingCents: { type: integer, minimum: 0, maximum: 1000000 }
+            deliveryCents: { type: integer, minimum: 0, maximum: 1000000 }
+            shopperAllocationCents: { type: integer, minimum: 0, maximum: 1000000 }
+            driverAllocationCents: { type: integer, minimum: 0, maximum: 1000000 }
+            allocationStatus: { type: string, enum: [pending_fulfillment, not_applicable] }
         id:
           type: string
           format: uuid
         status:
           type: string
-          enum: [quoted]
+          enum: [building, quoted, paid, cancelled, completed]
         currency:
           type: string
           enum: [usd]
@@ -764,7 +1220,7 @@ components:
             properties:
               type:
                 type: string
-                enum: [merchant_items, delivery_fee, service_fee, dc_surcharge]
+                enum: [merchant_items, delivery_fee, service_fee, dc_surcharge, priority_shopping, priority_delivery, extra_pickup_platform_fee]
               merchantId:
                 type: string
                 format: uuid

@@ -1,0 +1,12 @@
+# Deny by default: no datasets, Git, clients/dependencies, secrets or local binaries.
+**
+!go.mod
+!go.sum
+!cmd/
+!cmd/shopstops-api/
+!cmd/shopstops-api/*.go
+!internal/
+!internal/httpapi/
+!internal/httpapi/*.go
+!internal/routing/
+!internal/routing/*.go

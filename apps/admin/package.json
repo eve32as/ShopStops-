@@ -4,9 +4,16 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "test": "node --experimental-strip-types --test tests/*.test.mjs",
+    "test:acceptance": "playwright test",
+    "test:release": "npm test && npm run lint && npm run build && npm run test:acceptance",
+    "check:release": "node --experimental-strip-types ../../scripts/check-frontend-release.mjs admin",
+    "build:release": "npm run check:release && npm run build",
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
+    "test:finance": "node --experimental-strip-types --test tests/finance.test.mjs",
+    "test:shopper": "node --experimental-strip-types --test tests/shopper.test.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -14,6 +21,7 @@
     "react-dom": "^19.3.1"
   },
   "devDependencies": {
+    "@playwright/test": "1.58.2",
     "@types/node": "^24.19.2",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",

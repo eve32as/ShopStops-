@@ -204,11 +204,12 @@ type geoPoint struct {
 }
 
 type checkoutRequest struct {
-	AnchorStoreLocationID string    `json:"anchorStoreLocationId"`
-	OrderIDs              []string  `json:"orderIds"`
-	Dropoff               geoPoint  `json:"dropoff"`
-	DeliveryWindowStart   time.Time `json:"deliveryWindowStart"`
-	DeliveryWindowEnd     time.Time `json:"deliveryWindowEnd"`
+	PriorityService       priorityChoice `json:"priorityService"`
+	AnchorStoreLocationID string         `json:"anchorStoreLocationId"`
+	OrderIDs              []string       `json:"orderIds"`
+	Dropoff               geoPoint       `json:"dropoff"`
+	DeliveryWindowStart   time.Time      `json:"deliveryWindowStart"`
+	DeliveryWindowEnd     time.Time      `json:"deliveryWindowEnd"`
 }
 
 type checkoutInvoiceLine struct {
@@ -218,6 +219,8 @@ type checkoutInvoiceLine struct {
 }
 
 type checkoutResponse struct {
+	ExtraPickup  *extraPickupSnapshot  `json:"extraPickup,omitempty"`
+	Priority     prioritySnapshot      `json:"priority"`
 	ID           string                `json:"id"`
 	Status       string                `json:"status"`
 	Currency     string                `json:"currency"`
@@ -260,11 +263,18 @@ func (s *Server) handler() http.Handler {
 	mux.Handle("POST /driver/routes/{routeId}/location", s.authorized(http.HandlerFunc(s.recordDriverLocation)))
 	mux.Handle("POST /driver/routes/{routeId}/stops/{stopId}/events", s.authorized(http.HandlerFunc(s.recordDriverStopEvent)))
 	mux.Handle("POST /checkouts", s.authorized(http.HandlerFunc(s.createCheckout)))
+	mux.Handle("GET /checkout-pricing/priority", s.authorized(http.HandlerFunc(s.priorityPricing)))
 	mux.Handle("POST /checkouts/{checkoutId}/payment", s.authorized(http.HandlerFunc(s.createCheckoutPayment)))
 	mux.Handle("GET /merchant/subscription", s.authorized(http.HandlerFunc(s.getMerchantSubscription)))
 	mux.Handle("POST /merchant/subscription/setup-intent", s.authorized(http.HandlerFunc(s.createMerchantSetupIntent)))
 	mux.Handle("POST /merchant/subscription", s.authorized(http.HandlerFunc(s.createMerchantSubscription)))
 	mux.Handle("POST /admin/checkouts/{checkoutId}/refund", s.authorized(http.HandlerFunc(s.refundCheckout)))
+	mux.Handle("POST /admin/finance/scenarios", s.authorized(http.HandlerFunc(s.financeScenario)))
+	mux.Handle("GET /admin/finance/costs", s.authorized(http.HandlerFunc(s.financeCosts)))
+	mux.Handle("POST /admin/finance/costs", s.authorized(http.HandlerFunc(s.createFinanceCost)))
+	mux.Handle("POST /admin/shopper/tasks", s.authorized(http.HandlerFunc(s.assignShopperTask)))
+	mux.Handle("GET /admin/shopper/tasks", s.authorized(http.HandlerFunc(s.shopperTasks)))
+	mux.Handle("POST /admin/shopper/tasks/{taskId}/complete", s.authorized(http.HandlerFunc(s.completeShopperTask)))
 	mux.HandleFunc("POST /webhooks/stripe", s.stripeWebhook)
 	return mux
 }
@@ -604,9 +614,8 @@ func (s *Server) createBundle(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) createCheckout(w http.ResponseWriter, r *http.Request) {
-	customerRef := strings.TrimSpace(r.Header.Get("X-ShopStops-Actor"))
-	if customerRef == "" || len(customerRef) > 200 {
-		writeError(w, http.StatusBadRequest, "authenticated customer identity is required")
+	customerRef, ok := s.authorizedActorRole(w, r, "customer")
+	if !ok {
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 32*1024)
@@ -649,9 +658,19 @@ func (s *Server) createCheckout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if request.PriorityService {
+		if _, ok := s.repo.(interface{ PriorityPricing() PriorityConfig }); !ok {
+			writeError(w, http.StatusConflict, "priority service is unavailable")
+			return
+		}
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 	response, err := s.repo.CreateCheckout(ctx, request, customerRef, idempotencyKey)
+	if errors.Is(err, ErrPriorityUnavailable) {
+		writeError(w, http.StatusConflict, "priority service is unavailable")
+		return
+	}
 	if errors.Is(err, ErrConflict) {
 		writeError(w, http.StatusConflict, "checkout orders are not eligible or key conflicts")
 		return
@@ -808,12 +827,18 @@ type PostgresRepository struct {
 	db               *sql.DB
 	deliveryFeeCents int
 	serviceFeeCents  int
+	priority         PriorityConfig
+	extraPickup      ExtraPickupConfig
 }
 
-func NewPostgresRepository(db *sql.DB, deliveryFeeCents, serviceFeeCents int) *PostgresRepository {
-	return &PostgresRepository{
+func NewPostgresRepository(db *sql.DB, deliveryFeeCents, serviceFeeCents int, priorities ...PriorityConfig) *PostgresRepository {
+	p := &PostgresRepository{
 		db: db, deliveryFeeCents: deliveryFeeCents, serviceFeeCents: serviceFeeCents,
 	}
+	if len(priorities) > 0 {
+		p.priority = priorities[0]
+	}
+	return p
 }
 
 func (p *PostgresRepository) PingContext(ctx context.Context) error {
@@ -1161,15 +1186,20 @@ func (p *PostgresRepository) CreateCheckout(
 	var checkoutID string
 	err = tx.QueryRowContext(ctx, `
 		SELECT create_unified_checkout(
-			$1, $2, $3::uuid[], $4, $5, $6, $7, $8, $9, $10
+			$1, $2, $3::uuid[], $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
 		)`,
 		customerRef, request.AnchorStoreLocationID, request.OrderIDs,
 		request.Dropoff.Latitude, request.Dropoff.Longitude,
 		request.DeliveryWindowStart, request.DeliveryWindowEnd,
 		p.deliveryFeeCents, p.serviceFeeCents, idempotencyKey,
+		request.PriorityService, p.priority.enabled, p.priority.shoppingCents, p.priority.deliveryCents,
+		p.extraPickup.enabled,
 	).Scan(&checkoutID)
 	if err != nil {
 		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "P0001" && pgErr.Message == "priority service is unavailable" {
+			return checkoutResponse{}, ErrPriorityUnavailable
+		}
 		if errors.As(err, &pgErr) && pgErr.Code == "P0001" {
 			return checkoutResponse{}, ErrConflict
 		}
@@ -1177,6 +1207,25 @@ func (p *PostgresRepository) CreateCheckout(
 	}
 
 	response := checkoutResponse{ID: checkoutID, InvoiceLines: make([]checkoutInvoiceLine, 0)}
+	var extra extraPickupSnapshot
+	err = tx.QueryRowContext(ctx, `SELECT test_only, merchandise_subtotal_cents, additional_pickups,
+	    rate_basis_points, amount_cents FROM checkout_extra_pickup_snapshots WHERE checkout_id = $1`, checkoutID).
+		Scan(&extra.TestOnly, &extra.MerchandiseSubtotalCents, &extra.AdditionalPickups, &extra.RateBasisPoints, &extra.AmountCents)
+	if err == nil {
+		response.ExtraPickup = &extra
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return checkoutResponse{}, err
+	}
+	if err := tx.QueryRowContext(ctx, `
+		SELECT selected, test_only, shopping_cents, delivery_cents,
+		       shopper_allocation_cents, driver_allocation_cents, allocation_status
+		FROM checkout_priority_snapshots WHERE checkout_id = $1`, checkoutID,
+	).Scan(&response.Priority.Selected, &response.Priority.TestOnly,
+		&response.Priority.ShoppingCents, &response.Priority.DeliveryCents,
+		&response.Priority.ShopperAllocationCents, &response.Priority.DriverAllocationCents,
+		&response.Priority.AllocationStatus); err != nil {
+		return checkoutResponse{}, err
+	}
 	if err := tx.QueryRowContext(ctx, `
 		SELECT status, currency FROM unified_checkouts WHERE id = $1`, checkoutID,
 	).Scan(&response.Status, &response.Currency); err != nil {

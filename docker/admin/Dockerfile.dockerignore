@@ -1,0 +1,26 @@
+# Only the admin build inputs and runtime config enter the context.
+**
+!apps/
+!apps/admin/
+!apps/admin/package.json
+!apps/admin/package-lock.json
+!apps/admin/tsconfig*.json
+!apps/admin/vite.config.ts
+!apps/admin/.oxlintrc.json
+!apps/admin/index.html
+!apps/admin/src/
+!apps/admin/src/**
+!apps/admin/public/
+!apps/admin/public/**
+!docker/
+!docker/admin/
+!docker/admin/nginx.conf
+# Defense in depth inside otherwise allowed directories.
+**/node_modules
+**/dist
+**/.git
+**/.env*
+**/*.pem
+**/*.key
+**/*credentials*
+**/*secrets*

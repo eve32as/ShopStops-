@@ -16,12 +16,14 @@ import (
 )
 
 type CheckoutPayment struct {
-	CheckoutID      string
-	Currency        string
-	AmountCents     int64
-	Status          string
-	PaymentIntentID string
-	IdempotencyKey  string
+	ExtraPickupTestOnly bool
+	PriorityTestOnly    bool
+	CheckoutID          string
+	Currency            string
+	AmountCents         int64
+	Status              string
+	PaymentIntentID     string
+	IdempotencyKey      string
 }
 
 type PaymentIntent struct {
@@ -83,12 +85,15 @@ type PaymentGateway interface {
 }
 
 type StripeGateway struct {
-	client *stripe.Client
+	client   *stripe.Client
+	testOnly bool
 }
 
 func NewStripeGateway(secretKey string) *StripeGateway {
-	return &StripeGateway{client: stripe.NewClient(secretKey)}
+	return &StripeGateway{client: stripe.NewClient(secretKey), testOnly: testStripeKey.MatchString(secretKey)}
 }
+
+func (g *StripeGateway) TestOnly() bool { return g.testOnly }
 
 func (g *StripeGateway) CreatePaymentIntent(
 	ctx context.Context, idempotencyKey, checkoutID string, amount int64, currency string,
@@ -128,6 +133,9 @@ func (g *StripeGateway) VerifyWebhook(
 	event, err := webhook.ConstructEvent(payload, signature, secret)
 	if err != nil {
 		return StripePaymentEvent{}, nil, err
+	}
+	if g.testOnly && event.Livemode {
+		return StripePaymentEvent{}, nil, errors.New("live event rejected by test gateway")
 	}
 	result := StripePaymentEvent{ID: event.ID, Type: string(event.Type)}
 	if isLifecycleStripeEvent(result.Type) {
@@ -375,8 +383,11 @@ func paymentIntentFromStripe(intent *stripe.PaymentIntent) PaymentIntent {
 
 func (s *Server) createCheckoutPayment(w http.ResponseWriter, r *http.Request) {
 	checkoutID := r.PathValue("checkoutId")
-	customerRef := strings.TrimSpace(r.Header.Get("X-ShopStops-Actor"))
-	if !isUUID(checkoutID) || customerRef == "" || len(customerRef) > 200 {
+	customerRef, authorized := s.authorizedActorRole(w, r, "customer")
+	if !authorized {
+		return
+	}
+	if !isUUID(checkoutID) {
 		writeError(w, http.StatusBadRequest, "valid checkout and authenticated customer are required")
 		return
 	}
@@ -398,6 +409,13 @@ func (s *Server) createCheckoutPayment(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		s.databaseError(w, err)
 		return
+	}
+	if checkout.PriorityTestOnly || checkout.ExtraPickupTestOnly {
+		gateway, ok := s.payments.(interface{ TestOnly() bool })
+		if !ok || !gateway.TestOnly() {
+			writeError(w, http.StatusServiceUnavailable, "test checkout requires a test payment gateway")
+			return
+		}
 	}
 	if checkout.AmountCents < 50 {
 		writeError(w, http.StatusConflict, "checkout total is below Stripe's minimum charge")
@@ -441,6 +459,7 @@ func (s *Server) createCheckoutPayment(w http.ResponseWriter, r *http.Request) {
 		"paymentIntentId": intent.ID, "clientSecret": intent.ClientSecret,
 		"status": intent.Status, "amountCents": intent.AmountCents,
 		"currency": intent.Currency,
+		"testOnly": checkout.PriorityTestOnly || checkout.ExtraPickupTestOnly,
 	})
 }
 
@@ -638,7 +657,11 @@ func (p *PostgresRepository) CheckoutForPayment(
 	var payment CheckoutPayment
 	var paymentIntentID sql.NullString
 	err = tx.QueryRowContext(ctx, `
-		SELECT c.id, c.currency, c.status, cp.stripe_payment_intent_id
+		SELECT c.id, c.currency, c.status, cp.stripe_payment_intent_id,
+		       EXISTS (SELECT 1 FROM checkout_priority_snapshots ps
+		               WHERE ps.checkout_id = c.id AND ps.selected AND ps.test_only),
+		       EXISTS (SELECT 1 FROM checkout_extra_pickup_snapshots es
+		               WHERE es.checkout_id = c.id AND es.test_only)
 		FROM unified_checkouts c
 		LEFT JOIN checkout_payments cp ON cp.checkout_id = c.id
 		WHERE c.id = $1 AND c.customer_ref = $2
@@ -646,6 +669,8 @@ func (p *PostgresRepository) CheckoutForPayment(
 		checkoutID, customerRef,
 	).Scan(
 		&payment.CheckoutID, &payment.Currency, &payment.Status, &paymentIntentID,
+		&payment.PriorityTestOnly,
+		&payment.ExtraPickupTestOnly,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return CheckoutPayment{}, ErrNotFound

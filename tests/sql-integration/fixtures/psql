@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$FAKE_PSQL_LOG"
+if [[ "$*" == *'-Atc '* ]]; then
+  [[ "${FAKE_PSQL_FAIL:-}" != preflight ]] || exit 17
+  printf '%s\n' "${FAKE_PSQL_COUNT:-0}"
+elif [[ -n "${FAKE_PSQL_FAIL:-}" && "$*" == *"$FAKE_PSQL_FAIL"* ]]; then
+  exit 17
+fi
