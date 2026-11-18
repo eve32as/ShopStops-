@@ -28,6 +28,13 @@ import { NativeSignIn } from "../src/NativeSignIn";
 import { AddressAutocomplete } from "../src/AddressAutocomplete";
 import { DriverRouteMap } from "../src/DriverRouteMap";
 import { getTrafficAwareETAs, type RouteCoordinate, type TrafficETA } from "../src/googleMaps";
+import {
+  cartSummary,
+  customerStages,
+  deliveryCoordinates,
+  money,
+  type CustomerStage,
+} from "../src/workflow";
 
 type Role = "Shopper" | "In-store Shopper" | "Driver" | "Merchant";
 type NearbyMerchant = {
@@ -199,6 +206,7 @@ function isValidCatalogVolume(value: number) {
 export default function HomeScreen() {
   const isFocused = useIsFocused();
   const [role, setRole] = useState<Role>("Shopper");
+  const [customerStage, setCustomerStage] = useState<CustomerStage>("Browse");
   const [appActive, setAppActive] = useState(AppState.currentState === "active");
   const [connectionOpen, setConnectionOpen] = useState(true);
   const [gatewayUrl, setGatewayUrl] = useState(configuredGatewayUrl);
@@ -247,6 +255,7 @@ export default function HomeScreen() {
   const [trafficETAError, setTrafficETAError] = useState("");
   const [trafficETAUpdatedAt, setTrafficETAUpdatedAt] = useState("");
   const [tracking, setTracking] = useState(false);
+  const [paymentStatus, setPaymentStatus] = useState("");
   const [deliveryWindow, setDeliveryWindow] = useState<DeliveryWindow>(() => createDeliveryWindow());
   const basketWindow = useRef<DeliveryWindow | null>(null);
   const orderAttempt = useRef<{ key: string; fingerprint: string; body: CreateOrderBody } | null>(null);
@@ -281,6 +290,13 @@ export default function HomeScreen() {
     () => [...new Set(orderIds.split(/[\s,]+/).map((id) => id.trim()).filter(isUUID))],
     [orderIds],
   );
+  const cart = useMemo(() => {
+    try {
+      return cartSummary(catalog, quantities);
+    } catch {
+      return null;
+    }
+  }, [catalog, quantities]);
 
   useEffect(() => {
     if (!route || role !== "Driver" || !googleMapsApiKey) {
@@ -495,6 +511,8 @@ export default function HomeScreen() {
       setOrderProgress({});
       terminalOrders.current.clear();
       setCheckout(null);
+      setPaymentStatus("");
+      setCustomerStage("Browse");
       setRoute(null);
       setRouteId("");
       setAssignedRoutes([]);
@@ -516,6 +534,10 @@ export default function HomeScreen() {
   }, [gatewayUrl, sessionToken, orderIds]);
 
   async function findNearby() {
+    if (!isUUID(anchorStore.trim())) {
+      setMessage("Enter a valid anchor store location ID.");
+      return;
+    }
     const results = await run(() =>
       apiRequest<NearbyMerchant[]>(
         settings,
@@ -531,8 +553,8 @@ export default function HomeScreen() {
 
   async function loadCatalog(storeID = catalogStoreID) {
     const normalizedID = storeID.trim();
-    if (!normalizedID) {
-      setMessage("Enter a store location ID to browse its catalog.");
+    if (!isUUID(normalizedID)) {
+      setMessage("Enter a valid store location ID to browse its catalog.");
       return;
     }
     const results = await run(() =>
@@ -553,14 +575,18 @@ export default function HomeScreen() {
       setMessage("Start a new basket before creating another order.");
       return;
     }
-    const lat = Number(latitude);
-    const lon = Number(longitude);
+    let coordinates: { latitude: number; longitude: number };
+    try {
+      coordinates = deliveryCoordinates(latitude, longitude);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Enter valid delivery coordinates.");
+      return;
+    }
     const items = catalog
       .filter((item) => (quantities[item.id] ?? 0) > 0)
       .map((item) => ({ catalogItemId: item.id, quantity: quantities[item.id] }));
     if (
-      !catalogStoreID.trim() || !Number.isFinite(lat) || lat < -90 || lat > 90 ||
-      !Number.isFinite(lon) || lon < -180 || lon > 180 || items.length === 0
+      !isUUID(catalogStoreID.trim()) || items.length === 0
     ) {
       setMessage("Choose catalog items and enter valid delivery coordinates.");
       return;
@@ -570,7 +596,7 @@ export default function HomeScreen() {
     setDeliveryWindow(window);
     const body: CreateOrderBody = {
       storeLocationId: catalogStoreID.trim(),
-      dropoff: { latitude: lat, longitude: lon },
+      dropoff: coordinates,
       deliveryWindowStart: window.start,
       deliveryWindowEnd: window.end,
       items,
@@ -599,7 +625,8 @@ export default function HomeScreen() {
         saveOrderIDs([...currentIDs, result.id].join(", "));
       }
       setQuantities({});
-      setMessage(`Order created · $${(result.itemSubtotalCents / 100).toFixed(2)} items.`);
+      setMessage(`Order created · ${money(result.itemSubtotalCents)} items.`);
+      setCustomerStage("Checkout");
     }
   }
 
@@ -608,9 +635,14 @@ export default function HomeScreen() {
       .split(/[\s,]+/)
       .map((id) => id.trim())
       .filter(Boolean);
-    const lat = Number(latitude);
-    const lon = Number(longitude);
-    if (!anchorStore.trim() || ids.length === 0 || !Number.isFinite(lat) || !Number.isFinite(lon)) {
+    let coordinates: { latitude: number; longitude: number };
+    try {
+      coordinates = deliveryCoordinates(latitude, longitude);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Enter valid delivery coordinates.");
+      return;
+    }
+    if (!isUUID(anchorStore.trim()) || ids.length === 0 || ids.some((id) => !isUUID(id))) {
       setMessage("Enter the anchor store, order IDs, and delivery coordinates.");
       return;
     }
@@ -623,7 +655,7 @@ export default function HomeScreen() {
         body: {
           anchorStoreLocationId: anchorStore.trim(),
           orderIds: ids,
-          dropoff: { latitude: lat, longitude: lon },
+          dropoff: coordinates,
           deliveryWindowStart: window.start,
           deliveryWindowEnd: window.end,
         },
@@ -639,6 +671,7 @@ export default function HomeScreen() {
     );
     if (result) {
       checkoutAttempt.current = null;
+      setPaymentStatus("");
       setCheckout(result);
     }
   }
@@ -658,6 +691,8 @@ export default function HomeScreen() {
     setOrderProgress({});
     terminalOrders.current.clear();
     setCheckout(null);
+    setPaymentStatus("");
+    setCustomerStage("Browse");
     setQuantities({});
     setMessage("Started a new basket.");
   }
@@ -678,17 +713,31 @@ export default function HomeScreen() {
       setMessage("Payment details did not match this checkout. Please try again or contact support.");
       return;
     }
-    const initialized = await initPaymentSheet({
-      merchantDisplayName: "ShopStops",
-      paymentIntentClientSecret: intent.clientSecret,
-    });
-    if (initialized.error) {
-      setMessage(initialized.error.message);
-      return;
+    setBusy(true);
+    setMessage("");
+    setPaymentStatus("");
+    try {
+      const initialized = await initPaymentSheet({
+        merchantDisplayName: "ShopStops",
+        paymentIntentClientSecret: intent.clientSecret,
+      });
+      if (initialized.error) {
+        setMessage("Secure payment could not be prepared. Your checkout is still available to retry.");
+        return;
+      }
+      const presented = await presentPaymentSheet();
+      if (presented.error) {
+        setMessage("Payment was not completed. Your checkout is still available to retry.");
+        return;
+      }
+      setPaymentStatus("Payment submitted · awaiting Stripe confirmation.");
+      setMessage("Payment submitted. Your order updates when Stripe confirms it.");
+      setCustomerStage("Status");
+    } catch {
+      setMessage("Payment could not be completed. Your checkout is still available to retry.");
+    } finally {
+      setBusy(false);
     }
-    const presented = await presentPaymentSheet();
-    if (presented.error) setMessage(presented.error.message);
-    else setMessage("Payment submitted. Your order updates when Stripe confirms it.");
   }
 
   async function loadRoute(routeID = routeId.trim()) {
@@ -1446,6 +1495,30 @@ export default function HomeScreen() {
 
         {role === "Shopper" ? (
           <>
+            <View style={styles.customerStagePicker} accessibilityRole="tablist" accessibilityLabel="Customer order steps">
+              {customerStages.map((stage) => (
+                <Pressable
+                  accessibilityRole="tab"
+                  accessibilityState={{ selected: customerStage === stage }}
+                  key={stage}
+                  onPress={() => setCustomerStage(stage)}
+                  style={[
+                    styles.customerStageButton,
+                    customerStage === stage && styles.customerStageButtonActive,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.customerStageText,
+                      customerStage === stage && styles.customerStageTextActive,
+                    ]}
+                  >
+                    {stage}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+            {customerStage === "Browse" ? (
             <View style={styles.card}>
               <Text style={styles.sectionEyebrow}>01 / DISCOVER</Text>
               <Text style={styles.sectionTitle}>Good things, close by.</Text>
@@ -1521,8 +1594,16 @@ export default function HomeScreen() {
                   />
                 </View>
               ))}
+              <ActionButton
+                disabled={busy || !catalogStoreID}
+                label="Review cart"
+                onPress={() => setCustomerStage("Cart")}
+                secondary
+              />
             </View>
+            ) : null}
 
+            {customerStage === "Cart" ? (
             <View style={styles.card}>
               <Text style={styles.sectionEyebrow}>02 / BUILD YOUR ORDER</Text>
               <Text style={styles.sectionTitle}>Choose items from the block.</Text>
@@ -1544,9 +1625,7 @@ export default function HomeScreen() {
                     <View style={styles.resultCopy}>
                       <Text style={styles.resultTitle}>{item.name}</Text>
                       {item.description ? <Text style={styles.resultSub}>{item.description}</Text> : null}
-                      <Text style={styles.resultSub}>
-                        ${(item.unitPriceCents / 100).toFixed(2)}
-                      </Text>
+                      <Text style={styles.resultSub}>{money(item.unitPriceCents)}</Text>
                     </View>
                     <View style={styles.quantityControl}>
                       <Pressable
@@ -1574,6 +1653,25 @@ export default function HomeScreen() {
                   </View>
                 );
               })}
+              {catalog.length === 0 ? (
+                <Text style={styles.tinyNote}>Choose a store in Browse and load its catalog to add items.</Text>
+              ) : null}
+              <View style={styles.checkoutBox}>
+                <Text style={styles.checkoutLabel}>CURRENT STORE CART</Text>
+                <View style={styles.invoiceRow}>
+                  <Text style={styles.invoiceLabel}>Items</Text>
+                  <Text style={styles.invoiceAmount}>{cart?.count ?? "Unavailable"}</Text>
+                </View>
+                <View style={[styles.invoiceRow, styles.totalRow]}>
+                  <Text style={styles.totalLabel}>Merchandise subtotal</Text>
+                  <Text style={styles.totalValue}>
+                    {cart ? money(cart.cents) : "Unavailable"}
+                  </Text>
+                </View>
+                <Text style={styles.tinyNote}>
+                  Final delivery and service charges are calculated by checkout.
+                </Text>
+              </View>
               <AddressAutocomplete
                 apiKey={googleMapsApiKey}
                 disabled={Boolean(checkout) || Boolean(orderIds.trim())}
@@ -1589,12 +1687,14 @@ export default function HomeScreen() {
                 <Field editable={!checkout && !orderIds.trim()} label="Drop-off longitude" keyboardType="decimal-pad" onChangeText={(value) => { setLongitude(value); setDropoffAddress(""); }} value={longitude} />
               </View>
               <ActionButton
-                disabled={busy || Boolean(checkout) || catalog.length === 0}
-                label="Create order from selected items"
+                disabled={busy || Boolean(checkout) || catalog.length === 0 || !cart?.count}
+                label="Save store order and continue"
                 onPress={() => void createCustomerOrder()}
               />
             </View>
+            ) : null}
 
+            {customerStage === "Checkout" ? (
             <View style={styles.card}>
               <Text style={styles.sectionEyebrow}>03 / CHECKOUT</Text>
               <Text style={styles.sectionTitle}>Bring the whole block together.</Text>
@@ -1615,58 +1715,34 @@ export default function HomeScreen() {
                 }}
                 value={orderIds}
               />
-              {trackedOrderIDs.map((orderID) => {
-                const progress = orderProgress[orderID];
-                return (
-                  <View key={orderID} style={styles.orderProgressCard} accessibilityLiveRegion="polite">
-                    <View style={styles.orderProgressHeader}>
-                      <Text style={styles.orderProgressStatus}>
-                        {progress?.status ?? "Waiting for order updates"}
-                      </Text>
-                      <Text style={styles.orderProgressLive}>
-                        {terminalOrders.current.has(orderID) ? "COMPLETE" : "LIVE"}
-                      </Text>
-                    </View>
-                    <Text style={styles.tinyNote}>Order · {orderID}</Text>
-                    {progress?.error ? <Text style={styles.orderProgressError}>{progress.error}</Text> : null}
-                    {progress?.events.slice(-3).reverse().map((event) => (
-                      <Text key={event.id} style={styles.orderProgressEvent}>
-                        {event.type.replaceAll(".", " ").replaceAll("_", " ")} ·{" "}
-                        {new Date(event.createdAt).toLocaleTimeString([], {
-                          hour: "numeric", minute: "2-digit",
-                        })}
-                      </Text>
-                    ))}
-                  </View>
-                );
-              })}
+              {trackedOrderIDs.length === 0 ? (
+                <Text style={styles.tinyNote}>Save an order from Cart before creating a checkout.</Text>
+              ) : null}
               <ActionButton
-                disabled={busy || Boolean(checkout)}
+                disabled={busy || Boolean(checkout) || trackedOrderIDs.length === 0}
                 label={checkout ? "Basket created" : "Create basket"}
                 onPress={() => void createCheckout()}
               />
+              {!checkout && trackedOrderIDs.length > 0 ? (
+                <ActionButton
+                  disabled={busy}
+                  label="Add items from another store"
+                  onPress={() => setCustomerStage("Browse")}
+                  secondary
+                />
+              ) : null}
               {checkout ? (
                 <View style={styles.checkoutBox}>
                   <Text style={styles.checkoutLabel}>BASKET {checkout.id}</Text>
                   {checkout.invoiceLines.map((line, index) => (
                     <View key={`${line.type}-${index}`} style={styles.invoiceRow}>
                       <Text style={styles.invoiceLabel}>{line.type.replaceAll("_", " ")}</Text>
-                      <Text style={styles.invoiceAmount}>
-                        {(line.amountCents / 100).toLocaleString("en-US", {
-                          style: "currency",
-                          currency: checkout.currency.toUpperCase(),
-                        })}
-                      </Text>
+                      <Text style={styles.invoiceAmount}>{money(line.amountCents, checkout.currency)}</Text>
                     </View>
                   ))}
                   <View style={[styles.invoiceRow, styles.totalRow]}>
                     <Text style={styles.totalLabel}>Total</Text>
-                    <Text style={styles.totalValue}>
-                      {(checkout.totalCents / 100).toLocaleString("en-US", {
-                        style: "currency",
-                        currency: checkout.currency.toUpperCase(),
-                      })}
-                    </Text>
+                    <Text style={styles.totalValue}>{money(checkout.totalCents, checkout.currency)}</Text>
                   </View>
                   <ActionButton
                     disabled={busy || !stripeKeyConfigured}
@@ -1674,6 +1750,12 @@ export default function HomeScreen() {
                     onPress={() => void payCheckout()}
                   />
                   <Text style={styles.tinyNote}>Checkout ID · {checkout.id}</Text>
+                  <ActionButton
+                    disabled={busy}
+                    label="View order status"
+                    onPress={() => setCustomerStage("Status")}
+                    secondary
+                  />
                 </View>
               ) : null}
               {basketWindow.current || orderIds.trim() || checkout ? (
@@ -1685,6 +1767,65 @@ export default function HomeScreen() {
                 />
               ) : null}
             </View>
+            ) : null}
+
+            {customerStage === "Status" ? (
+              <View style={styles.card}>
+                <Text style={styles.sectionEyebrow}>04 / ORDER STATUS</Text>
+                <Text style={styles.sectionTitle}>Your latest order updates.</Text>
+                <Text style={styles.helpText}>
+                  These updates come from the order event service. Payment remains pending until Stripe confirms it.
+                </Text>
+                {checkout ? (
+                  <View style={styles.statusCard}>
+                    <Text style={styles.statusWord}>Checkout {checkout.status.replaceAll("_", " ")}</Text>
+                    <Text style={styles.resultSub}>
+                      {money(checkout.totalCents, checkout.currency)} · {checkout.id}
+                    </Text>
+                    <Text style={styles.resultSub}>
+                      {paymentStatus || "Payment has not been submitted from this device."}
+                    </Text>
+                  </View>
+                ) : null}
+                {trackedOrderIDs.length === 0 ? (
+                  <Text style={styles.tinyNote}>No saved orders yet. Browse a store and add items to begin.</Text>
+                ) : null}
+                {trackedOrderIDs.map((orderID) => {
+                  const progress = orderProgress[orderID];
+                  return (
+                    <View key={orderID} style={styles.orderProgressCard} accessibilityLiveRegion="polite">
+                      <View style={styles.orderProgressHeader}>
+                        <Text style={styles.orderProgressStatus}>
+                          {progress?.status ?? "Waiting for order updates"}
+                        </Text>
+                        <Text style={styles.orderProgressLive}>
+                          {terminalOrders.current.has(orderID) ? "COMPLETE" : "UPDATES"}
+                        </Text>
+                      </View>
+                      <Text style={styles.tinyNote}>Order · {orderID}</Text>
+                      {progress?.error ? <Text style={styles.orderProgressError}>{progress.error}</Text> : null}
+                      {progress?.events.slice(-5).reverse().map((event) => (
+                        <Text key={event.id} style={styles.orderProgressEvent}>
+                          {event.type.replaceAll(".", " ").replaceAll("_", " ")} ·{" "}
+                          {new Date(event.createdAt).toLocaleTimeString([], {
+                            hour: "numeric", minute: "2-digit",
+                          })}
+                        </Text>
+                      ))}
+                      {!progress?.events.length && !progress?.error ? (
+                        <Text style={styles.tinyNote}>No order events have been received yet.</Text>
+                      ) : null}
+                    </View>
+                  );
+                })}
+                <ActionButton
+                  disabled={busy}
+                  label="Return to checkout"
+                  onPress={() => setCustomerStage("Checkout")}
+                  secondary
+                />
+              </View>
+            ) : null}
           </>
         ) : null}
 
@@ -2148,8 +2289,8 @@ export default function HomeScreen() {
               <Text style={styles.sectionEyebrow}>MERCHANT / SUBSCRIPTION</Text>
               <Text style={styles.sectionTitle}>Your storefront, in good standing.</Text>
               <Text style={styles.helpText}>
-                Manage the flat $199 monthly ShopStops subscription. A successful invoice activates
-                storefront visibility.
+                Review your configured monthly amount, add a payment method, then start the subscription.
+                Storefront visibility follows a successful invoice.
               </Text>
               <View style={styles.actionRow}>
                 <ActionButton disabled={busy} label="Refresh billing status" onPress={() => void refreshSubscription()} />
@@ -2170,10 +2311,16 @@ export default function HomeScreen() {
               ) : null}
               <ActionButton
                 disabled={busy || !subscription?.paymentMethodReady}
-                label="Start $199 monthly subscription"
+                label={subscription
+                  ? `Start ${money(subscription.monthlyAmountCents, subscription.currency)} monthly subscription`
+                  : "Refresh billing status to continue"}
                 onPress={() => void startSubscription()}
               />
-              <Text style={styles.tinyNote}>USD · billed monthly through Stripe</Text>
+              <Text style={styles.tinyNote}>
+                {subscription
+                  ? `${subscription.currency.toUpperCase()} · billed monthly through Stripe`
+                  : "Billing status must be loaded before starting a subscription."}
+              </Text>
             </View>
           </>
         ) : null}
@@ -2271,6 +2418,11 @@ const styles = StyleSheet.create({
   roleButtonActive: { backgroundColor: "#fff", elevation: 1 },
   roleText: { color: "#64756e", fontSize: 12, fontWeight: "700" },
   roleTextActive: { color: "#19352f" },
+  customerStagePicker: { flexDirection: "row", gap: 5, marginTop: 14, padding: 5, backgroundColor: "#e9e8e2", borderRadius: 13 },
+  customerStageButton: { flex: 1, alignItems: "center", paddingVertical: 10, borderRadius: 9 },
+  customerStageButtonActive: { backgroundColor: "#fff", elevation: 1 },
+  customerStageText: { color: "#64756e", fontSize: 11, fontWeight: "700" },
+  customerStageTextActive: { color: "#19352f" },
   connectionCard: { backgroundColor: "#fff", borderRadius: 16, padding: 15, marginTop: 14, borderWidth: 1, borderColor: "#ecece7" },
   connectionHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   connectionCopy: { flex: 1 },
