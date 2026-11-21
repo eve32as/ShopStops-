@@ -1,8 +1,41 @@
 # Frontend UX and hardening status
 
-Updated 2026-11-17. This is critical-path hardening of the existing frontends,
+Updated 2026-11-18. This is critical-path hardening of the existing frontends,
 not approval for live payments, deployment, or an app-store launch. Existing
 backend authentication, role enforcement and payment feature gates are unchanged.
+
+## Mobile workflow completion follow-up — 2026-11-18
+
+- Customer: saved-order review includes IDs, store, item count, merchandise total
+  and returned state. Delivery windows are editable before saving orders and
+  validated against API limits. Saved-order windows are preserved for checkout.
+  Uncertain order/basket requests lock edits and retain their original key/body;
+  definite 400/401/403/404/422 rejections allow correction. Conflicts, rate limits,
+  server errors and transport failures retain the attempt for reconciliation.
+- Successful native-sheet submission opens Status as **confirmation pending**,
+  never paid. Unknown outcomes block repeat payment until explicit support
+  reconciliation; a cancelled sheet can reopen the same basket's payment.
+  Starting another basket requires acknowledging that local clearing cancels
+  nothing on the server. No customer status-read/history/tracking endpoint exists.
+- Driver: ordered arrival/completion actions require an in-progress route;
+  terminal progress/refresh stops GPS, and terminal refresh releases a pending
+  stop lock. External directions target only the next actual stop. GPS shows the
+  last acknowledged position time and safe reporting errors, not claimed tracking.
+- Merchant: API-aligned text/price/volume validation, locked pending create
+  drafts and stable retries, busy form/selection locks, canonical saved drafts,
+  and billing confirmation messages retained after refresh. Availability changes
+  still do not silently submit unsaved item edits.
+- Verified **47/47 mobile helper/transport tests**, **16/16 rendered mobile
+  workflow acceptance tests**, and TypeScript/whitespace checks. Acceptance loads
+  the actual React screen using test-only DOM/native-location/Stripe adapters,
+  simulated APIs and installed Chrome. It is not a native layout, accessibility,
+  permission or payment certification. No local installs/native builds, backend
+  changes, migrations, cloud operations, commits or deployment were performed.
+  The existing unprivileged CI gate now includes this suite; CI has not run here.
+
+See [mobile acceptance scope and command](../apps/mobile/acceptance/README.md).
+Real identity integration, authorized service E2E and iOS/Android validation
+remain required before launch.
 
 ## Guided UX implemented on 2026-11-17
 

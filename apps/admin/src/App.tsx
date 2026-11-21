@@ -7,6 +7,7 @@ import ShopperOrders from './ShopperOrders'
 import { adminConfiguration } from './config.ts'
 import { dollars } from './financeInputs'
 import { workspaceFromHash, workspaces } from './workspaces'
+import AdminOverview from './AdminOverview'
 
 const configuration = adminConfiguration(import.meta.env.VITE_API_URL, import.meta.env.DEV)
 
@@ -38,12 +39,14 @@ function App() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [revision, setRevision] = useState(0)
+  const [refundHistory, setRefundHistory] = useState<{ kind: string; checkoutId: string; refunds: { id: string; stripeRefundId: string | null; status: string; amountCents: number; reason: string; attemptedAt: string; updatedAt: string }[] } | null>(null)
   const { session } = useRequestSession(gatewayUrl, sessionToken)
 
   function changeSession(url: string, token: string) {
     session.close()
     setGatewayUrl(url); setSessionToken(token); setRevision(value => value + 1)
     setRefund(null); setError(''); setCheckoutId(''); setReason('requested_by_customer'); setIdempotencyKey(''); setLoading(false)
+    setRefundHistory(null)
   }
 
   async function submitRefund(event: FormEvent<HTMLFormElement>) {
@@ -110,6 +113,24 @@ function App() {
     }
   }
 
+  async function loadRefundStatus() {
+    setError(''); setRefundHistory(null)
+    const id = checkoutId.trim()
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) {
+      setError('Enter a valid checkout UUID to load refund status.')
+      return
+    }
+    const scope = session.begin(); if (!scope) return
+    setLoading(true)
+    try {
+      const url = gatewayURL(gatewayUrl, import.meta.env.DEV)
+      url.pathname = `${url.pathname.replace(/\/+$/, '')}/admin/checkouts/${encodeURIComponent(id)}/refund`
+      setRefundHistory(await requestJSON(url, sessionToken, { signal: scope.signal, method: 'GET', redirect: 'error' }))
+    } catch (requestError) {
+      if (!scope.signal.aborted) setError(requestError instanceof Error ? requestError.message : 'Refund status could not be loaded.')
+    } finally { session.finish(scope); if (!scope.signal.aborted) setLoading(false) }
+  }
+
   if (configuration.error) return <main className="shell"><div className="alert alert-error" role="alert">{configuration.error}</div></main>
 
   return (
@@ -148,11 +169,7 @@ function App() {
           </div>
 
           <section hidden={workspace !== 'overview'} aria-label="Workspace overview">
-            <div className="notice">No live operational KPIs are loaded. These are workflow entry points, not revenue, payment or assignment totals.</div>
-            <div className="overview-grid">
-              {workspaces.filter(item => item.id !== 'overview').map(item => <a key={item.id} className="overview-card workspace-link" href={`#${item.id}`}><div className="eyebrow">{item.id === 'refund-desk' ? '01 / RESOLVE' : item.id === 'finance-planning' ? '02 / PLAN' : '03 / VERIFY'}</div><h2>{item.label} →</h2><p>{item.description}</p></a>)}
-            </div>
-            <section className="panel role-guide"><h2>Who does what</h2><p><strong>Customer:</strong> buys orders in mobile. <strong>Driver:</strong> follows a dispatch-assigned route. <strong>Merchant:</strong> manages their own catalog and billing.</p><p><strong>Worker shopping:</strong> managed by partner store; not available in the mobile app. Authorized admins record supervised assignments and verified completions here; earnings stay pending review, never paid by this UI.</p></section>
+            <AdminOverview gatewayUrl={gatewayUrl} sessionToken={sessionToken} />
           </section>
 
           <details className="panel operator-settings">
@@ -226,6 +243,14 @@ function App() {
                 {idempotencyKey && <p role="status">Retry key retained in memory. Retry unchanged; reconcile an uncertain outcome before editing these details.</p>}
                 </fieldset>
               </form>
+              <div className="panel-footer">
+                <button className="refresh-button" disabled={loading} type="button" onClick={loadRefundStatus}>
+                  {loading ? 'Loading refund status…' : 'Refresh refund status'}
+                </button>
+                {refundHistory ? <div className="refund-history" role="status">
+                  {refundHistory.refunds.length === 0 ? <p>No refund records for this checkout.</p> : refundHistory.refunds.map(item => <article className="notice" key={item.id}><strong>{item.status} · {dollars(item.amountCents)} · {item.reason}</strong><p>Local {item.id}</p>{item.stripeRefundId ? <p>Stripe {item.stripeRefundId}</p> : <p>Stripe refund ID pending reconciliation</p>}<p>Attempted {item.attemptedAt} · updated {item.updatedAt}</p></article>)}
+                </div> : null}
+              </div>
             </section>
 
             <aside className="side-column">

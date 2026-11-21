@@ -1,6 +1,8 @@
 {
   "name": "shopstops-mobile",
   "version": "1.0.0",
+  "private": true,
+  "type": "module",
   "main": "expo-router/entry",
   "dependencies": {
     "@stripe/stripe-react-native": "0.81.0",
@@ -10,7 +12,7 @@
     "expo-status-bar": "~58.0.3",
     "react": "19.3.0",
     "react-dom": "19.3.0",
-    "react-native": "0.88.0"
+    "react-native": "0.88.1"
   },
   "overrides": {
     "uuid": "^11.1.1"
@@ -21,11 +23,11 @@
   },
   "scripts": {
     "test": "node --experimental-strip-types --test tests/*.test.mjs",
+    "test:acceptance": "node ../admin/node_modules/@playwright/test/cli.js test --config playwright.config.mjs",
     "check:release": "node --experimental-strip-types ../../scripts/check-frontend-release.mjs mobile",
     "start": "expo start",
     "android": "expo run:android",
     "ios": "expo run:ios",
     "typecheck": "tsc --noEmit"
-  },
-  "private": true
+  }
 }

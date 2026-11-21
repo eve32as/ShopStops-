@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="data:," />
+    <title>Mobile rendered-screen acceptance — simulated native adapters</title>
+    <script>
+      // Vite 8 normally initializes dev defines via its WebSocket client. This
+      // isolated harness removes that client and supplies only synthetic values.
+      globalThis.__DEV__ = true;
+      globalThis.process = { env: { NODE_ENV: 'development', EXPO_PUBLIC_API_URL: '', EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY: 'pk_test_fixture' } };
+    </script>
+    <style>
+      body { margin: 0; font: 16px system-ui; color: #19352f; background: #f6f5f1; }
+      main { max-width: 760px; margin: auto; padding: 20px; }
+      button, input { font: inherit; margin: 5px 0; padding: 10px; max-width: 100%; box-sizing: border-box; }
+      button { cursor: pointer; } button:disabled { cursor: default; opacity: .5; }
+      input { display: block; width: 100%; } [role=heading] { font-weight: bold; margin-top: 12px; }
+      [role=dialog], [role=alertdialog] { position: fixed; inset: 12px; overflow: auto; padding: 20px; background: white; border: 3px solid #19352f; z-index: 10; }
+    </style>
+  </head>
+  <body><div id="root"></div><script type="module" src="/main.tsx"></script></body>
+</html>

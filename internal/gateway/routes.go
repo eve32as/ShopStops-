@@ -35,6 +35,8 @@ var operations = []operation{
 	{"POST", "/admin/shopper/tasks", "admin", 8 * 1024},
 	{"GET", "/admin/shopper/tasks", "admin", 0},
 	{"POST", "/admin/shopper/tasks/{id}/complete", "admin", 8 * 1024},
+	{"GET", "/admin/overview", "admin", 0},
+	{"GET", "/admin/checkouts/{id}/refund", "admin", 0},
 	{"POST", "/checkouts", "blocked", 0},
 	{"POST", "/checkouts/{id}/payment", "blocked", 0},
 	{"GET", "/driver/routes/{id}", "blocked", 0},

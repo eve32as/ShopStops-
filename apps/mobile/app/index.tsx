@@ -3,9 +3,11 @@ import { useStripe } from "@stripe/stripe-react-native";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Image,
+  Alert,
   AppState,
   ActivityIndicator,
   KeyboardAvoidingView,
+  Linking,
   Platform,
   Pressable,
   ScrollView,
@@ -19,7 +21,7 @@ import { mobileConfiguration } from "../src/config";
 import { LocationSharing } from "../src/locationSharing";
 import { isTestPublishableKey, priorityPricing, type PriorityPricing } from "../src/priority";
 import { ActionButton, Field, StateCard } from '../src/WorkspaceUI';
-import { cartSummary, customerStages, deliveryCoordinates, money, readableDate, requiredUUID, type CustomerStage } from '../src/workflow';
+import { cartSummary, customerStages, defaultDeliveryWindow, definiteRejection, deliveryCoordinates, deliveryWindow as validateWindow, merchantCatalogValues, money, nextRouteStop, readableDate, requiredUUID, retainAttempt, routeCanProgress, type CustomerStage } from '../src/workflow';
 
 type Role = "Customer" | "Driver" | "Merchant";
 type NearbyMerchant = {
@@ -57,6 +59,7 @@ type CreateOrderBody = {
   deliveryWindowEnd: string;
   items: { catalogItemId: string; quantity: number }[];
 };
+type SavedOrder = { id: string; status: string; itemSubtotalCents: number; storeLocationId: string; itemCount: number };
 type Checkout = {
   priority?: { selected: boolean; testOnly: boolean };
   id: string;
@@ -137,6 +140,8 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
   const [catalogStoreID, setCatalogStoreID] = useState("");
   const [quantities, setQuantities] = useState<Record<string, number>>({});
   const [checkout, setCheckout] = useState<Checkout | null>(null);
+  const [savedOrders, setSavedOrders] = useState<SavedOrder[]>([]);
+  const [paymentState, setPaymentState] = useState<'not_started' | 'submitted' | 'uncertain'>('not_started');
   const [priorityPrice, setPriorityPrice] = useState<PriorityPricing | null>(null);
   const [prioritySelected, setPrioritySelected] = useState(false);
   const [pricingRefresh, setPricingRefresh] = useState(0);
@@ -156,19 +161,15 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
   const [longitude, setLongitude] = useState("");
   const [routeId, setRouteId] = useState("");
   const [tracking, setTracking] = useState(false);
+  const [lastLocationReport, setLastLocationReport] = useState<string | null>(null);
+  const [locationError, setLocationError] = useState('');
   const [connectionStatus, setConnectionStatus] = useState('Not verified · send a request to check access');
   const inFlight = useRef(false);
   const paymentBusy = useRef(false);
   const locationSharing = useRef(new LocationSharing<Location.LocationObject>());
   const stopAttempt = useRef<{ fingerprint: string; body: string } | null>(null);
   const setupAttempt = useRef<string | null>(null);
-  const [deliveryWindow] = useState(() => {
-    const start = new Date(Date.now() + 15 * 60 * 1000);
-    return {
-      start: start.toISOString(),
-      end: new Date(start.getTime() + 2 * 60 * 60 * 1000).toISOString(),
-    };
-  });
+  const [deliveryWindow, setDeliveryWindow] = useState(defaultDeliveryWindow);
   const orderAttempt = useRef<{ key: string; fingerprint: string; body: CreateOrderBody } | null>(null);
   const merchantCatalogAttempt = useRef<{
     key: string;
@@ -183,6 +184,7 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
   } | null>(null);
   const checkoutAttempt = useRef<{
     key: string;
+    fingerprint: string;
     body: {
       priorityService: boolean;
       anchorStoreLocationId: string;
@@ -207,7 +209,7 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
     return () => { active = false; };
   }, [settings, pricingRefresh, role, gatewayUrl, sessionToken]);
 
-  const run = useCallback(async <T,>(action: () => Promise<T>) => {
+  const run = useCallback(async <T,>(action: () => Promise<T>, onRejected?: () => void) => {
     if (inFlight.current) return undefined;
     inFlight.current = true;
     const scope = connection.scope;
@@ -221,6 +223,7 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
       return result;
     } catch (error) {
       if (!scope.signal.aborted) {
+        if (error instanceof ApiError && definiteRejection(error)) onRejected?.();
         setMessage(error instanceof ApiError ? error.message : "The request could not be completed.");
         setConnectionStatus(error instanceof ApiError && error.status ? `Gateway rejected request (${error.status})` : 'Gateway unavailable or request invalid');
       }
@@ -253,10 +256,11 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
     let active = true;
     const sharing = locationSharing.current;
     const timer = setInterval(() => {
-      if (!routeId) return;
-      void sharing.report((current, signal) => apiRequest(
+      if (!route) return;
+      void sharing.report(async (current, signal) => {
+        await apiRequest(
         { ...settings, signal },
-        `driver/routes/${encodeURIComponent(routeId)}/location`,
+        `driver/routes/${encodeURIComponent(route.id)}/location`,
         {
           method: "POST",
           body: JSON.stringify({
@@ -268,12 +272,17 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
             },
           }),
         },
-      )).catch((error: unknown) => {
-        if (active && !settings.signal?.aborted) setMessage(error instanceof ApiError ? error.message : "GPS update failed.");
+        );
+        if (active && !signal.aborted && !settings.signal?.aborted) {
+          setLastLocationReport(new Date(current.timestamp).toISOString());
+          setLocationError('');
+        }
+      }).catch((error: unknown) => {
+        if (active && !settings.signal?.aborted) setLocationError(error instanceof ApiError ? error.message : 'GPS update failed.');
       });
     }, 5000);
     return () => { active = false; clearInterval(timer); };
-  }, [routeId, settings, tracking, role]);
+  }, [route?.id, settings, tracking, role]);
 
   async function findNearby() {
     try { requiredUUID(anchorStore, 'anchor store'); } catch (error) { setMessage((error as Error).message); return; }
@@ -287,6 +296,10 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
   }
 
   async function loadCatalog(storeID = catalogStoreID) {
+    if (orderAttempt.current || checkoutAttempt.current) {
+      setMessage('Retry the unchanged request or reconcile it with support before changing stores.');
+      return;
+    }
     const normalizedID = storeID.trim();
     if (!normalizedID) {
       setMessage("Enter a store location ID to browse its catalog.");
@@ -309,6 +322,8 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
   }
 
   async function createCustomerOrder() {
+    if (inFlight.current || paymentBusy.current) return;
+    if (checkoutAttempt.current) { setMessage('Reconcile the pending basket before adding orders.'); return; }
     if (checkout) {
       setMessage("Start a new basket before creating another order.");
       return;
@@ -333,10 +348,11 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
       deliveryWindowEnd: deliveryWindow.end,
       items,
     };
-    const fingerprint = JSON.stringify(body);
-    if (orderAttempt.current?.fingerprint !== fingerprint) {
-      orderAttempt.current = { key: idempotencyKey(), fingerprint, body };
-    }
+    try {
+      // An unchanged retry must work even if its original requested window has elapsed.
+      if (!orderAttempt.current) validateWindow(deliveryWindow.start, deliveryWindow.end);
+      orderAttempt.current = retainAttempt(orderAttempt.current, body, idempotencyKey);
+    } catch (error) { setMessage((error as Error).message); return; }
     const attempt = orderAttempt.current;
     const result = await run(() =>
       apiRequest<{ id: string; status: string; itemSubtotalCents: number }>(
@@ -348,6 +364,7 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
           body: JSON.stringify(attempt.body),
         },
       ),
+      () => { orderAttempt.current = null; },
     );
     if (result) {
       orderAttempt.current = null;
@@ -356,6 +373,10 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
       if (!currentIDs.includes(result.id)) {
         setOrderIds([...currentIDs, result.id].join(", "));
       }
+      setSavedOrders(current => [...current.filter(order => order.id !== result.id), {
+        ...result, storeLocationId: attempt.body.storeLocationId,
+        itemCount: attempt.body.items.reduce((total, item) => total + item.quantity, 0),
+      }]);
       setQuantities({});
       setStage('Checkout');
       setMessage(`Order created · ${money(result.itemSubtotalCents)} items. Delivery and fees are calculated in checkout.`);
@@ -363,6 +384,8 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
   }
 
   async function createCheckout() {
+    if (inFlight.current || paymentBusy.current || checkout) return;
+    if (orderAttempt.current) { setMessage('Retry or reconcile the pending order before creating a basket.'); return; }
     const ids = orderIds
       .split(/[\s,]+/)
       .map((id) => id.trim())
@@ -379,19 +402,16 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
       setMessage("Enter the anchor store, order IDs, and delivery coordinates.");
       return;
     }
-    if (!checkoutAttempt.current) {
-      checkoutAttempt.current = {
-        key: idempotencyKey(),
-        body: {
+    try {
+      checkoutAttempt.current = retainAttempt(checkoutAttempt.current, {
           priorityService: prioritySelected && priorityPrice !== null,
           anchorStoreLocationId: anchorStore.trim(),
           orderIds: ids,
           dropoff: { latitude: lat, longitude: lon },
           deliveryWindowStart: deliveryWindow.start,
           deliveryWindowEnd: deliveryWindow.end,
-        },
-      };
-    }
+        }, idempotencyKey);
+    } catch (error) { setMessage((error as Error).message); return; }
     const attempt = checkoutAttempt.current;
     const result = await run(() =>
       apiRequest<Checkout>(settings, "checkouts", {
@@ -399,6 +419,7 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
         headers: { "Idempotency-Key": attempt.key },
         body: JSON.stringify(attempt.body),
       }),
+      () => { checkoutAttempt.current = null; },
     );
     if (result) {
       checkoutAttempt.current = null;
@@ -407,7 +428,7 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
   }
 
   async function payCheckout() {
-    if (paymentBusy.current || inFlight.current) return;
+    if (paymentBusy.current || inFlight.current || paymentState !== 'not_started') return;
     paymentBusy.current = true;
     setPaymentActive(true);
     try {
@@ -416,12 +437,14 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
       setMessage("This test-only priority basket requires a Stripe test publishable key.");
       return;
     }
+    setPaymentState('uncertain');
     const intent = await run(() =>
       apiRequest<{ clientSecret: string; amountCents: number; currency: string }>(
         settings,
         `checkouts/${encodeURIComponent(checkout.id)}/payment`,
         { method: "POST" },
       ),
+      () => setPaymentState('not_started'),
     );
     if (!intent) return;
     if (intent.amountCents !== checkout.totalCents || intent.currency !== checkout.currency) {
@@ -439,10 +462,33 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
     }
     const presented = await presentPaymentSheet();
     if (connection.scope.signal.aborted) return;
-    if (presented.error) setMessage('Payment was cancelled or unsuccessful. Check payment status before retrying.');
-    else setMessage("Payment submitted. Your order updates when Stripe confirms it.");
+    if (presented.error?.code === 'Canceled') {
+      setPaymentState('not_started');
+      setMessage('Payment sheet closed. No payment confirmation was received.');
+    } else if (presented.error) {
+      setMessage('Payment outcome is uncertain. Reconcile this basket with support before trying again.');
+    } else {
+      setPaymentState('submitted');
+      setStage('Status');
+      setMessage('Payment submitted, not yet confirmed. Keep the basket ID for support.');
+    }
     } catch { if (!connection.scope.signal.aborted) setMessage('Payment could not be completed. Check payment status before retrying.'); }
     finally { paymentBusy.current = false; if (!connection.scope.signal.aborted) setPaymentActive(false); }
+  }
+
+  function startNewBasket() {
+    if (busy || orderAttempt.current || checkoutAttempt.current) return;
+    Alert.alert('Clear this local basket?', 'This does not cancel saved orders, a basket, or a payment on the server. Keep your IDs and reconcile any submitted or uncertain payment with support before starting another basket.', [
+      { text: 'Keep basket', style: 'cancel' },
+      { text: 'I have reconciled · clear locally', style: 'destructive', onPress: () => {
+        setCheckout(null); setSavedOrders([]); setOrderIds(''); setQuantities({});
+        setCatalog([]); setCatalogLoaded(false); setCatalogStoreID(''); setAnchorStore('');
+        setNearby([]); setNearbyLoaded(false); setLatitude(''); setLongitude('');
+        setPaymentState('not_started'); setPrioritySelected(false);
+        setDeliveryWindow(defaultDeliveryWindow()); setStage('Browse');
+        setMessage('Local basket cleared. No server order or payment was cancelled.');
+      } },
+    ]);
   }
 
   async function loadRoute() {
@@ -454,12 +500,29 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
     const result = await run(() =>
       apiRequest<Route>(settings, `driver/routes/${encodeURIComponent(routeId.trim())}`),
     );
-    if (result) setRoute(result);
+    if (result) {
+      setRoute(result);
+      // A server refresh reconciles a previous stop write without inventing progress.
+      if (stopAttempt.current) {
+        const event = JSON.parse(stopAttempt.current.body) as { type: string };
+        const stop = result.stops.find(entry => JSON.stringify([result.id, entry.id, event.type]) === stopAttempt.current?.fingerprint);
+        if (stop && (stop.status === 'completed' || (event.type === 'arrive' && stop.status === 'arrived'))) stopAttempt.current = null;
+      }
+      if (result.status !== 'in_progress') stopAttempt.current = null;
+      if (!routeCanProgress(result)) endTracking();
+    }
   }
 
   async function updateRouteStop(stopId: string, type: "arrive" | "complete") {
-    const routeKey = routeId.trim();
+    if (inFlight.current || !routeCanProgress(route) || !route) return;
+    const next = nextRouteStop(route.stops);
+    if (next?.id !== stopId || (type === 'arrive' ? next.status !== 'pending' : next.status !== 'arrived')) return;
+    const routeKey = route.id;
     const fingerprint = JSON.stringify([routeKey, stopId, type]);
+    if (stopAttempt.current && stopAttempt.current.fingerprint !== fingerprint) {
+      setMessage('Refresh the route to reconcile the previous stop event before submitting another.');
+      return;
+    }
     if (stopAttempt.current?.fingerprint !== fingerprint) stopAttempt.current = {
       fingerprint, body: JSON.stringify({ eventId: idempotencyKey(), type, observedAt: new Date().toISOString() }),
     };
@@ -473,9 +536,11 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
           body: attempt.body,
         },
       ),
+      () => { stopAttempt.current = null; },
     );
     if (result) {
       stopAttempt.current = null;
+      if (result.routeStatus !== 'in_progress') endTracking();
       setRoute((current) =>
         current
           ? {
@@ -492,11 +557,13 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
 
   async function beginTracking() {
     if (trackingStarting || locationSharing.current.active) return;
-    if (!route || role !== 'Driver' || !routeId.trim()) {
-      setMessage("Load your assigned route before starting location sharing.");
+    if (!routeCanProgress(route) || role !== 'Driver' || !routeId.trim()) {
+      setMessage('Load an in-progress assigned route before starting location sharing.');
       return;
     }
     setTrackingStarting(true);
+    setLastLocationReport(null);
+    setLocationError('');
     try {
     const started = await locationSharing.current.start(async (current, receive) => {
       const permission = await Location.requestForegroundPermissionsAsync();
@@ -534,6 +601,15 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
     setMessage("Location sharing stopped.");
   }
 
+  async function openDirections() {
+    const stop = route && nextRouteStop(route.stops);
+    if (!stop || !Number.isFinite(stop.latitude) || !Number.isFinite(stop.longitude) ||
+        Math.abs(stop.latitude) > 90 || Math.abs(stop.longitude) > 180) return;
+    try {
+      await Linking.openURL(`https://www.google.com/maps/dir/?api=1&destination=${stop.latitude},${stop.longitude}&travelmode=driving`);
+    } catch { if (!connection.scope.signal.aborted) setMessage('Could not open directions. Use the displayed stop coordinates in your navigation app.'); }
+  }
+
   useEffect(() => {
     if ((role !== "Driver" || !settings.sessionToken.trim()) && tracking) endTracking();
   }, [role, settings.sessionToken, tracking]);
@@ -541,6 +617,7 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
   async function refreshSubscription() {
     const result = await run(() => apiRequest<Subscription>(settings, "merchant/subscription"));
     if (result) setSubscription(result);
+    return result;
   }
 
   async function setupMerchantPaymentMethod() {
@@ -572,8 +649,8 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
       setMessage('Billing setup was cancelled or unsuccessful. Refresh billing status before retrying.');
       return;
     }
-    setMessage("Billing method saved. Refresh status before starting your subscription.");
-    await refreshSubscription();
+    const refreshed = await refreshSubscription();
+    if (refreshed) setMessage('Billing setup submitted. The refreshed server status below determines whether your payment method is ready.');
     } catch { if (!connection.scope.signal.aborted) setMessage('Billing setup failed. Refresh billing status before retrying.'); }
     finally { paymentBusy.current = false; if (!connection.scope.signal.aborted) setPaymentActive(false); }
   }
@@ -583,8 +660,8 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
       apiRequest<{ status: string }>(settings, "merchant/subscription", { method: "POST" }),
     );
     if (result) {
-      setMessage(`Subscription is ${result.status}. Storefront activation waits for a paid invoice.`);
-      await refreshSubscription();
+      const refreshed = await refreshSubscription();
+      if (refreshed) setMessage(`Subscription is ${refreshed.status}. Storefront activation waits for a paid invoice.`);
     }
   }
 
@@ -621,24 +698,14 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
   }
 
   async function createMerchantCatalogItem() {
-    const price = Number(newItemPrice);
-    const volume = Number(newItemVolume);
-    if (!merchantStoreLocation.trim() || !newItemName.trim() ||
-        !Number.isSafeInteger(price) || price < 1 || !Number.isFinite(volume) || volume <= 0) {
-      setMessage("Enter your store location ID, item name, price in cents, and positive volume.");
-      return;
-    }
-    const body = {
-      storeLocationId: merchantStoreLocation.trim(),
-      name: newItemName.trim(),
-      description: newItemDescription,
-      unitPriceCents: price,
-      volumeLiters: volume,
-    };
-    const fingerprint = JSON.stringify(body);
-    if (merchantCatalogAttempt.current?.fingerprint !== fingerprint) {
-      merchantCatalogAttempt.current = { key: idempotencyKey(), fingerprint, body };
-    }
+    if (inFlight.current || paymentBusy.current) return;
+    try {
+      const body = {
+        storeLocationId: requiredUUID(merchantStoreLocation, 'store location'),
+        ...merchantCatalogValues({ name: newItemName, description: newItemDescription, unitPriceCents: newItemPrice, volumeLiters: newItemVolume }),
+      };
+      merchantCatalogAttempt.current = retainAttempt(merchantCatalogAttempt.current, body, idempotencyKey);
+    } catch (error) { setMessage((error as Error).message); return; }
     const attempt = merchantCatalogAttempt.current;
     const item = await run(() =>
       apiRequest<MerchantCatalogItem>(settings, "merchant/catalog", {
@@ -646,6 +713,7 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
         headers: { "Idempotency-Key": attempt.key },
         body: JSON.stringify(attempt.body),
       }),
+      () => { merchantCatalogAttempt.current = null; },
     );
     if (item) {
       merchantCatalogAttempt.current = null;
@@ -661,13 +729,9 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
   async function updateMerchantCatalogItem(item: MerchantCatalogItem) {
     const draft = merchantCatalogDrafts[item.id];
     if (!draft) return;
-    const price = Number(draft.unitPriceCents);
-    const volume = Number(draft.volumeLiters);
-    if (!draft.name.trim() || !Number.isSafeInteger(price) || price < 1 ||
-        !Number.isFinite(volume) || volume <= 0) {
-      setMessage("Enter a valid item name, price in cents, and positive volume.");
-      return;
-    }
+    let values: ReturnType<typeof merchantCatalogValues>;
+    try { values = merchantCatalogValues(draft); }
+    catch (error) { setMessage((error as Error).message); return; }
     const updated = await run(() =>
       apiRequest<MerchantCatalogItem>(
         settings,
@@ -675,10 +739,7 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
         {
           method: "PATCH",
           body: JSON.stringify({
-            ...draft,
-            name: draft.name.trim(),
-            unitPriceCents: price,
-            volumeLiters: volume,
+            ...values,
             available: item.available,
           }),
         },
@@ -688,6 +749,10 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
       setMerchantCatalog((current) => current.map((entry) =>
         entry.id === updated.id ? updated : entry,
       ));
+      setMerchantCatalogDrafts(current => ({ ...current, [updated.id]: {
+        name: updated.name, description: updated.description,
+        unitPriceCents: String(updated.unitPriceCents), volumeLiters: updated.volumeLiters,
+      } }));
       setMessage("Catalog item updated.");
     }
   }
@@ -732,10 +797,8 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
       <ActionButton label="Clear session and private records" onPress={onClear} secondary />
     </View>
   );
-  const activeStop = route?.stops
-    .slice()
-    .sort((a, b) => a.sequence - b.sequence)
-    .find((stop) => stop.status !== "completed");
+  const activeStop = route ? nextRouteStop(route.stops) : undefined;
+  const orderLocked = busy || Boolean(checkout) || Boolean(orderAttempt.current) || Boolean(checkoutAttempt.current);
   const cart = cartSummary(catalog, quantities);
   const orderCount = orderIds.split(/[\s,]+/).filter(Boolean).length;
 
@@ -831,10 +894,9 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
                 restaurant.
               </Text>
               <Field
-                editable={!busy && !checkout && !orderIds.trim()}
+                editable={!orderLocked && !orderIds.trim()}
                 label="Anchor restaurant store ID"
                 onChangeText={(value) => {
-                  checkoutAttempt.current = null;
                   setAnchorStore(value);
                   setCatalogStoreID(value);
                   setCatalog([]);
@@ -846,9 +908,9 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
                 value={anchorStore}
               />
               <View style={styles.actionRow}>
-                <ActionButton disabled={busy || Boolean(checkout)} label="Find nearby shops" onPress={() => void findNearby()} />
+                <ActionButton disabled={orderLocked} label="Find nearby shops" onPress={() => void findNearby()} />
                 <ActionButton
-                  disabled={busy || Boolean(checkout)}
+                  disabled={orderLocked}
                   label="Browse anchor catalog"
                   onPress={() => void loadCatalog(anchorStore)}
                   secondary
@@ -865,7 +927,7 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
                     </View>
                   </View>
                   <ActionButton
-                    disabled={busy || Boolean(checkout)}
+                    disabled={orderLocked}
                     label={`Browse ${merchant.name}`}
                     onPress={() => void loadCatalog(merchant.storeLocationId)}
                     secondary
@@ -879,7 +941,7 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
               <Text style={styles.sectionEyebrow}>02 / BUILD YOUR ORDER</Text>
               <Text style={styles.sectionTitle}>Choose items from the block.</Text>
               <Field
-                editable={!busy && !checkout}
+                editable={!orderLocked}
                 label="Store location ID"
                 onChangeText={(value) => {
                   setCatalogStoreID(value);
@@ -889,7 +951,7 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
                 }}
                 value={catalogStoreID}
               />
-              <ActionButton disabled={busy || Boolean(checkout)} label="Load store catalog" onPress={() => void loadCatalog()} />
+              <ActionButton disabled={orderLocked} label="Load store catalog" onPress={() => void loadCatalog()} />
               {!catalog.length ? <StateCard title={catalogLoaded ? 'No available items' : 'Your cart starts here'}>{catalogLoaded ? 'This store returned an empty catalog. Choose another store from Browse.' : 'Choose a store in Browse, or enter its location UUID here and load the catalog.'}</StateCard> : null}
               {catalog.map((item) => {
                 const quantity = quantities[item.id] ?? 0;
@@ -906,7 +968,8 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
                       <Pressable
                         accessibilityLabel={`Decrease ${item.name} quantity`}
                         accessibilityRole="button"
-                        disabled={busy || quantity === 0 || Boolean(checkout)}
+                        disabled={orderLocked || quantity === 0}
+                        accessibilityState={{ disabled: orderLocked || quantity === 0 }}
                         onPress={() => setQuantities((current) => ({
                           ...current,
                           [item.id]: Math.max(0, (current[item.id] ?? 0) - 1),
@@ -917,7 +980,8 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
                       <Pressable
                         accessibilityLabel={`Increase ${item.name} quantity`}
                         accessibilityRole="button"
-                        disabled={busy || quantity >= 99 || Boolean(checkout)}
+                        disabled={orderLocked || quantity >= 99}
+                        accessibilityState={{ disabled: orderLocked || quantity >= 99 }}
                         onPress={() => setQuantities((current) => ({
                           ...current,
                           [item.id]: (current[item.id] ?? 0) + 1,
@@ -931,12 +995,16 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
               <StateCard title={`${cart.count} item(s) · ${money(cart.cents)}`}>Merchandise subtotal for this unsent cart only. Created orders are separate and will be included in checkout.</StateCard>
               <Text style={styles.helpText}>Delivery coordinates use decimal degrees (longitude may be negative). Delivery window: {readableDate(deliveryWindow.start)} – {readableDate(deliveryWindow.end)}. This is a requested window, not a guaranteed arrival.</Text>
               <View style={styles.fieldGrid}>
-                <Field editable={!busy && !checkout && !orderIds.trim()} label="Drop-off latitude (-90 to 90)" onChangeText={setLatitude} value={latitude} />
-                <Field editable={!busy && !checkout && !orderIds.trim()} label="Drop-off longitude (-180 to 180)" onChangeText={setLongitude} value={longitude} />
+                <Field editable={!orderLocked && !orderIds.trim()} label="Drop-off latitude (-90 to 90)" onChangeText={setLatitude} value={latitude} />
+                <Field editable={!orderLocked && !orderIds.trim()} label="Drop-off longitude (-180 to 180)" onChangeText={setLongitude} value={longitude} />
               </View>
+              <Field editable={!orderLocked && !orderIds.trim()} label="Delivery start (ISO timestamp with timezone)" value={deliveryWindow.start} onChangeText={start => setDeliveryWindow(current => ({ ...current, start }))} />
+              <Field editable={!orderLocked && !orderIds.trim()} label="Delivery end (ISO timestamp with timezone)" value={deliveryWindow.end} onChangeText={end => setDeliveryWindow(current => ({ ...current, end }))} />
+              <ActionButton disabled={orderLocked || Boolean(orderIds.trim())} label="Use a new window starting in 15 minutes" onPress={() => setDeliveryWindow(defaultDeliveryWindow())} secondary />
+              {orderAttempt.current ? <StateCard title="Order request awaiting reconciliation">Details are locked. Retry unchanged with the same request key. If the result remains uncertain, ask support before starting another order.</StateCard> : null}
               <ActionButton
-                disabled={busy || Boolean(checkout) || cart.count === 0}
-                label="Save order and continue to checkout"
+                disabled={busy || Boolean(checkout) || Boolean(checkoutAttempt.current) || cart.count === 0}
+                label={orderAttempt.current ? 'Retry unchanged order' : 'Save order and continue to checkout'}
                 onPress={() => void createCustomerOrder()}
               />
             </View>
@@ -949,20 +1017,26 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
                 Create one order from each store catalog you want to include, then create one unified checkout.
               </Text>
               <Text style={styles.helpText}>{orderCount ? `${orderCount} order(s) included. Use Browse to add another store before creating the basket.` : 'No orders yet. Build a cart and save an order first.'}</Text>
-              <ActionButton disabled={busy || Boolean(checkout)} label="Add items from another store" onPress={() => setStage('Browse')} secondary />
+              {savedOrders.map(order => <View key={order.id} style={styles.merchantItem}>
+                <Text style={styles.resultTitle}>{order.itemCount} item(s) · {money(order.itemSubtotalCents)}</Text>
+                <Text style={styles.resultSub}>Order · {order.id}</Text>
+                <Text style={styles.resultSub}>Store · {order.storeLocationId}</Text>
+                <Text style={styles.resultSub}>Last returned order state · {order.status.replaceAll('_', ' ')}</Text>
+              </View>)}
+              {orderCount ? <Text style={styles.helpText}>Requested delivery: {readableDate(deliveryWindow.start)} – {readableDate(deliveryWindow.end)}. Drop-off: {latitude}, {longitude}. Saved orders cannot be edited or cancelled here.</Text> : null}
+              <ActionButton disabled={orderLocked} label="Add items from another store" onPress={() => setStage('Browse')} secondary />
               <ActionButton disabled={busy} label={advancedOrders ? 'Hide advanced order IDs' : 'Show advanced order IDs'} onPress={() => setAdvancedOrders(value => !value)} secondary />
               {advancedOrders ? <Field
-                editable={!busy && !checkout}
+                editable={!orderLocked}
                 label="Order IDs (comma separated)"
                 onChangeText={(value) => {
-                  checkoutAttempt.current = null;
                   setOrderIds(value);
                 }}
                 value={orderIds}
               /> : null}
               <ActionButton
-                disabled={busy || Boolean(checkout) || !orderCount}
-                label={checkout ? "Basket created" : "Create basket"}
+                disabled={busy || Boolean(checkout) || Boolean(orderAttempt.current) || !orderCount}
+                label={checkout ? 'Basket created' : checkoutAttempt.current ? 'Retry unchanged basket' : 'Create basket'}
                 onPress={() => void createCheckout()}
               />
               {!checkout ? (
@@ -1008,8 +1082,8 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
                     </Text>
                   </View>
                   <ActionButton
-                    disabled={busy || !stripeKeyConfigured}
-                    label={stripeKeyConfigured ? "Continue to secure payment" : "Add Stripe publishable key to pay"}
+                    disabled={busy || !stripeKeyConfigured || paymentState !== 'not_started'}
+                    label={paymentState === 'submitted' ? 'Submitted · awaiting confirmation' : paymentState === 'uncertain' ? 'Reconcile payment before retrying' : stripeKeyConfigured ? 'Continue to secure payment' : 'Add Stripe publishable key to pay'}
                     onPress={() => void payCheckout()}
                   />
                   <Text style={styles.tinyNote}>Checkout ID · {checkout.id}</Text>
@@ -1022,8 +1096,14 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
               <Text style={styles.sectionEyebrow}>BASKET STATUS / LAST RESPONSE</Text>
               <Text style={styles.sectionTitle}>{checkout ? checkout.status.replaceAll('_', ' ') : 'No basket created yet'}</Text>
               <Text style={styles.helpText}>{checkout ? `${money(checkout.totalCents, checkout.currency)} · ${checkout.id}` : 'Saved orders appear in Checkout. Create a basket there to see its returned status.'}</Text>
+              {checkout ? <StateCard title={paymentState === 'submitted' ? 'Payment submitted · confirmation pending' : paymentState === 'uncertain' ? 'Payment outcome uncertain · contact support' : 'Payment not confirmed in this session'}>{paymentState === 'uncertain' ? 'Do not submit another payment or create a replacement basket until support reconciles this basket ID. Closing a sheet or losing connectivity does not prove a payment failed.' : 'The payment sheet and last basket response are not a live payment-status check. Keep this basket ID; only the backend and Stripe reconciliation can confirm the outcome.'}</StateCard> : null}
               <StateCard title="No live tracking or order history here">This app does not fetch customer delivery progress or past orders. Payment-sheet submission is not confirmation of payment or delivery. Keep your basket ID for support and reconcile uncertain payments before starting again.</StateCard>
               <ActionButton label="Return to checkout" onPress={() => setStage('Checkout')} secondary />
+              {paymentState === 'uncertain' ? <ActionButton disabled={busy} label="Support confirmed this basket is safe to retry" onPress={() => Alert.alert('Retry only after reconciliation', 'Continue only if support verified that this same basket can safely retry its existing payment. This does not check Stripe or cancel a payment.', [
+                { text: 'Keep blocked', style: 'cancel' },
+                { text: 'Confirmed safe by support', onPress: () => { setPaymentState('not_started'); setStage('Checkout'); } },
+              ])} secondary /> : null}
+              <ActionButton disabled={busy || Boolean(orderAttempt.current) || Boolean(checkoutAttempt.current)} label="Start another basket · clear local records" onPress={startNewBasket} secondary />
             </View> : null}
           </>
         ) : null}
@@ -1037,7 +1117,7 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
               open. Stop sequencing is controlled by the server.
             </Text>
             <Text style={styles.tinyNote}>Use the route UUID provided by dispatch. Route discovery is not available here; a 403 can mean dispatch is disabled. No simulated deliveries.</Text>
-            <Field editable={!tracking && !trackingStarting && !busy} label="Assigned route UUID from dispatch" onChangeText={value => { endTracking(); setRouteId(value); setRoute(null); stopAttempt.current = null; }} value={routeId} />
+            <Field editable={!tracking && !trackingStarting && !busy && !stopAttempt.current} label="Assigned route UUID from dispatch" onChangeText={value => { endTracking(); setRouteId(value); setRoute(null); }} value={routeId} />
             <ActionButton disabled={busy} label="Load route" onPress={() => void loadRoute()} />
             {!route ? <StateCard title="Waiting for your assigned route">Ask dispatch for a route UUID. Loading requires an authorized driver session and enabled dispatch. A blocked request does not mean you have no assignments. No map or route is simulated.</StateCard> : null}
             {route ? (
@@ -1058,8 +1138,10 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
                       </View>
                     </View>
                   ))}
-                {activeStop ? (
+                {activeStop && routeCanProgress(route) ? (
                   <View style={styles.stopActions}>
+                    <ActionButton disabled={busy} label="Open directions to next stop" onPress={() => void openDirections()} secondary />
+                    <Text style={styles.tinyNote}>Opens external navigation with the next stop coordinates. Returning to ShopStops does not resume GPS automatically after backgrounding.</Text>
                     <Text style={styles.helpText}>Confirm arrival only at the location. Confirm pickup after receiving the items; confirm delivery only after the actual customer handoff.</Text>
                     {activeStop.status === "pending" ? (
                       <ActionButton
@@ -1076,17 +1158,19 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
                     )}
                   </View>
                 ) : (
-                  <Text style={styles.tinyNote}>All route stops are complete.</Text>
+                  <Text style={styles.tinyNote}>{activeStop ? 'This route is not actionable. Refresh it or contact dispatch; no stop progress is inferred.' : 'All route stops are complete.'}</Text>
                 )}
+                {stopAttempt.current ? <StateCard title="Stop request awaiting reconciliation">Retry the unchanged stop action, or refresh this route to check the server state. Switching routes is locked until the event is reconciled.</StateCard> : null}
                 <Text style={styles.tinyNote}>Routing matrix · {route.routingProvider}</Text>
               </View>
             ) : null}
             <ActionButton
-              disabled={busy || tracking || trackingStarting || !route}
+              disabled={busy || tracking || trackingStarting || !routeCanProgress(route)}
               label={trackingStarting ? "Requesting location access…" : tracking ? "Location sharing is active" : "Start 5-second location sharing"}
               onPress={() => void beginTracking()}
             />
             <Text style={styles.tinyNote}>Location permission is requested only when you start sharing. Updates stop when the app backgrounds, you change roles, or you clear the session. No background tracking.</Text>
+            <StateCard title={tracking ? 'GPS sharing active on this device' : 'GPS sharing off'}>{`${lastLocationReport ? `Last position accepted by gateway: ${readableDate(lastLocationReport)}.` : 'No position acknowledged by the gateway in this sharing session.'}${locationError ? ` Latest reporting error: ${locationError}` : ''}`}</StateCard>
             {tracking ? <ActionButton label="End location sharing" onPress={endTracking} secondary /> : null}
           </View>
         ) : null}
@@ -1101,7 +1185,7 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
                 Set prices and delivery volume. Items you mark unavailable disappear from customer catalogs; previous order prices remain unchanged.
               </Text>
               <ActionButton
-                disabled={busy}
+                disabled={busy || Boolean(merchantCatalogAttempt.current)}
                 label="Load my store locations"
                 onPress={() => void loadMerchantStoreLocations()}
                 secondary
@@ -1109,7 +1193,8 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
               {merchantStoreLocations.map((location) => (
                 <Pressable
                   accessibilityRole="radio"
-                  accessibilityState={{ selected: merchantStoreLocation === location.id }}
+                  disabled={busy || Boolean(merchantCatalogAttempt.current)}
+                  accessibilityState={{ selected: merchantStoreLocation === location.id, disabled: busy || Boolean(merchantCatalogAttempt.current) }}
                   key={location.id}
                   onPress={() => setMerchantStoreLocation(location.id)}
                   style={[
@@ -1124,15 +1209,17 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
               {merchantStoreLocations.length === 0 ? (
                 <Text style={styles.tinyNote}>{locationsLoaded ? 'No store locations returned for this account. Contact your operator.' : 'Load store locations before creating catalog items.'}</Text>
               ) : null}
-              <Field label="Item name" onChangeText={setNewItemName} value={newItemName} />
-              <Field label="Description" onChangeText={setNewItemDescription} value={newItemDescription} />
+              <Field editable={!busy && !merchantCatalogAttempt.current} label="Item name" onChangeText={setNewItemName} value={newItemName} />
+              <Field editable={!busy && !merchantCatalogAttempt.current} label="Description" onChangeText={setNewItemDescription} value={newItemDescription} />
               <View style={styles.fieldGrid}>
-                <Field label="Price (cents)" keyboardType="decimal-pad" onChangeText={setNewItemPrice} value={newItemPrice} />
-                <Field label="Volume (liters)" keyboardType="decimal-pad" onChangeText={setNewItemVolume} value={newItemVolume} />
+                <Field editable={!busy && !merchantCatalogAttempt.current} label="Price (cents)" keyboardType="decimal-pad" onChangeText={setNewItemPrice} value={newItemPrice} />
+                <Field editable={!busy && !merchantCatalogAttempt.current} label="Volume (liters)" keyboardType="decimal-pad" onChangeText={setNewItemVolume} value={newItemVolume} />
               </View>
+              <Text style={styles.tinyNote}>Price: 1–10000000 whole cents. Volume: up to 100000 liters, at most two decimal places. Item name: 200 UTF-8 bytes; description: 1000.</Text>
+              {merchantCatalogAttempt.current ? <StateCard title="Catalog creation awaiting reconciliation">Retry unchanged with the same request key. Refresh the catalog to inspect results; contact support if the original result remains uncertain before creating a replacement item.</StateCard> : null}
               <ActionButton
                 disabled={busy || !merchantStoreLocation}
-                label="Add catalog item"
+                label={merchantCatalogAttempt.current ? 'Retry unchanged catalog item' : 'Add catalog item'}
                 onPress={() => void createMerchantCatalogItem()}
               />
               <ActionButton
@@ -1151,6 +1238,7 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
                   <View key={item.id} style={styles.merchantItem}>
                     <Text style={styles.resultSub}>Store · {item.storeLocationId}</Text>
                     <Field
+                      editable={!busy}
                       label="Item name"
                       onChangeText={(value) => setMerchantCatalogDrafts((current) => ({
                         ...current, [item.id]: { ...current[item.id], name: value },
@@ -1158,6 +1246,7 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
                       value={draft.name}
                     />
                     <Field
+                      editable={!busy}
                       label="Description"
                       onChangeText={(value) => setMerchantCatalogDrafts((current) => ({
                         ...current, [item.id]: { ...current[item.id], description: value },
@@ -1166,6 +1255,7 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
                     />
                     <View style={styles.fieldGrid}>
                       <Field
+                        editable={!busy}
                         label="Price (cents)"
                         keyboardType="decimal-pad"
                         onChangeText={(value) => setMerchantCatalogDrafts((current) => ({
@@ -1174,6 +1264,7 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
                         value={draft.unitPriceCents}
                       />
                       <Field
+                        editable={!busy}
                         label="Volume (liters)"
                         keyboardType="decimal-pad"
                         onChangeText={(value) => setMerchantCatalogDrafts((current) => ({
@@ -1220,7 +1311,7 @@ function HomeWorkspace({ connection, onRole, onEdit, onClear }: { connection: Co
                     <Text style={styles.resultSub}>Current period ends {readableDate(subscription.currentPeriodEnd)}</Text>
                   ) : null}
                 </View>
-              ) : null}
+              ) : <StateCard title="Billing not loaded">Refresh billing status to see your subscription amount, saved-payment-method readiness, and storefront visibility.</StateCard>}
               <ActionButton
                 disabled={busy || !subscription?.paymentMethodReady || subscription.status === 'active'}
                 label={subscription ? `Start subscription · ${money(subscription.monthlyAmountCents, subscription.currency)} / month` : 'Load billing status before subscribing'}

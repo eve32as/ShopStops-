@@ -88,6 +88,12 @@ jobs:
       - name: Run isolated simulated frontend journeys (no live services or secrets)
         working-directory: apps/admin
         run: npm run test:acceptance
+      - name: Install locked mobile dependencies without scripts (no native build)
+        working-directory: apps/mobile
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Run actual mobile screens with simulated native adapters and APIs
+        working-directory: apps/mobile
+        run: npm run test:acceptance
 
   terraform:
     runs-on: ubuntu-24.04

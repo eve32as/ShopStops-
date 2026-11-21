@@ -767,6 +767,29 @@ paths:
           description: Bundle or stop not found
         '409':
           description: Event conflicts with current stop state
+  /admin/overview:
+    get:
+      operationId: getAdminOverview
+      summary: Read authorized aggregate operational overview
+      description: Admin-only aggregate counts. No revenue or wage totals are inferred; manual costs and shopper earnings remain separate review records.
+      responses:
+        '200': { description: Aggregate operational overview }
+        '401': { description: Authentication required }
+        '403': { description: Admin role required }
+        '503': { description: Overview repository or migration unavailable }
+  /admin/checkouts/{checkoutId}/refund:
+    get:
+      operationId: getCheckoutRefundStatus
+      summary: Read checkout refund reconciliation status
+      description: Admin-only ordered refund records, including local and Stripe IDs and asynchronous status.
+      parameters:
+        - $ref: '#/components/parameters/CheckoutId'
+      responses:
+        '200': { description: Checkout refund status and history }
+        '400': { description: Invalid checkout ID }
+        '403': { description: Admin role required }
+        '404': { description: Checkout or refund record not found }
+        '503': { description: Refund status repository unavailable }
 components:
   securitySchemes:
     bearerAuth:

@@ -4,6 +4,19 @@ This is **simulated API frontend acceptance**, not server security verification,
 real identity/role authorization, database idempotency verification, payment E2E,
 or production approval. Existing Go/gateway/SQL suites remain separate gates.
 
+## Mobile rendered workflow follow-up
+
+The [mobile acceptance suite](../apps/mobile/acceptance/README.md) loads the actual
+React screen with test-only native/Stripe/location adapters and intercepted APIs.
+Verified 2026-11-18: **16/16 rendered workflow tests**, **47/47 mobile
+helper/transport tests**, TypeScript and whitespace checks passed. There are no
+skipped or expected-failure cases. The unprivileged frontend CI job now installs
+both locked frontend dependency trees without scripts and runs both suites;
+that CI change has not been executed from this editor. No local install or native
+build was needed. These tests are neither native/device E2E nor proof of live
+payments, tracking or backend authorization. Earlier November 17 results below
+describe the preceding admin acceptance work.
+
 ## Run
 
 Use Node 22.16+ and the locked admin dependencies. For a fresh checkout:

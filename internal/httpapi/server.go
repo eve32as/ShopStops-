@@ -276,6 +276,8 @@ func (s *Server) handler() http.Handler {
 	mux.Handle("GET /admin/shopper/tasks", s.authorized(http.HandlerFunc(s.shopperTasks)))
 	mux.Handle("POST /admin/shopper/tasks/{taskId}/complete", s.authorized(http.HandlerFunc(s.completeShopperTask)))
 	mux.HandleFunc("POST /webhooks/stripe", s.stripeWebhook)
+	mux.Handle("GET /admin/overview", s.authorized(http.HandlerFunc(s.adminOverview)))
+	mux.Handle("GET /admin/checkouts/{checkoutId}/refund", s.authorized(http.HandlerFunc(s.checkoutRefundStatus)))
 	return mux
 }
 
