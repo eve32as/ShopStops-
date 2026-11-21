@@ -1,6 +1,16 @@
 # Frontend UX and hardening status
 
-Updated 2026-11-18. This is critical-path hardening of the existing frontends,
+## Verified feature summary
+
+- **Admin:** Overview, finance planner, refunds, and shopper Assign → Verify → Review workflows.
+- **Mobile:** Customer Browse → Cart → Checkout → Status, driver route/progress/GPS controls, and merchant catalog/billing flows.
+- **Last historical browser evidence — 2026-11-17:** 11 admin browser acceptance tests, 33 admin helper tests, and 30 mobile helper tests passed, plus admin lint/build/typechecking.
+- **Verified 2026-11-21:** Mobile rendered acceptance passed 16/16 and the admin rendered acceptance suite passed 11/11 using installed Chrome. Mobile helper/transport tests passed 47/47 and TypeScript checks passed.
+- **Still unfinished:** Real sign-in/token refresh, live backend/payment end-to-end verification, and iOS/Android device testing. Customer live tracking/history is not implemented.
+
+See [repeatable frontend acceptance evidence](frontend-acceptance.md) and the verification commands below.
+
+Updated 2026-11-21. This is critical-path hardening of the existing frontends,
 not approval for live payments, deployment, or an app-store launch. Existing
 backend authentication, role enforcement and payment feature gates are unchanged.
 

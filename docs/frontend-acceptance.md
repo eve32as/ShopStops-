@@ -6,6 +6,12 @@ or production approval. Existing Go/gateway/SQL suites remain separate gates.
 
 ## Mobile rendered workflow follow-up
 
+A clean local rerun on 2026-11-21 passed **16/16 mobile rendered workflow tests**
+using the installed Chrome executable. The admin acceptance rerun passed **11/11**,
+with **33/33 admin Node tests**, **47/47 mobile Node/transport tests**, admin lint/build,
+and mobile TypeScript checking passing. These results remain simulated API checks,
+not native-device or live-integration evidence.
+
 The [mobile acceptance suite](../apps/mobile/acceptance/README.md) loads the actual
 React screen with test-only native/Stripe/location adapters and intercepted APIs.
 Verified 2026-11-18: **16/16 rendered workflow tests**, **47/47 mobile
